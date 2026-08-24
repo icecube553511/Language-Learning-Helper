@@ -1,0 +1,30 @@
+{
+  "name": "LexiTrack CET-4/CET-6 catalog",
+  "contentVersion": "cet-2026.08-v1",
+  "generatedOn": "2026-08-25",
+  "wordCount": 7116,
+  "membershipCounts": {
+    "CET4": 5361,
+    "CET6": 5407
+  },
+  "fallbackWordCount": 4956,
+  "fallbackExampleCount": 13148,
+  "exampleSourceWordCounts": {
+    "LexiTrack curriculum fallback": 4956,
+    "Tatoeba": 3423,
+    "spelling variant": 1
+  },
+  "sources": [
+    {
+      "name": "ECDICT",
+      "url": "https://github.com/skywind3000/ECDICT",
+      "license": "MIT",
+      "usage": "words, phonetics, Chinese translations and exam tags"
+    },
+    {
+      "name": "单词记忆1 reference catalog",
+      "usage": "existing bilingual corpus examples retained only when both languages are non-empty"
+    }
+  ],
+  "qualityRule": "Every entry has a Chinese meaning and at least three unique English examples with Chinese translations."
+}

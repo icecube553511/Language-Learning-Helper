@@ -1,0 +1,17 @@
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+windows/build/
+windows/dist/
+android/.gradle/
+android/**/build/
+android/local.properties
+*.jks
+*.keystore
+local.properties
+.cache/
+

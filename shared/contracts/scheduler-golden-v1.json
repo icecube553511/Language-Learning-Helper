@@ -1,0 +1,31 @@
+{
+  "algorithmVersion": "lexi-sm2-v1",
+  "initial": {
+    "state": "new",
+    "intervalDays": 0.0,
+    "ease": 2.5,
+    "repetitions": 0,
+    "lapses": 0
+  },
+  "vectors": [
+    {
+      "name": "first-good",
+      "reviewedAtUtc": 1704067200.0,
+      "rating": "good",
+      "expected": { "state": "review", "intervalDays": 3.0, "ease": 2.5, "repetitions": 1, "lapses": 0, "dueAtUtc": 1704326400.0 }
+    },
+    {
+      "name": "first-easy",
+      "reviewedAtUtc": 1704067200.0,
+      "rating": "easy",
+      "expected": { "state": "review", "intervalDays": 7.0, "ease": 2.65, "repetitions": 1, "lapses": 0, "dueAtUtc": 1704672000.0 }
+    },
+    {
+      "name": "first-again",
+      "reviewedAtUtc": 1704067200.0,
+      "rating": "again",
+      "expected": { "state": "relearning", "intervalDays": 0.006944444444444444, "ease": 2.3, "repetitions": 0, "lapses": 1, "dueAtUtc": 1704067800.0 }
+    }
+  ]
+}
+

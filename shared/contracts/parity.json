@@ -1,0 +1,19 @@
+{
+  "releaseVersion": "0.1.0",
+  "schemaVersion": 1,
+  "algorithmVersion": "lexi-sm2-v1",
+  "contentVersion": "cet-2026.08-v1",
+  "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
+  "capabilities": {
+    "dashboard": "planned",
+    "librarySearch": "planned",
+    "studyCards": "planned",
+    "fourRatingReview": "planned",
+    "dictation": "planned",
+    "csvImportV1": "planned",
+    "memoryForecast": "planned",
+    "fontScaling": "planned"
+  },
+  "platforms": ["windows", "android"]
+}
+
