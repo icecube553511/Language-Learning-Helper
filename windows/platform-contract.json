@@ -1,0 +1,15 @@
+{
+  "releaseVersion": "0.1.0",
+  "schemaVersion": 1,
+  "algorithmVersion": "lexi-sm2-v1",
+  "contentVersion": "cet-2026.08-v1",
+  "capabilities": {
+    "dashboard": "ready",
+    "librarySearch": "ready",
+    "studyCards": "ready",
+    "fourRatingReview": "ready",
+    "csvImportV1": "ready",
+    "memoryForecast": "ready",
+    "fontScaling": "ready"
+  }
+}

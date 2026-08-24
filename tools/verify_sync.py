@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -72,7 +73,8 @@ def verify_catalog() -> None:
         if not entry_id or entry_id in ids:
             fail(f"Duplicate or empty word id: {entry_id!r}")
         ids.add(entry_id)
-        if not str(item.get("meaning", "")).strip():
+        meaning = str(item.get("meaning", "")).strip()
+        if not meaning or not re.search(r"[\u3400-\u9fff]", meaning):
             fail(f"Missing meaning: {entry_id}")
         memberships = item.get("memberships", [])
         if not memberships:
@@ -88,7 +90,7 @@ def verify_catalog() -> None:
         for example in examples[:3]:
             english = str(example.get("en", "")).strip()
             chinese = str(example.get("zh", "")).strip()
-            if not english or not chinese:
+            if not english or not chinese or not re.search(r"[\u3400-\u9fff]", chinese):
                 fail(f"Incomplete bilingual example: {entry_id}")
             if english.casefold() in seen_examples:
                 fail(f"Duplicate English example: {entry_id}")
@@ -125,4 +127,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"sync verification failed: {exc}", file=sys.stderr)
         raise
-

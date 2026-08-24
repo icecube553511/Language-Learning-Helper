@@ -187,7 +187,8 @@ def validate_catalog(catalog: list[dict]) -> None:
         if not entry_id or entry_id in ids:
             raise ValueError(f"Duplicate or empty id at item {index}: {entry_id!r}")
         ids.add(entry_id)
-        if not clean_text(item.get("meaning")):
+        meaning = clean_text(item.get("meaning"))
+        if not meaning or not re.search(r"[\u3400-\u9fff]", meaning):
             raise ValueError(f"Missing Chinese meaning: {entry_id}")
         memberships = set(item.get("memberships", []))
         if not memberships or not memberships.issubset({"CET4", "CET6"}):
@@ -199,7 +200,7 @@ def validate_catalog(catalog: list[dict]) -> None:
         for example in examples[:3]:
             english = clean_text(example.get("en"))
             chinese = clean_text(example.get("zh"))
-            if not english or not chinese:
+            if not english or not chinese or not re.search(r"[\u3400-\u9fff]", chinese):
                 raise ValueError(f"Incomplete example: {entry_id}")
             if english.casefold() in english_seen:
                 raise ValueError(f"Duplicate example: {entry_id}")
