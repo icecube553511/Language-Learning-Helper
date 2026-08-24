@@ -19,6 +19,7 @@ $arguments = @(
     "--windowed",
     "--name", "LexiTrack",
     "--manifest", (Join-Path $windowsDir "app.manifest"),
+    "--version-file", (Join-Path $windowsDir "version_info.txt"),
     "--paths", $windowsDir,
     "--distpath", (Join-Path $windowsDir "dist"),
     "--workpath", (Join-Path $windowsDir "build"),

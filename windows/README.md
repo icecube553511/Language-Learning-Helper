@@ -2,6 +2,12 @@
 
 Windows 客户端使用 Python 3.10+ 标准库与 Tkinter，核心学习完全离线。内置词库从仓库根目录的 `shared/content/catalog.json` 加载；文件缺失或损坏时应用会以空库正常启动，用户仍可导入自定义词库。
 
+## 安装预发布版
+
+在 GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 下载 `LexiTrack.exe` 与同包的 `SHA256SUMS.txt`。当前预发布包支持 Windows 10/11 x64，是无需安装的便携 EXE；双击即可运行。该文件尚未进行 Authenticode 签名，Windows 可能显示“未知发布者”或 SmartScreen 提示，请只使用本仓库 Release 中附带校验和的文件。
+
+升级时直接替换 EXE。删除 EXE 即可卸载程序，但不会自动删除 `%LOCALAPPDATA%\LexiTrack\learning-state.json` 中的学习记录；确认不再需要后可手动删除该目录。
+
 ## 运行
 
 在仓库根目录执行：
@@ -67,9 +73,10 @@ main.py           组合根和命令行入口
 ## 测试与打包
 
 ```powershell
+python -m pip install -r .\windows\requirements-build.txt
 python -m unittest discover -s .\windows\tests -v
 python .\windows\main.py --smoke-test --data-dir .\windows\.smoke-data
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-`build.ps1` 会先运行测试，再通过 PyInstaller 生成 `windows/dist/LexiTrack.exe`，并将当前共享词库和许可证一起打包。
+`requirements-build.txt` 固定 CI 使用的 PyInstaller 版本。`build.ps1` 会先运行测试，再生成带 `0.1.0` 版本资源的 `windows/dist/LexiTrack.exe`，并将当前共享词库和许可证一起打包。
