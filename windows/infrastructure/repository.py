@@ -138,4 +138,3 @@ class JsonLearningRepository:
         with self._lock:
             self._settings["fontScale"] = min(1.4, max(0.9, float(scale)))
             self._save_locked()
-

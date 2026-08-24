@@ -148,4 +148,3 @@ class ImportReport:
     failed: int = 0
     issues: list[ImportIssue] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-

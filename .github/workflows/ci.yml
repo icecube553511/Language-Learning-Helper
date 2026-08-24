@@ -30,4 +30,3 @@ jobs:
       - name: Test Android client
         working-directory: android
         run: ./gradlew test lintDebug assembleDebug
-

@@ -76,4 +76,3 @@ private fun text(
     fontSize = (size * scale).sp,
     lineHeight = (lineHeight * scale).sp,
 )
-

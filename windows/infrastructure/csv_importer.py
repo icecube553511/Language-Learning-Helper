@@ -107,4 +107,3 @@ class CsvVocabularyImporter:
         if normalize_word_id(values["word"]) in seen:
             return ImportIssue(row, "word", "duplicate_word", "词条已存在，未覆盖", status="skipped")
         return None
-

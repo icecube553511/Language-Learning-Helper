@@ -58,4 +58,3 @@ def retention_at(state: ReviewState, at_utc: float) -> float:
     elapsed_days = max(0.0, at_utc - state.last_reviewed_at_utc) / SECONDS_PER_DAY
     stability = max(state.interval_days, 1.0 / 144.0)
     return exp(-elapsed_days / stability)
-

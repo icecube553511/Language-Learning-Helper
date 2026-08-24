@@ -15,4 +15,3 @@ class SystemTimeProvider(
         .atZone(zoneId)
         .toLocalDate()
 }
-

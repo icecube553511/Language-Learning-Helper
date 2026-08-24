@@ -130,4 +130,3 @@ class LearningService:
         bounded = min(1.4, max(0.9, float(scale)))
         self.repository.set_font_scale(bounded)
         return bounded
-

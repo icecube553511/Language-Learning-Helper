@@ -37,4 +37,3 @@ class AppContainer(context: Context) {
         settings = settings.settings,
     )
 }
-

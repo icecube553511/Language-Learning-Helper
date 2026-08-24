@@ -117,4 +117,3 @@ class AndroidReviewRepository(context: Context) : ReviewRepository {
         const val MAX_HISTORY = 2_000
     }
 }
-

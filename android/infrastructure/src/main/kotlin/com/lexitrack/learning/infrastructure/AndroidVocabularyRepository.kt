@@ -103,4 +103,3 @@ class AndroidVocabularyRepository(
         const val KEY_IMPORTED = "imported_entries"
     }
 }
-

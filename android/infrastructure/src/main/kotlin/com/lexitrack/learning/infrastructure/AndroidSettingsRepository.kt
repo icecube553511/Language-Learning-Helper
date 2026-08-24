@@ -27,4 +27,3 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         const val KEY_FONT_SCALE = "font_scale"
     }
 }
-
