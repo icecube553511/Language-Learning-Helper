@@ -75,12 +75,17 @@ class LexiTrackApp(tk.Tk):
         self.nav_items: dict[str, NavItem] = {}
         self.current_page = ""
         self.current_card: VocabularyEntry | None = None
+        self.review_queue: list[VocabularyEntry] = []
+        self.review_total = 0
+        self.review_answer_visible = False
+        self._last_reminded_due_count = 0
         self.answer_visible = False
         self.forecast_days = 7
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
         self.show_page("dashboard")
+        self.after(1_000, self._check_review_reminder)
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -105,6 +110,7 @@ class LexiTrackApp(tk.Tk):
         nav_specs = [
             ("dashboard", "总览", "dashboard"),
             ("study", "学习", "study"),
+            ("review", "复习", "review"),
             ("library", "词库", "library"),
             ("analytics", "记忆分析", "analytics"),
             ("settings", "设置", "settings"),
@@ -123,6 +129,7 @@ class LexiTrackApp(tk.Tk):
     def _build_pages(self):
         self._build_dashboard_page()
         self._build_study_page()
+        self._build_review_page()
         self._build_library_page()
         self._build_analytics_page()
         self._build_settings_page()
@@ -205,7 +212,8 @@ class LexiTrackApp(tk.Tk):
         tk.Label(text, text="今日学习", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w")
         self.dashboard_plan = tk.Label(text, text="", bg=SURFACE, fg=MUTED, font="LexiBody")
         self.dashboard_plan.pack(anchor="w", pady=(4, 0))
-        self._primary_button(action_inner, "开始学习", lambda: self.show_page("study")).pack(side=tk.RIGHT)
+        self.dashboard_action_button = self._primary_button(action_inner, "开始学习", lambda: self.show_page("study"))
+        self.dashboard_action_button.pack(side=tk.RIGHT)
         chart_card = self._card(body)
         chart_card.pack(fill=tk.BOTH, expand=True)
         tk.Label(chart_card, text="未来 7 天记忆负载", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(18, 0))
@@ -213,7 +221,7 @@ class LexiTrackApp(tk.Tk):
         self.dashboard_chart.pack(fill=tk.BOTH, expand=True, padx=14, pady=(4, 12))
 
     def _build_study_page(self):
-        _, body = self._new_page("study", "学习卡", "按记忆计划优先处理到期词条")
+        _, body = self._new_page("study", "学习卡", "学习尚未接触的新词")
         self.study_card = self._card(body)
         self.study_card.pack(fill=tk.BOTH, expand=True)
         study_meta = tk.Frame(self.study_card, bg=SURFACE)
@@ -282,6 +290,59 @@ class LexiTrackApp(tk.Tk):
             label.grid(row=0, column=index, sticky="nsew", padx=4, pady=2)
             self.example_labels.append(label)
         self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
+
+    def _build_review_page(self):
+        _, body = self._new_page("review", "复习", "按记忆权重巩固已经学习过的单词")
+        toolbar = tk.Frame(body, bg=BG)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+        self.review_summary = tk.Label(toolbar, text="", bg=BG, fg=MUTED, font="LexiBody")
+        self.review_summary.pack(side=tk.LEFT)
+        self.review_start_button = self._primary_button(toolbar, "开始复习", self.start_review_session, width=10)
+        self.review_start_button.pack(side=tk.RIGHT)
+        self.review_card = self._card(body)
+        self.review_card.pack(fill=tk.BOTH, expand=True)
+        review_meta = tk.Frame(self.review_card, bg=SURFACE)
+        review_meta.pack(fill=tk.X, padx=16, pady=(10, 0))
+        self.review_level = tk.Label(review_meta, text="已学词", bg="#E7F5F0", fg=ACCENT, font="LexiSmall", padx=10, pady=5)
+        self.review_level.pack(side=tk.LEFT)
+        self.review_progress = tk.Label(review_meta, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
+        self.review_progress.pack(side=tk.RIGHT)
+        self.review_word = tk.Label(self.review_card, text="先开始一轮复习", bg=SURFACE, fg=TEXT, font="LexiWord")
+        self.review_word.pack(pady=(8, 0))
+        self.review_phonetic = tk.Label(self.review_card, text="", bg=SURFACE, fg=MUTED, font="LexiBody")
+        self.review_phonetic.pack()
+        self.review_controls = tk.Frame(self.review_card, bg=SURFACE, height=60)
+        self.review_controls.pack(fill=tk.X, pady=(4, 2))
+        self.review_controls.pack_propagate(False)
+        self.review_reveal_button = self._primary_button(self.review_controls, "查看答案", self.reveal_review_answer)
+        self.review_rating_frame = tk.Frame(self.review_controls, bg=SURFACE)
+        for column, (label, rating, color) in enumerate((
+            ("忘记", ReviewRating.AGAIN, RED),
+            ("模糊", ReviewRating.HARD, ORANGE),
+            ("认识", ReviewRating.GOOD, ACCENT),
+            ("很熟", ReviewRating.EASY, BLUE),
+        )):
+            self.review_rating_frame.grid_columnconfigure(column, weight=1, uniform="review-rating")
+            self._primary_button(
+                self.review_rating_frame,
+                label,
+                lambda value=rating: self.rate_review_current(value),
+                color=color,
+                width=5,
+            ).grid(row=0, column=column, sticky="ew", padx=4)
+        self.review_answer_panel = tk.Frame(self.review_card, bg=SURFACE)
+        self.review_meaning = tk.Label(self.review_answer_panel, text="", bg=SURFACE, fg=TEXT, font="LexiHeading", wraplength=780, justify="center", height=2)
+        self.review_meaning.pack(pady=(2, 6))
+        examples = tk.Frame(self.review_answer_panel, bg=SURFACE)
+        examples.pack(fill=tk.BOTH, expand=True, padx=18)
+        self.review_example_labels: list[tk.Label] = []
+        for index in range(3):
+            examples.grid_columnconfigure(index, weight=1, uniform="review-examples")
+            examples.grid_rowconfigure(0, weight=1)
+            label = tk.Label(examples, text="", bg="#F5F8F9", fg=TEXT, font="LexiSmall", wraplength=260, justify="left", anchor="w", padx=12, pady=4, height=6)
+            label.grid(row=0, column=index, sticky="nsew", padx=4, pady=2)
+            self.review_example_labels.append(label)
+        self.refresh_review_page()
     def _resize_study_answer(self, event):
         wrap_width = max(260, event.width - 96)
         self.study_meaning.configure(wraplength=wrap_width)
@@ -358,6 +419,30 @@ class LexiTrackApp(tk.Tk):
             length=460,
         )
         scale.pack(anchor="w", padx=18, pady=(6, 18))
+        review = self._card(body)
+        review.pack(fill=tk.X, pady=(16, 0))
+        tk.Label(review, text="每轮复习数量", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(18, 4))
+        self.review_batch_text = tk.Label(review, text="", bg=SURFACE, fg=ACCENT, font="LexiBodyBold")
+        self.review_batch_text.pack(anchor="w", padx=22)
+        learnt_count = self.service.learnt_word_count()
+        self.review_batch_var = tk.IntVar(value=self.service.review_batch_size())
+        self.review_batch_scale = tk.Scale(
+            review,
+            from_=1,
+            to=max(1, learnt_count),
+            resolution=1,
+            orient=tk.HORIZONTAL,
+            variable=self.review_batch_var,
+            command=self.change_review_batch_size,
+            showvalue=False,
+            state=tk.NORMAL if learnt_count else tk.DISABLED,
+            bg=SURFACE,
+            activebackground=ACCENT,
+            highlightthickness=0,
+            troughcolor="#DDE6E4",
+            length=460,
+        )
+        self.review_batch_scale.pack(anchor="w", padx=18, pady=(6, 18))
         storage = self._card(body)
         storage.pack(fill=tk.X, pady=16)
         tk.Label(storage, text="本地数据", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(20, 5))
@@ -371,12 +456,13 @@ class LexiTrackApp(tk.Tk):
             catalog_message += f"；门禁排除 {self.catalog_rejected:,} 条"
         tk.Label(storage, text=catalog_message, bg=SURFACE, fg=ACCENT if self.catalog_count else ORANGE, font="LexiBody").pack(anchor="w", padx=22, pady=(0, 20))
         self.change_font_scale(str(self.scale_var.get()))
+        self.change_review_batch_size(str(self.review_batch_var.get()))
 
     def _bind_shortcuts(self):
         self.bind("<Control-k>", lambda _event: self._focus_search())
-        self.bind("<space>", lambda _event: self.reveal_answer() if self.current_page == "study" else None)
+        self.bind("<space>", lambda _event: self._reveal_current_answer())
         for key, rating in (("1", ReviewRating.AGAIN), ("2", ReviewRating.HARD), ("3", ReviewRating.GOOD), ("4", ReviewRating.EASY)):
-            self.bind(key, lambda _event, value=rating: self.rate_current(value) if self.current_page == "study" and self.answer_visible else None)
+            self.bind(key, lambda _event, value=rating: self._rate_visible_card(value))
 
     def _focus_search(self):
         self.show_page("library")
@@ -393,6 +479,8 @@ class LexiTrackApp(tk.Tk):
             self.refresh_dashboard()
         elif key == "study":
             self.load_study_card()
+        elif key == "review":
+            self.refresh_review_page()
         elif key == "library":
             self.refresh_library()
         elif key == "analytics":
@@ -403,6 +491,10 @@ class LexiTrackApp(tk.Tk):
         for key in self.stat_labels:
             self.stat_labels[key].configure(text=f"{getattr(snapshot, key):,}")
         self.dashboard_plan.configure(text=f"{snapshot.due_now} 个到期复习，{snapshot.new_words} 个未学习词条")
+        if snapshot.due_now:
+            self.dashboard_action_button.configure(text="开始复习", command=lambda: self.show_page("review"))
+        else:
+            self.dashboard_action_button.configure(text="开始学习", command=lambda: self.show_page("study"))
         self.dashboard_chart.set_data(self.service.forecast(7), self.service.retention_curve(7))
 
     def load_study_card(self, exclude_id: str = ""):
@@ -450,7 +542,89 @@ class LexiTrackApp(tk.Tk):
             return
         previous = self.current_card.word_id
         self.service.rate_card(previous, rating)
+        self._sync_review_batch_control()
         self.load_study_card(exclude_id=previous)
+
+    def refresh_review_page(self):
+        self._sync_review_batch_control()
+        learnt_count = self.service.learnt_word_count()
+        due_count = self.service.due_review_count()
+        batch_size = min(self.service.review_batch_size(), learnt_count) if learnt_count else 0
+        self.review_summary.configure(text=f"已学 {learnt_count} 词 · 到期 {due_count} 词 · 每轮 {batch_size} 词")
+        self.review_start_button.configure(state=tk.NORMAL if learnt_count else tk.DISABLED)
+        if self.review_queue:
+            self._show_next_review_card()
+        elif self.review_total:
+            self.review_word.configure(text="本轮复习完成")
+            self.review_phonetic.configure(text="")
+            self.review_progress.configure(text=f"已完成 {self.review_total} / {self.review_total}")
+        elif not learnt_count:
+            self.review_word.configure(text="先在学习中完成单词评分")
+            self.review_phonetic.configure(text="")
+            self.review_progress.configure(text="暂无已学词")
+
+    def start_review_session(self):
+        self.review_queue = self.service.start_review_session()
+        self.review_total = len(self.review_queue)
+        self._show_next_review_card()
+
+    def _show_next_review_card(self):
+        self.review_answer_visible = False
+        self.review_answer_panel.pack_forget()
+        self.review_rating_frame.pack_forget()
+        self.review_reveal_button.pack_forget()
+        if not self.review_queue:
+            self.refresh_review_page()
+            return
+        card = self.review_queue[0]
+        self.review_level.configure(text=card.level or "custom")
+        self.review_word.configure(text=card.word)
+        self.review_phonetic.configure(text=card.phonetic)
+        completed = self.review_total - len(self.review_queue)
+        self.review_progress.configure(text=f"{completed + 1} / {self.review_total}")
+        self.review_reveal_button.configure(text="查看答案", command=self.reveal_review_answer)
+        self.review_reveal_button.pack(pady=4)
+
+    def reveal_review_answer(self):
+        if not self.review_queue or self.review_answer_visible:
+            return
+        card = self.review_queue[0]
+        self.review_answer_visible = True
+        self.review_meaning.configure(text=card.meaning)
+        for index, label in enumerate(self.review_example_labels):
+            example = card.examples[index]
+            label.configure(text=f"{index + 1}. {example.english}\n   {example.chinese}")
+        self.review_reveal_button.pack_forget()
+        self.review_rating_frame.pack(fill=tk.X, padx=14, pady=5)
+        self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 8))
+
+    def rate_review_current(self, rating: ReviewRating):
+        if not self.review_queue or not self.review_answer_visible:
+            return
+        card = self.review_queue.pop(0)
+        self.service.rate_review_card(card.word_id, rating)
+        self._show_next_review_card()
+
+    def _reveal_current_answer(self):
+        if self.current_page == "study":
+            self.reveal_answer()
+        elif self.current_page == "review":
+            self.reveal_review_answer()
+
+    def _rate_visible_card(self, rating: ReviewRating):
+        if self.current_page == "study" and self.answer_visible:
+            self.rate_current(rating)
+        elif self.current_page == "review" and self.review_answer_visible:
+            self.rate_review_current(rating)
+
+    def _check_review_reminder(self):
+        due_count = self.service.due_review_count()
+        if due_count > 0 and due_count != self._last_reminded_due_count:
+            self._last_reminded_due_count = due_count
+            messagebox.showinfo("复习提醒", f"有 {due_count} 个单词已按记忆曲线到期。", parent=self)
+        elif due_count == 0:
+            self._last_reminded_due_count = 0
+        self.after(60_000, self._check_review_reminder)
 
     def refresh_library(self):
         entries = self.service.search(self.search_var.get())
@@ -519,6 +693,30 @@ class LexiTrackApp(tk.Tk):
         self.scale_text.configure(text=f"{round(scale * 100):d}%")
         ttk.Style(self).configure("Treeview", rowheight=max(32, round(34 * scale)))
 
+    def change_review_batch_size(self, raw_value: str):
+        learnt_count = self.service.learnt_word_count()
+        if not learnt_count:
+            self.review_batch_text.configure(text="暂无已学词")
+            return
+        value = self.service.set_review_batch_size(round(float(raw_value)))
+        self.review_batch_var.set(value)
+        self.review_batch_text.configure(text=f"{value} 个单词（上限 {learnt_count}）")
+
+    def _sync_review_batch_control(self):
+        if not hasattr(self, "review_batch_scale"):
+            return
+        learnt_count = self.service.learnt_word_count()
+        self.review_batch_scale.configure(
+            to=max(1, learnt_count),
+            state=tk.NORMAL if learnt_count else tk.DISABLED,
+        )
+        if learnt_count:
+            value = min(self.service.review_batch_size(), learnt_count)
+            self.review_batch_var.set(value)
+            self.review_batch_text.configure(text=f"{value} 个单词（上限 {learnt_count}）")
+        else:
+            self.review_batch_text.configure(text="暂无已学词")
+
 
 def run_gui_smoke(app: LexiTrackApp) -> dict:
     app.geometry("960x640")
@@ -528,10 +726,16 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         pass
     app.update()
     visited = []
-    for page in ("dashboard", "study", "library", "analytics", "settings"):
+    for page in ("dashboard", "study", "review", "library", "analytics", "settings"):
         app.show_page(page)
         app.update()
         visited.append(page)
+    app.show_page("review")
+    app.update()
+    review_page_ready = (
+        app.review_start_button.winfo_width() > 0
+        and app.review_summary.winfo_width() > 0
+    )
     app.show_page("study")
     app.update()
     reveal_label = app.reveal_button.cget("text")
@@ -573,6 +777,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and controls_above_answers
             and examples_visible
             and rating_buttons_visible
+            and review_page_ready
         ),
         "pages": visited,
         "catalogCount": app.catalog_count,
@@ -587,6 +792,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "controlsAboveAnswers": controls_above_answers,
         "ratingBounds": [app.rating_frame.winfo_rooty(), rating_bottom, card_bottom, window_bottom],
         "ratingButtonsVisible": rating_buttons_visible,
+        "reviewPageReady": review_page_ready,
         "studyGeometry": {
             "card": [app.study_card.winfo_rooty(), card_bottom, app.study_card.winfo_height()],
             "level": [app.study_level.winfo_rooty(), app.study_level.winfo_height()],

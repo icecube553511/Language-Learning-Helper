@@ -17,4 +17,8 @@ tasks.test {
         "scheduler.golden.path",
         rootProject.file("../shared/contracts/scheduler-golden-v1.json").absolutePath,
     )
+    systemProperty(
+        "weighted.review.golden.path",
+        rootProject.file("../shared/contracts/weighted-review-golden-v1.json").absolutePath,
+    )
 }

@@ -1,6 +1,6 @@
 {
-  "releaseVersion": "0.1.0",
-  "schemaVersion": 1,
+  "releaseVersion": "0.2.0",
+  "schemaVersion": 2,
   "algorithmVersion": "lexi-sm2-v1",
   "contentVersion": "cet-2026.08-v1",
   "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
@@ -12,6 +12,10 @@
     "csvImportV1": "ready",
     "memoryForecast": "ready",
     "fontScaling": "ready",
+    "learntWordsDatabase": "ready",
+    "weightedReviewSessions": "ready",
+    "runtimeReviewReminders": "ready",
+    "reviewBatchSize": "ready",
     "fixedStudyLayout": "ready"
   },
   "platforms": ["windows", "android"]

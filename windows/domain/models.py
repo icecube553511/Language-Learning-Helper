@@ -6,6 +6,15 @@ import unicodedata
 
 
 ALGORITHM_VERSION = "lexi-sm2-v1"
+DEFAULT_REVIEW_BATCH_SIZE = 20
+
+
+INITIAL_REVIEW_WEIGHTS = {
+    "again": 1.0,
+    "hard": 0.8,
+    "good": 0.2,
+    "easy": 0.05,
+}
 
 
 def normalize_word_id(word: str) -> str:
@@ -17,6 +26,21 @@ class ReviewRating(str, Enum):
     HARD = "hard"
     GOOD = "good"
     EASY = "easy"
+
+
+def initial_review_weight(rating: ReviewRating | str) -> float:
+    resolved = rating if isinstance(rating, ReviewRating) else ReviewRating(rating)
+    return INITIAL_REVIEW_WEIGHTS[resolved.value]
+
+
+def updated_review_weight(current_weight: float, rating: ReviewRating | str) -> float:
+    resolved = rating if isinstance(rating, ReviewRating) else ReviewRating(rating)
+    if resolved in (ReviewRating.GOOD, ReviewRating.EASY):
+        return INITIAL_REVIEW_WEIGHTS[resolved.value]
+    normalized = float(current_weight)
+    if normalized not in INITIAL_REVIEW_WEIGHTS.values():
+        return INITIAL_REVIEW_WEIGHTS[ReviewRating.GOOD.value]
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -128,6 +152,63 @@ class ReviewState:
                 if payload.get("lastReviewedAtUtc") is not None
                 else None
             ),
+        )
+
+
+@dataclass(frozen=True)
+class LearntWord:
+    word_id: str
+    weight: float
+    learnt_at_utc: float
+    last_reviewed_at_utc: float
+    review_count: int = 0
+
+    @classmethod
+    def create(
+        cls,
+        word_id: str,
+        rating: ReviewRating | str,
+        learnt_at_utc: float,
+    ) -> "LearntWord":
+        return cls(
+            word_id=word_id,
+            weight=initial_review_weight(rating),
+            learnt_at_utc=float(learnt_at_utc),
+            last_reviewed_at_utc=float(learnt_at_utc),
+            review_count=0,
+        )
+
+    def reviewed(self, rating: ReviewRating | str, reviewed_at_utc: float) -> "LearntWord":
+        return LearntWord(
+            word_id=self.word_id,
+            weight=updated_review_weight(self.weight, rating),
+            learnt_at_utc=self.learnt_at_utc,
+            last_reviewed_at_utc=float(reviewed_at_utc),
+            review_count=self.review_count + 1,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "wordId": self.word_id,
+            "weight": self.weight,
+            "learntAtUtc": self.learnt_at_utc,
+            "lastReviewedAtUtc": self.last_reviewed_at_utc,
+            "reviewCount": self.review_count,
+        }
+
+    @classmethod
+    def from_dict(cls, word_id: str, payload: dict) -> "LearntWord":
+        weight = float(payload.get("weight", 0.2))
+        if weight not in INITIAL_REVIEW_WEIGHTS.values():
+            weight = INITIAL_REVIEW_WEIGHTS[ReviewRating.GOOD.value]
+        return cls(
+            word_id=word_id,
+            weight=weight,
+            learnt_at_utc=float(payload.get("learntAtUtc", 0.0)),
+            last_reviewed_at_utc=float(
+                payload.get("lastReviewedAtUtc", payload.get("learntAtUtc", 0.0))
+            ),
+            review_count=max(0, int(payload.get("reviewCount", 0))),
         )
 
 

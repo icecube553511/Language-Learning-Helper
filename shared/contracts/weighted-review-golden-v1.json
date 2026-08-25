@@ -1,0 +1,11 @@
+{
+  "contractVersion": "weighted-review-v1",
+  "defaultBatchSize": 20,
+  "legacyMigrationWeight": 0.2,
+  "ratings": [
+    { "rating": "again", "initialWeight": 1.0, "previousWeight": 0.8, "reviewWeight": 0.8 },
+    { "rating": "hard", "initialWeight": 0.8, "previousWeight": 1.0, "reviewWeight": 1.0 },
+    { "rating": "good", "initialWeight": 0.2, "previousWeight": 1.0, "reviewWeight": 0.2 },
+    { "rating": "easy", "initialWeight": 0.05, "previousWeight": 0.8, "reviewWeight": 0.05 }
+  ]
+}

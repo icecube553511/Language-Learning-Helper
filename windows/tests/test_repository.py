@@ -10,9 +10,10 @@ import unittest
 WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
-from domain.models import ExampleSentence, ReviewState, VocabularyEntry
+from domain.models import ExampleSentence, LearntWord, ReviewState, VocabularyEntry
 from infrastructure.catalog import CatalogLoader
 from infrastructure.repository import JsonLearningRepository
+from infrastructure.words_learnt_repository import JsonWordsLearntRepository
 
 
 def sample_entry(word="serene"):
@@ -40,9 +41,11 @@ class RepositoryTests(unittest.TestCase):
         repo.save_review_state(state)
         repo.record_activity("serene", 1704067200)
         repo.set_font_scale(1.25)
+        repo.set_review_batch_size(14)
         loaded = JsonLearningRepository(directory, [sample_entry()])
         self.assertEqual(loaded.review_state("serene").state, "review")
         self.assertEqual(loaded.get_font_scale(), 1.25)
+        self.assertEqual(loaded.get_review_batch_size(), 14)
         self.assertEqual(sum(len(v) for v in loaded._activity.values()), 1)
 
     def test_catalog_gracefully_handles_missing_file(self):
@@ -66,6 +69,39 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(repo.add_entries([sample_entry()]), 1)
         loaded = JsonLearningRepository(directory)
         self.assertEqual([item.word for item in loaded.all_entries()], ["serene"])
+
+    def test_words_learnt_uses_independent_json_file(self):
+        directory = Path(self.temp.name)
+        JsonLearningRepository(directory).set_review_batch_size(20)
+        repository = JsonWordsLearntRepository(directory)
+        repository.save_learnt_word(LearntWord("serene", 0.8, 1000, 1000))
+
+        loaded = JsonWordsLearntRepository(directory)
+        self.assertEqual(loaded.learnt_word("serene"), LearntWord("serene", 0.8, 1000, 1000))
+        payload = json.loads((directory / "Words_Learnt.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["schemaVersion"], 1)
+        self.assertIn("serene", payload["wordsLearnt"])
+        self.assertEqual(payload["wordsLearnt"]["serene"]["reviewCount"], 0)
+        learning_payload = json.loads((directory / "learning-state.json").read_text(encoding="utf-8"))
+        self.assertNotIn("wordsLearnt", learning_payload)
+
+    def test_words_learnt_invalid_weight_falls_back_to_neutral(self):
+        directory = Path(self.temp.name)
+        path = directory / "Words_Learnt.json"
+        path.write_text(json.dumps({
+            "schemaVersion": 1,
+            "wordsLearnt": {
+                "serene": {
+                    "wordId": "serene",
+                    "weight": 0.33,
+                    "learntAtUtc": 1000,
+                    "lastReviewedAtUtc": 1000,
+                    "reviewCount": 0,
+                },
+            },
+        }), encoding="utf-8")
+
+        self.assertEqual(JsonWordsLearntRepository(directory).learnt_word("serene").weight, 0.2)
 
 
 if __name__ == "__main__":

@@ -7,18 +7,22 @@ import com.lexitrack.learning.application.AppUseCases
 import com.lexitrack.learning.application.CatalogStatus
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ForecastDay
+import com.lexitrack.learning.application.UserSettings
 import com.lexitrack.learning.domain.ImportReport
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.VocabularyEntry
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class MainSection {
     DASHBOARD,
     STUDY,
+    REVIEW,
     LIBRARY,
     INSIGHTS,
     SETTINGS,
@@ -31,6 +35,13 @@ data class MainUiState(
     val forecast: List<ForecastDay> = emptyList(),
     val currentCard: VocabularyEntry? = null,
     val answerRevealed: Boolean = false,
+    val reviewQueue: List<VocabularyEntry> = emptyList(),
+    val reviewCard: VocabularyEntry? = null,
+    val reviewAnswerRevealed: Boolean = false,
+    val reviewSessionSize: Int = 0,
+    val reviewSessionStarted: Boolean = false,
+    val learntWordCount: Int = 0,
+    val reviewBatchSize: Int = 20,
     val searchQuery: String = "",
     val searchResults: List<VocabularyEntry> = emptyList(),
     val totalSearchResults: Int = 0,
@@ -38,11 +49,14 @@ data class MainUiState(
     val importInProgress: Boolean = false,
     val importReport: ImportReport? = null,
     val transientMessage: String? = null,
+    val reviewReminderMessage: String? = null,
 )
 
 class MainViewModel(
     private val useCases: AppUseCases,
 ) : ViewModel() {
+    private var lastRemindedDueCount = 0
+    private var studyRatingInProgress = false
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -54,12 +68,18 @@ class MainViewModel(
                 useCases.schedules,
                 useCases.history,
                 useCases.settings,
-            ) { _, status, _, _, settings -> status to settings }.collect { (status, settings) ->
-                refreshDerived(status, settings.fontScale)
-            }
+            ) { _, status, _, _, settings -> status to settings }
+                .combine(useCases.learntWords) { (status, settings), _ -> status to settings }
+                .collect { (status, settings) -> refreshDerived(status, settings) }
         }
         viewModelScope.launch {
             useCases.initialize()
+        }
+        viewModelScope.launch {
+            while (isActive) {
+                delay(60_000)
+                refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
+            }
         }
     }
 
@@ -73,12 +93,52 @@ class MainViewModel(
     }
 
     fun rateCurrent(rating: ReviewRating) {
-        val card = _uiState.value.currentCard ?: return
+        val state = _uiState.value
+        val card = state.currentCard ?: return
+        if (!state.answerRevealed || studyRatingInProgress) return
+        studyRatingInProgress = true
+        _uiState.value = state.copy(currentCard = null, answerRevealed = false)
         viewModelScope.launch {
-            useCases.rateWord(card.id, rating)
-            _uiState.value = _uiState.value.copy(currentCard = null, answerRevealed = false)
-            refreshDerived(useCases.catalogStatus.value, useCases.settings.value.fontScale)
-            ensureCurrentCard()
+            try {
+                useCases.rateWord(card.id, rating)
+            } finally {
+                studyRatingInProgress = false
+                _uiState.value = _uiState.value.copy(currentCard = null, answerRevealed = false)
+                refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
+                ensureCurrentCard()
+            }
+        }
+    }
+
+    fun startReviewSession() {
+        val queue = useCases.startReviewSession()
+        _uiState.value = _uiState.value.copy(
+            reviewQueue = queue,
+            reviewCard = queue.firstOrNull(),
+            reviewAnswerRevealed = false,
+            reviewSessionSize = queue.size,
+            reviewSessionStarted = true,
+        )
+    }
+
+    fun revealReviewAnswer() {
+        if (_uiState.value.reviewCard == null) return
+        _uiState.value = _uiState.value.copy(reviewAnswerRevealed = true)
+    }
+
+    fun rateReviewCurrent(rating: ReviewRating) {
+        val state = _uiState.value
+        val card = state.reviewCard ?: return
+        if (!state.reviewAnswerRevealed) return
+        val remaining = state.reviewQueue.drop(1)
+        _uiState.value = state.copy(
+            reviewQueue = remaining,
+            reviewCard = remaining.firstOrNull(),
+            reviewAnswerRevealed = false,
+        )
+        viewModelScope.launch {
+            useCases.rateReviewWord(card.id, rating)
+            refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
         }
     }
 
@@ -124,26 +184,51 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(transientMessage = null)
     }
 
+    fun dismissReviewReminder() {
+        _uiState.value = _uiState.value.copy(reviewReminderMessage = null)
+    }
+
     fun setFontScale(scale: Float) {
         _uiState.value = _uiState.value.copy(fontScale = scale.coerceIn(0.9f, 1.4f))
         viewModelScope.launch { useCases.updateFontScale(scale) }
     }
 
-    private fun refreshDerived(status: CatalogStatus, fontScale: Float) {
+    fun setReviewBatchSize(count: Int) {
+        val bounded = count.coerceIn(1, maxOf(1, _uiState.value.learntWordCount))
+        _uiState.value = _uiState.value.copy(reviewBatchSize = bounded)
+        viewModelScope.launch {
+            useCases.updateReviewBatchSize(bounded)
+            refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
+        }
+    }
+
+    private fun refreshDerived(status: CatalogStatus, settings: UserSettings) {
         val matches = useCases.search(_uiState.value.searchQuery)
+        val learntCount = useCases.learntWords.value.size
         val current = _uiState.value.currentCard?.id?.let { id ->
             useCases.words.value.firstOrNull { it.id == id }
         }
+        val dashboard = useCases.dashboard()
+        val reminder = if (dashboard.dueNow > 0 && dashboard.dueNow != lastRemindedDueCount) {
+            lastRemindedDueCount = dashboard.dueNow
+            "有 ${dashboard.dueNow} 个单词已按记忆曲线到期。"
+        } else {
+            if (dashboard.dueNow == 0) lastRemindedDueCount = 0
+            _uiState.value.reviewReminderMessage
+        }
         _uiState.value = _uiState.value.copy(
             catalogStatus = status,
-            dashboard = useCases.dashboard(),
+            dashboard = dashboard,
             forecast = useCases.forecast(),
             currentCard = current,
             searchResults = matches.take(MAX_VISIBLE_SEARCH_RESULTS),
             totalSearchResults = matches.size,
-            fontScale = fontScale,
+            fontScale = settings.fontScale,
+            learntWordCount = learntCount,
+            reviewBatchSize = settings.reviewBatchSize.coerceIn(1, maxOf(1, learntCount)),
+            reviewReminderMessage = reminder,
         )
-        if (_uiState.value.section == MainSection.STUDY) ensureCurrentCard()
+        if (_uiState.value.section == MainSection.STUDY && !studyRatingInProgress) ensureCurrentCard()
     }
 
     private fun ensureCurrentCard() {

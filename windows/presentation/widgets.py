@@ -55,6 +55,10 @@ def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:
         canvas.create_line(4, 7, 4, 23, 11, 22, 14, 25, **line)
         canvas.create_line(24, 7, 24, 23, 17, 22, 14, 25, **line)
         canvas.create_line(14, 9, 14, 25, **line)
+    elif name == "review":
+        canvas.create_arc(5, 5, 23, 23, start=35, extent=270, style=tk.ARC, outline=color, width=2)
+        canvas.create_line(20, 4, 24, 5, 23, 9, **line)
+        canvas.create_line(10, 14, 13, 17, 19, 10, **line)
     elif name == "library":
         canvas.create_rectangle(4, 5, 9, 24, outline=color, width=2)
         canvas.create_rectangle(11, 7, 16, 24, outline=color, width=2)

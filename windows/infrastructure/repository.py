@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import threading
 
-from domain.models import ReviewState, VocabularyEntry
+from domain.models import DEFAULT_REVIEW_BATCH_SIZE, ReviewState, VocabularyEntry
 from infrastructure.catalog import entry_from_payload
 
 
@@ -24,7 +24,10 @@ class JsonLearningRepository:
         self._user_entries: dict[str, VocabularyEntry] = {}
         self._reviews: dict[str, ReviewState] = {}
         self._activity: dict[str, list[str]] = {}
-        self._settings: dict[str, object] = {"fontScale": 1.0}
+        self._settings: dict[str, object] = {
+            "fontScale": 1.0,
+            "reviewBatchSize": DEFAULT_REVIEW_BATCH_SIZE,
+        }
         self._load()
 
     def _load(self) -> None:
@@ -137,4 +140,16 @@ class JsonLearningRepository:
     def set_font_scale(self, scale: float) -> None:
         with self._lock:
             self._settings["fontScale"] = min(1.4, max(0.9, float(scale)))
+            self._save_locked()
+
+    def get_review_batch_size(self) -> int:
+        with self._lock:
+            try:
+                return max(1, int(self._settings.get("reviewBatchSize", DEFAULT_REVIEW_BATCH_SIZE)))
+            except (TypeError, ValueError):
+                return DEFAULT_REVIEW_BATCH_SIZE
+
+    def set_review_batch_size(self, size: int) -> None:
+        with self._lock:
+            self._settings["reviewBatchSize"] = max(1, int(size))
             self._save_locked()

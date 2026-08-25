@@ -11,9 +11,9 @@ Presentation  --->  Application  --->  Domain
                           Infrastructure -+
 ```
 
-- `Domain`：词条、复习状态、评分与 `lexi-sm2-v1` 调度；不引用平台 API。
-- `Application`：总览、抽卡、评分、导入、搜索、预测复习量等用例和端口。
-- `Infrastructure`：JSON/SharedPreferences 持久化、内置词库、CSV 解析、系统文件选择器。
+- `Domain`：词条、复习状态、已学词权重、评分与 `lexi-sm2-v1` 调度；不引用平台 API。
+- `Application`：总览、学习抽卡、加权复习会话、评分、导入、搜索、预测复习量等用例和端口。
+- `Infrastructure`：JSON/SharedPreferences 持久化、独立 `Words_Learnt`、内置词库、CSV 解析、系统文件选择器。
 - `Presentation`：Tkinter 或 Compose 页面、状态与无障碍语义。
 - Composition Root：唯一负责组装具体实现的最外层入口。
 
@@ -25,6 +25,7 @@ Presentation  --->  Application  --->  Domain
 - `ReviewState` 的 UTC 时间、评分枚举、间隔、熟练度、复习次数和遗忘次数。
 - CSV v1 的列、编码、校验、重复处理和逐行错误代码。
 - `lexi-sm2-v1` 的四档评分计算及 golden vectors。
+- `weighted-review-v1` 的初始/更新权重、无放回会话、批次数量和旧数据迁移语义。
 - 字体缩放范围 `0.9..1.4`、每日新词/复习上限及版本字段。
 
 ## 数据与隐私
@@ -34,4 +35,3 @@ Presentation  --->  Application  --->  Domain
 ## 内容门禁
 
 内置词库发布前必须验证：稳定 ID 唯一、中文释义非空、CET membership 合法、至少三条不同的英文例句且每条中文翻译非空、来源和内容版本存在。导入词条使用同一套最小内容规则。
-

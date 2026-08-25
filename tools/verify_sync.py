@@ -54,6 +54,28 @@ def verify_scheduler() -> None:
                 fail(f"Scheduler vector {vector['name']} differs at {key}: {observed} != {expected}")
 
 
+def verify_weighted_review() -> None:
+    payload = json.loads((CONTRACTS / "weighted-review-golden-v1.json").read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "weighted-review-v1":
+        fail("Unexpected weighted review contract version")
+    expected_initial = {"again": 1.0, "hard": 0.8, "good": 0.2, "easy": 0.05}
+    for vector in payload.get("ratings", []):
+        rating = vector.get("rating")
+        if rating not in expected_initial:
+            fail(f"Unknown weighted review rating: {rating}")
+        if not math.isclose(float(vector.get("initialWeight", -1)), expected_initial[rating]):
+            fail(f"Initial review weight differs for {rating}")
+        expected_review = (
+            float(vector["previousWeight"])
+            if rating in {"again", "hard"}
+            else expected_initial[rating]
+        )
+        if not math.isclose(float(vector.get("reviewWeight", -1)), expected_review):
+            fail(f"Updated review weight differs for {rating}")
+    if int(payload.get("defaultBatchSize", 0)) != 20:
+        fail("Unexpected default review batch size")
+
+
 def verify_catalog() -> None:
     catalog_path = CONTENT / "catalog.json"
     manifest_path = CONTENT / "catalog-manifest.json"
@@ -115,6 +137,7 @@ def verify_platform_markers() -> None:
 
 def main() -> int:
     verify_scheduler()
+    verify_weighted_review()
     verify_catalog()
     verify_platform_markers()
     print("Synchronization contract verified for Windows, Android and shared content.")

@@ -29,12 +29,15 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
@@ -88,6 +91,7 @@ fun LexiTrackApp(
             bottomBar = {
                 AppNavigation(
                     selected = state.section,
+                    dueCount = state.dashboard.dueNow,
                     onSelected = viewModel::selectSection,
                 )
             },
@@ -100,13 +104,23 @@ fun LexiTrackApp(
                 when (state.section) {
                     MainSection.DASHBOARD -> DashboardScreen(
                         state = state,
-                        onStart = { viewModel.selectSection(MainSection.STUDY) },
+                        onStudy = { viewModel.selectSection(MainSection.STUDY) },
+                        onReview = { viewModel.selectSection(MainSection.REVIEW) },
                     )
                     MainSection.STUDY -> StudyScreen(
                         card = state.currentCard,
                         revealed = state.answerRevealed,
                         onReveal = viewModel::revealAnswer,
                         onRate = viewModel::rateCurrent,
+                        title = "学习卡",
+                        emptyTitle = "新词学习已完成",
+                        emptyMessage = "导入更多词条或前往复习巩固已学内容",
+                    )
+                    MainSection.REVIEW -> ReviewScreen(
+                        state = state,
+                        onStart = viewModel::startReviewSession,
+                        onReveal = viewModel::revealReviewAnswer,
+                        onRate = viewModel::rateReviewCurrent,
                     )
                     MainSection.LIBRARY -> LibraryScreen(
                         state = state,
@@ -117,6 +131,9 @@ fun LexiTrackApp(
                     MainSection.SETTINGS -> SettingsScreen(
                         fontScale = state.fontScale,
                         onFontScaleChange = viewModel::setFontScale,
+                        learntWordCount = state.learntWordCount,
+                        reviewBatchSize = state.reviewBatchSize,
+                        onReviewBatchSizeChange = viewModel::setReviewBatchSize,
                     )
                 }
             }
@@ -127,6 +144,25 @@ fun LexiTrackApp(
         }
         state.transientMessage?.let { message ->
             MessageDialog(message, viewModel::dismissMessage)
+        }
+        state.reviewReminderMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissReviewReminder,
+                icon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                title = { Text("复习提醒") },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.dismissReviewReminder()
+                            viewModel.selectSection(MainSection.REVIEW)
+                        },
+                    ) { Text("去复习") }
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissReviewReminder) { Text("稍后") }
+                },
+            )
         }
     }
 }
@@ -163,10 +199,11 @@ private fun AppHeader() {
 }
 
 @Composable
-private fun AppNavigation(selected: MainSection, onSelected: (MainSection) -> Unit) {
+private fun AppNavigation(selected: MainSection, dueCount: Int, onSelected: (MainSection) -> Unit) {
     val items = listOf(
         NavigationItem(MainSection.DASHBOARD, "总览", Icons.Outlined.Home),
         NavigationItem(MainSection.STUDY, "学习", Icons.Outlined.School),
+        NavigationItem(MainSection.REVIEW, "复习", Icons.Outlined.Refresh),
         NavigationItem(MainSection.LIBRARY, "词库", Icons.AutoMirrored.Outlined.List),
         NavigationItem(MainSection.INSIGHTS, "趋势", Icons.Outlined.BarChart),
         NavigationItem(MainSection.SETTINGS, "设置", Icons.Outlined.Settings),
@@ -180,7 +217,17 @@ private fun AppNavigation(selected: MainSection, onSelected: (MainSection) -> Un
             NavigationBarItem(
                 selected = selected == item.section,
                 onClick = { onSelected(item.section) },
-                icon = { Icon(item.icon, contentDescription = item.label) },
+                icon = {
+                    BadgedBox(
+                        badge = {
+                            if (item.section == MainSection.REVIEW && dueCount > 0) {
+                                Badge { Text(if (dueCount > 99) "99+" else dueCount.toString()) }
+                            }
+                        },
+                    ) {
+                        Icon(item.icon, contentDescription = item.label)
+                    }
+                },
                 label = { Text(item.label, maxLines = 1) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = BrandTeal,
@@ -199,7 +246,7 @@ private data class NavigationItem(
 )
 
 @Composable
-private fun DashboardScreen(state: MainUiState, onStart: () -> Unit) {
+private fun DashboardScreen(state: MainUiState, onStudy: () -> Unit, onReview: () -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -210,7 +257,7 @@ private fun DashboardScreen(state: MainUiState, onStart: () -> Unit) {
         item { DashboardStats(state.dashboard) }
         item {
             Button(
-                onClick = onStart,
+                onClick = if (state.dashboard.dueNow > 0) onReview else onStudy,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
             ) {
                 Icon(Icons.Outlined.School, contentDescription = null)
@@ -305,15 +352,18 @@ private fun StudyScreen(
     revealed: Boolean,
     onReveal: () -> Unit,
     onRate: (ReviewRating) -> Unit,
+    title: String,
+    emptyTitle: String,
+    emptyMessage: String,
 ) {
     if (card == null) {
-        EmptyState(Icons.Outlined.CheckCircle, "当前复习已完成", "下一批内容会按记忆曲线到期")
+        EmptyState(Icons.Outlined.CheckCircle, emptyTitle, emptyMessage)
         return
     }
     Column(
         modifier = Modifier.fillMaxSize().padding(20.dp),
     ) {
-        PageHeader("学习卡", card.levels.sorted().joinToString(" / "))
+        PageHeader(title, card.levels.sorted().joinToString(" / "))
         Spacer(Modifier.height(12.dp))
         Surface(
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -349,6 +399,87 @@ private fun StudyScreen(
             }
         }
     }
+}
+
+@Composable
+private fun ReviewScreen(
+    state: MainUiState,
+    onStart: () -> Unit,
+    onReveal: () -> Unit,
+    onRate: (ReviewRating) -> Unit,
+) {
+    if (!state.reviewSessionStarted) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            PageHeader("复习", "按掌握权重抽取已学单词")
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(8.dp),
+                border = CardDefaults.outlinedCardBorder(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("已学 ${state.learntWordCount} 词", style = MaterialTheme.typography.titleMedium, color = Ink)
+                    Text(
+                        "本轮 ${minOf(state.reviewBatchSize, state.learntWordCount)} 词 · 到期 ${state.dashboard.dueNow} 词",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MutedInk,
+                    )
+                    Button(
+                        onClick = onStart,
+                        enabled = state.learntWordCount > 0,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    ) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("开始复习")
+                    }
+                }
+            }
+            if (state.learntWordCount == 0) {
+                EmptyState(Icons.Outlined.School, "暂无已学词", "先在学习中完成至少一个单词的评分")
+            }
+        }
+        return
+    }
+    if (state.reviewCard == null) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = BusinessGreen, modifier = Modifier.size(52.dp))
+            Spacer(Modifier.height(12.dp))
+            Text("本轮复习完成", style = MaterialTheme.typography.headlineMedium, color = Ink)
+            Text(
+                "已完成 ${state.reviewSessionSize} 个单词",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MutedInk,
+            )
+            Spacer(Modifier.height(18.dp))
+            Button(onClick = onStart, enabled = state.learntWordCount > 0) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("再复习一轮")
+            }
+        }
+        return
+    }
+    val completed = state.reviewSessionSize - state.reviewQueue.size
+    StudyScreen(
+        card = state.reviewCard,
+        revealed = state.reviewAnswerRevealed,
+        onReveal = onReveal,
+        onRate = onRate,
+        title = "复习卡 ${completed + 1} / ${state.reviewSessionSize}",
+        emptyTitle = "本轮复习完成",
+        emptyMessage = "可再次主动开始复习",
+    )
 }
 
 @Composable
@@ -630,7 +761,13 @@ private fun ForecastBars(forecast: List<ForecastDay>) {
 }
 
 @Composable
-private fun SettingsScreen(fontScale: Float, onFontScaleChange: (Float) -> Unit) {
+private fun SettingsScreen(
+    fontScale: Float,
+    onFontScaleChange: (Float) -> Unit,
+    learntWordCount: Int,
+    reviewBatchSize: Int,
+    onReviewBatchSizeChange: (Int) -> Unit,
+) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -657,6 +794,30 @@ private fun SettingsScreen(fontScale: Float, onFontScaleChange: (Float) -> Unit)
                     Text("90%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
                     Text("140%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
                 }
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(8.dp),
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("每轮复习数量", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (learntWordCount == 0) "暂无已学词" else "$reviewBatchSize / $learntWordCount",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = BrandTeal,
+                    )
+                }
+                Slider(
+                    value = reviewBatchSize.coerceAtMost(maxOf(1, learntWordCount)).toFloat(),
+                    onValueChange = { onReviewBatchSizeChange(it.toInt()) },
+                    enabled = learntWordCount > 0,
+                    valueRange = 1f..maxOf(1, learntWordCount).toFloat(),
+                    steps = maxOf(0, learntWordCount - 2),
+                )
             }
         }
         Surface(

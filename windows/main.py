@@ -11,6 +11,7 @@ from application.services import LearningService
 from infrastructure.catalog import CatalogLoader
 from infrastructure.csv_importer import CsvVocabularyImporter
 from infrastructure.repository import JsonLearningRepository
+from infrastructure.words_learnt_repository import JsonWordsLearntRepository
 from presentation.app import LexiTrackApp, run_gui_smoke
 
 
@@ -49,7 +50,12 @@ def build_app(data_dir: Path) -> LexiTrackApp:
     loader = CatalogLoader(resource_root() / "shared" / "content" / "catalog.json")
     catalog = loader.load()
     repository = JsonLearningRepository(data_dir, catalog)
-    service = LearningService(repository, CsvVocabularyImporter())
+    words_learnt_repository = JsonWordsLearntRepository(data_dir)
+    service = LearningService(
+        repository,
+        CsvVocabularyImporter(),
+        words_learnt_repository,
+    )
     return LexiTrackApp(
         service=service,
         data_dir=data_dir,

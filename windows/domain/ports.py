@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .models import ReviewState, VocabularyEntry
+from .models import LearntWord, ReviewState, VocabularyEntry
 
 
 class LearningRepository(Protocol):
@@ -23,3 +23,17 @@ class LearningRepository(Protocol):
     def get_font_scale(self) -> float: ...
 
     def set_font_scale(self, scale: float) -> None: ...
+
+    def get_review_batch_size(self) -> int: ...
+
+    def set_review_batch_size(self, size: int) -> None: ...
+
+
+class WordsLearntRepository(Protocol):
+    def all_learnt_words(self) -> list[LearntWord]: ...
+
+    def learnt_word(self, word_id: str) -> LearntWord | None: ...
+
+    def save_learnt_word(self, word: LearntWord) -> None: ...
+
+    def save_learnt_words(self, words: list[LearntWord]) -> int: ...

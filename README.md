@@ -2,6 +2,8 @@
 
 LexiTrack 是一个离线优先的 CET-4/CET-6 英语学习软件 monorepo，同时交付 Windows 与 Android 客户端。两个客户端使用相同的词库版本、CSV 契约、记忆曲线版本和功能清单，并在同一提交中推进。
 
+`v0.2.0` 新增独立复习入口：学习评分过的词会写入本地 `Words_Learnt`，主动复习按掌握权重无放回抽取；应用运行期间会按现有记忆排期提醒到期复习，设置中可调整每轮复习数量。
+
 ## 目录
 
 ```text
@@ -16,7 +18,7 @@ tools/                   数据生成、质量检查和双端同步检查
 
 ## 下载预发布版
 
-GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 同时提供 Windows x64 便携 EXE 和 Android 8.0+ APK。`v0.1.0` 是开发预览版：Windows EXE 尚未进行 Authenticode 签名，Android APK 使用 Android Debug 证书签名，不用于 Microsoft Store 或应用商店分发。每个下载包都附带由同一 GitHub Actions run 生成的 `SHA256SUMS.txt`。
+GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 同时提供 Windows x64 便携 EXE 和 Android 8.0+ APK。`v0.2.0` 是开发预览版：Windows EXE 尚未进行 Authenticode 签名，Android APK 使用 Android Debug 证书签名，不用于 Microsoft Store 或应用商店分发。每个下载包都附带由同一 GitHub Actions run 生成的 `SHA256SUMS.txt`。
 
 两端学习进度均只保存在本机，升级或卸载前请阅读各客户端 README 的数据说明。
 

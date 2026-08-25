@@ -6,7 +6,7 @@ Windows 客户端使用 Python 3.10+ 标准库与 Tkinter，核心学习完全�
 
 在 GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 下载 `LexiTrack.exe` 与同包的 `SHA256SUMS.txt`。当前预发布包支持 Windows 10/11 x64，是无需安装的便携 EXE；双击即可运行。该文件尚未进行 Authenticode 签名，Windows 可能显示“未知发布者”或 SmartScreen 提示，请只使用本仓库 Release 中附带校验和的文件。
 
-升级时直接替换 EXE。删除 EXE 即可卸载程序，但不会自动删除 `%LOCALAPPDATA%\LexiTrack\learning-state.json` 中的学习记录；确认不再需要后可手动删除该目录。
+升级时直接替换 EXE。删除 EXE 即可卸载程序，但不会自动删除 `%LOCALAPPDATA%\LexiTrack` 中的学习记录、`Words_Learnt` 和设置；确认不再需要后可手动删除该目录。
 
 ## 运行
 
@@ -16,7 +16,7 @@ Windows 客户端使用 Python 3.10+ 标准库与 Tkinter，核心学习完全�
 python .\windows\main.py
 ```
 
-学习记录和设置默认保存在 `%LOCALAPPDATA%\LexiTrack\learning-state.json`。测试或便携运行可以指定目录：
+学习记录和设置默认保存在 `%LOCALAPPDATA%\LexiTrack\learning-state.json`，已学词与权重保存在同目录的 `Words_Learnt.json`。测试或便携运行可以指定目录：
 
 ```powershell
 python .\windows\main.py --data-dir D:\LexiTrackData
@@ -28,10 +28,11 @@ python .\windows\main.py --data-dir D:\LexiTrackData
 
 - 总览：待复习、未学习、今日完成、可学习词条与 7 天负载。
 - 学习卡：“查看答案”和忘记、模糊、认识、很熟四档评分固定在单词下方，三组双语例句位于其下；学习页不使用滚轮或页面滚动。
+- 复习：侧栏可主动开始一轮复习，按 `100% / 80% / 20% / 5%` 相对权重从已学词中无放回抽取；应用运行期间每分钟检查到期排期并提醒。
 - 词库：按单词、释义和标签搜索，显示词书与下次复习时间。
 - CSV v1：逐行导入并报告成功、跳过、失败和标准错误码。
 - 记忆分析：查看未来 7/30 天到期量与平均遗忘曲线。
-- 字体设置：在 90% 至 140% 间即时调整并持久化。
+- 设置：字体可在 90% 至 140% 间调整；每轮复习数量可在 1 到已学词总数之间调整并持久化。
 
 ## CSV v1 格式
 
@@ -79,4 +80,4 @@ python .\windows\main.py --smoke-test --data-dir .\windows\.smoke-data
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-`requirements-build.txt` 固定 CI 使用的 PyInstaller 版本。`build.ps1` 会先运行测试，再生成带 `0.1.0` 版本资源的 `windows/dist/LexiTrack.exe`，并将当前共享词库和许可证一起打包。
+`requirements-build.txt` 固定 CI 使用的 PyInstaller 版本。`build.ps1` 会先运行测试，再生成带 `0.2.0` 版本资源的 `windows/dist/LexiTrack.exe`，并将当前共享词库和许可证一起打包。
