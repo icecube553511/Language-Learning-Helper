@@ -372,7 +372,7 @@ private fun StudyScreen(
             border = CardDefaults.outlinedCardBorder(),
         ) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(card.word, style = MaterialTheme.typography.displayLarge, color = Ink)
@@ -508,22 +508,10 @@ private fun RevealedCardContent(
             )
         }
         Spacer(Modifier.height(6.dp))
-        Text("本次掌握程度", style = MaterialTheme.typography.labelMedium, color = Ink)
-        Spacer(Modifier.height(4.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN) }
-            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD) }
-            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD) }
-            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY) }
-        }
-        Spacer(Modifier.height(6.dp))
         HorizontalDivider(color = DividerColor)
         Column(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            verticalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             card.examples.take(3).forEachIndexed { index, example ->
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -544,6 +532,25 @@ private fun RevealedCardContent(
                 }
             }
         }
+        Spacer(Modifier.weight(1f))
+        HorizontalDivider(color = DividerColor)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "本次掌握程度",
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.labelMedium,
+            color = Ink,
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN) }
+            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD) }
+            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD) }
+            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY) }
+        }
     }
 }
 
@@ -551,12 +558,12 @@ private fun RevealedCardContent(
 private fun RatingButton(label: String, color: Color, modifier: Modifier, onClick: () -> Unit) {
     Button(
         onClick = onClick,
-        modifier = modifier.heightIn(min = 46.dp),
+        modifier = modifier.heightIn(min = 58.dp),
         colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.White),
         shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 10.dp),
     ) {
-        Text(label, maxLines = 1)
+        Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
 }
 
