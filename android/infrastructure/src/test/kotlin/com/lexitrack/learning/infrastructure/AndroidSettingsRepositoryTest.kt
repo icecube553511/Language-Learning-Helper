@@ -76,11 +76,13 @@ class AndroidSettingsRepositoryTest {
         repository.setStudyOrder("alphabetical")
         repository.setStudyLevels(setOf("cet4", "cet6"))
         repository.setReviewLevels(setOf("cet6"))
+        repository.setReminderLevels(setOf("cet4", "custom"))
 
         val loaded = AndroidSettingsRepository(context).settings.value
         assertEquals("alphabetical", loaded.studyOrder)
         assertEquals(setOf("CET4", "CET6"), loaded.studyLevels)
         assertEquals(setOf("CET6"), loaded.reviewLevels)
+        assertEquals(setOf("CET4", "CUSTOM"), loaded.reminderLevels)
     }
 
     private fun clearPreferences() {

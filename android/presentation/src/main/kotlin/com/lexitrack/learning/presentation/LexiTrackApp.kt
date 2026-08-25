@@ -152,12 +152,15 @@ fun LexiTrackApp(
                         onReviewBatchSizeChange = viewModel::setReviewBatchSize,
                         reminderEnabled = state.reminderEnabled,
                         reminderIntervalMinutes = state.reminderIntervalMinutes,
+                        reminderLevels = state.reminderLevels,
+                        availableLevels = state.availableLevels,
                         studyOrder = state.studyOrder,
                         onStudyOrderChange = viewModel::setStudyOrder,
                         onReminderSettingsChange = { enabled, interval ->
                             onReminderSettingsRequested(enabled, interval)
                             viewModel.setReminderSettings(enabled, interval)
                         },
+                        onReminderLevelsChange = viewModel::setReminderLevels,
                         onPreviewReminder = viewModel::previewWordReminder,
                     )
                 }
@@ -949,7 +952,10 @@ private fun SettingsScreen(
     onReviewBatchSizeChange: (Int) -> Unit,
     reminderEnabled: Boolean,
     reminderIntervalMinutes: Float,
+    reminderLevels: Set<String>,
+    availableLevels: List<String>,
     onReminderSettingsChange: (Boolean, Float) -> Unit,
+    onReminderLevelsChange: (Set<String>) -> Unit,
     onPreviewReminder: () -> Unit,
     studyOrder: String,
     onStudyOrderChange: (String) -> Unit,
@@ -1054,6 +1060,12 @@ private fun SettingsScreen(
                         onCheckedChange = { reminderEnabledDraft = it },
                     )
                 }
+                LevelFilterRow(
+                    title = "提醒词汇组",
+                    selected = reminderLevels,
+                    available = availableLevels,
+                    onChange = onReminderLevelsChange,
+                )
                 OutlinedTextField(
                     value = reminderIntervalDraft,
                     onValueChange = {

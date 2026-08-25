@@ -207,11 +207,15 @@ class SearchVocabularyUseCase(
 class GetReminderCardUseCase(
     private val vocabulary: VocabularyRepository,
     private val reviews: ReviewRepository,
+    private val settings: SettingsRepository,
     private val time: TimeProvider,
     private val randomUnit: () -> Double = { Random.Default.nextDouble() },
 ) {
     operator fun invoke(excludeId: String = ""): VocabularyEntry? {
-        val words = vocabulary.words.value
+        val selectedLevels = settings.settings.value.reminderLevels
+        val words = vocabulary.words.value.filter { entry ->
+            selectedLevels.isEmpty() || entry.levels.any { it.uppercase() in selectedLevels }
+        }
         if (words.isEmpty()) return null
         val now = time.nowUtcSeconds()
         val dueIds = reviews.schedules.value
@@ -283,6 +287,16 @@ class UpdateStudyLevelsUseCase(private val settings: SettingsRepository) {
 class UpdateReviewLevelsUseCase(private val settings: SettingsRepository) {
     suspend operator fun invoke(levels: Set<String>) {
         settings.setReviewLevels(levels.map(String::uppercase).toSet())
+    }
+}
+
+class UpdateReminderLevelsUseCase(private val settings: SettingsRepository) {
+    suspend operator fun invoke(levels: Set<String>) {
+        val normalized = levels.map(String::uppercase).toSet()
+        require(normalized.all { it in SUPPORTED_VOCABULARY_LEVELS }) {
+            "提醒词汇组只能包含 CET4、CET6 或 custom"
+        }
+        settings.setReminderLevels(normalized)
     }
 }
 
@@ -359,7 +373,9 @@ data class AppUseCases(
     val updateStudyOrder: UpdateStudyOrderUseCase,
     val updateStudyLevels: UpdateStudyLevelsUseCase,
     val updateReviewLevels: UpdateReviewLevelsUseCase,
+    val updateReminderLevels: UpdateReminderLevelsUseCase,
     val updateReminderSettings: UpdateReminderSettingsUseCase,
+    val reminderCard: GetReminderCardUseCase,
     val dashboard: BuildDashboardUseCase,
     val forecast: BuildForecastUseCase,
     val words: StateFlow<List<VocabularyEntry>>,

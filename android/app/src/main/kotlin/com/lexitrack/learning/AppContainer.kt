@@ -6,6 +6,7 @@ import com.lexitrack.learning.application.BuildDashboardUseCase
 import com.lexitrack.learning.application.BuildForecastUseCase
 import com.lexitrack.learning.application.BuildReviewSessionUseCase
 import com.lexitrack.learning.application.GetNextCardUseCase
+import com.lexitrack.learning.application.GetReminderCardUseCase
 import com.lexitrack.learning.application.ImportVocabularyUseCase
 import com.lexitrack.learning.application.InitializeAppUseCase
 import com.lexitrack.learning.application.RateWordUseCase
@@ -14,6 +15,7 @@ import com.lexitrack.learning.application.SearchVocabularyUseCase
 import com.lexitrack.learning.application.UpdateFontScaleUseCase
 import com.lexitrack.learning.application.UpdateReviewBatchSizeUseCase
 import com.lexitrack.learning.application.UpdateReminderSettingsUseCase
+import com.lexitrack.learning.application.UpdateReminderLevelsUseCase
 import com.lexitrack.learning.application.UpdateStudyLevelsUseCase
 import com.lexitrack.learning.application.UpdateReviewLevelsUseCase
 import com.lexitrack.learning.application.UpdateStudyOrderUseCase
@@ -46,6 +48,8 @@ class AppContainer(context: Context) {
         updateStudyOrder = UpdateStudyOrderUseCase(settings),
         updateStudyLevels = UpdateStudyLevelsUseCase(settings),
         updateReviewLevels = UpdateReviewLevelsUseCase(settings),
+        updateReminderLevels = UpdateReminderLevelsUseCase(settings),
+        reminderCard = GetReminderCardUseCase(vocabulary, reviews, settings, time),
         dashboard = BuildDashboardUseCase(vocabulary, reviews, learntWords, time),
         forecast = BuildForecastUseCase(vocabulary, reviews, time),
         words = vocabulary.words,

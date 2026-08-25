@@ -160,6 +160,20 @@ class LearningService:
             setter(normalized)
         return normalized
 
+    def reminder_levels(self) -> set[str]:
+        getter = getattr(self.repository, "get_reminder_levels", None)
+        return set(getter()) if getter else set()
+
+    def set_reminder_levels(self, levels: set[str]) -> set[str]:
+        normalized = {str(item).strip().upper() for item in levels if str(item).strip()}
+        invalid = normalized - {"CET4", "CET6", "CUSTOM"}
+        if invalid:
+            raise ValueError("提醒词汇组只能包含 CET4、CET6 或 custom")
+        setter = getattr(self.repository, "set_reminder_levels", None)
+        if setter:
+            setter(normalized)
+        return normalized
+
     def available_levels(self) -> list[str]:
         levels = {level for entry in self.repository.all_entries() for level in entry.levels}
         return sorted(levels or {"CUSTOM"})
@@ -284,7 +298,10 @@ class LearningService:
         rng: random.Random | None = None,
         now_utc: float | None = None,
     ) -> VocabularyEntry | None:
-        entries = self.repository.all_entries()
+        entries = [
+            entry for entry in self.repository.all_entries()
+            if self._matches_levels(entry, self.reminder_levels())
+        ]
         if not entries:
             return None
         now = time.time() if now_utc is None else now_utc

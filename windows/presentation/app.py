@@ -28,8 +28,8 @@ BORDER = "#DDE3E8"
 class FontManager:
     BASE_SIZES = {
         "LexiChart": 9,
-        "LexiExample": 7,
-        "LexiMeaningCompact": 7,
+        "LexiExample": 12,
+        "LexiMeaningCompact": 11,
         "LexiSmall": 11,
         "LexiBody": 13,
         "LexiBodyBold": 13,
@@ -51,9 +51,7 @@ class FontManager:
     def apply(self, scale: float):
         for name, base_size in self.BASE_SIZES.items():
             if name == "LexiExample":
-                size = 6 if scale >= 1.3 else 7
-            elif name == "LexiMeaningCompact":
-                size = 7
+                size = min(14, max(11, round(base_size * scale)))
             else:
                 size = max(8, round(base_size * scale))
             self.fonts[name].configure(size=size)
@@ -76,7 +74,7 @@ class LexiTrackApp(tk.Tk):
         self.catalog_error = catalog_error
         self.title("LexiTrack 词程")
         self.geometry("1220x800")
-        self.minsize(960, 640)
+        self.minsize(960, 700)
         self.configure(bg=BG)
         self.font_manager = FontManager(self, self.service.font_scale())
         self._configure_styles()
@@ -290,12 +288,16 @@ class LexiTrackApp(tk.Tk):
         )
         self.study_meaning.pack()
         examples_area = tk.Frame(self.answer_panel, bg=SURFACE)
-        examples_area.pack(fill=tk.X, padx=32)
+        examples_area.pack(fill=tk.BOTH, expand=True, padx=32, pady=(6, 2))
         self.study_examples_area = examples_area
         self.example_labels: list[tk.Label] = []
         for index in range(3):
+            row = tk.Frame(examples_area, bg=SURFACE)
+            examples_area.grid_rowconfigure(index, weight=1, uniform="study-example")
+            row.grid(row=index, column=0, sticky="nsew")
+            examples_area.grid_columnconfigure(0, weight=1)
             label = tk.Label(
-                examples_area,
+                row,
                 text="",
                 bg=SURFACE,
                 fg=TEXT,
@@ -305,9 +307,8 @@ class LexiTrackApp(tk.Tk):
                 anchor="center",
                 padx=4,
                 pady=0,
-                height=2,
             )
-            label.pack(fill=tk.X)
+            label.pack(fill=tk.BOTH, expand=True)
             self.example_labels.append(label)
         self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
 
@@ -360,12 +361,16 @@ class LexiTrackApp(tk.Tk):
         self.review_meaning = tk.Label(self.review_answer_panel, text="", bg=SURFACE, fg=TEXT, font="LexiBodyBold", wraplength=780, justify="center", height=1)
         self.review_meaning.pack()
         examples_area = tk.Frame(self.review_answer_panel, bg=SURFACE)
-        examples_area.pack(fill=tk.X, padx=32)
+        examples_area.pack(fill=tk.BOTH, expand=True, padx=32, pady=(6, 2))
         self.review_examples_area = examples_area
         self.review_example_labels: list[tk.Label] = []
         for index in range(3):
-            label = tk.Label(examples_area, text="", bg=SURFACE, fg=TEXT, font="LexiExample", wraplength=680, justify="center", anchor="center", padx=4, pady=0, height=2)
-            label.pack(fill=tk.X)
+            row = tk.Frame(examples_area, bg=SURFACE)
+            examples_area.grid_rowconfigure(index, weight=1, uniform="review-example")
+            row.grid(row=index, column=0, sticky="nsew")
+            examples_area.grid_columnconfigure(0, weight=1)
+            label = tk.Label(row, text="", bg=SURFACE, fg=TEXT, font="LexiExample", wraplength=680, justify="center", anchor="center", padx=4, pady=0)
+            label.pack(fill=tk.BOTH, expand=True)
             self.review_example_labels.append(label)
         self.refresh_review_page()
 
@@ -502,6 +507,15 @@ class LexiTrackApp(tk.Tk):
         ttk.Entry(interval_row, textvariable=self.reminder_interval_var, width=12).pack(side=tk.LEFT, padx=(10, 6))
         tk.Label(interval_row, text="min", bg=SURFACE, fg=TEXT, font="LexiBodyBold").pack(side=tk.LEFT)
 
+        reminder_filter = tk.Frame(inner, bg=SURFACE)
+        reminder_filter.pack(fill=tk.X, pady=(18, 0))
+        self.reminder_filter_vars = self._build_level_filters(
+            reminder_filter,
+            "弹窗词汇组",
+            self.service.reminder_levels,
+            self._save_reminder_levels,
+        )
+
         self.reminder_status = tk.Label(
             inner,
             text="",
@@ -624,7 +638,12 @@ class LexiTrackApp(tk.Tk):
         return variables
 
     def _selected_levels(self, variables: dict[str, tk.BooleanVar]) -> set[str]:
-        return {level for level, variable in variables.items() if variable.get()}
+        selected = {level for level, variable in variables.items() if variable.get()}
+        if selected:
+            return selected
+        for variable in variables.values():
+            variable.set(True)
+        return set(variables)
 
     def _save_study_levels(self):
         self.service.set_study_levels(self._selected_levels(self.study_filter_vars))
@@ -634,6 +653,9 @@ class LexiTrackApp(tk.Tk):
         self.service.set_review_levels(self._selected_levels(self.review_filter_vars))
         self.review_queue = []
         self.refresh_review_page()
+
+    def _save_reminder_levels(self):
+        self.service.set_reminder_levels(self._selected_levels(self.reminder_filter_vars))
 
     def save_study_order(self):
         self.service.set_study_order(self.study_order_var.get())
@@ -818,6 +840,7 @@ class LexiTrackApp(tk.Tk):
         try:
             interval = float(self.reminder_interval_var.get().strip())
             self.service.set_reminder_settings(self.reminder_enabled_var.get(), interval)
+            self.service.set_reminder_levels(self._selected_levels(self.reminder_filter_vars))
         except (TypeError, ValueError) as exc:
             message = str(exc) or "提醒间隔必须是有效数字"
             messagebox.showerror("设置有误", message, parent=self)
@@ -1126,10 +1149,16 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         pass
     app.update()
     visited = []
+    reminder_filters_ready = False
     for page in ("dashboard", "study", "review", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
         app.update()
         visited.append(page)
+        if page == "reminder":
+            reminder_filters_ready = (
+                set(app.reminder_filter_vars) == {"CET4", "CET6", "CUSTOM"}
+                and all(variable.get() for variable in app.reminder_filter_vars.values())
+            )
     app.show_page("review")
     app.update()
     review_header_ready = (
@@ -1198,7 +1227,14 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         top >= answer_top - 2 and bottom <= answer_bottom + 2 and bottom <= window_bottom + 2
         for top, bottom in example_bounds
     )
-    examples_compact = app.study_examples_area.winfo_height() <= 160
+    example_font = tkfont.nametofont("LexiExample")
+    examples_expanded = (
+        app.study_examples_area.winfo_height() >= app.answer_panel.winfo_height() * 0.65
+        and all(
+            label.winfo_height() >= 24
+            for label in app.example_labels
+        )
+    )
     answers_above_ratings = (
         answer_top >= phonetic_bottom - 2
         and answer_bottom <= rating_top + 2
@@ -1225,7 +1261,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     max_scale_examples_bottom = max_scale_examples_top + app.study_examples_area.winfo_height()
     max_scale_example_font = tkfont.nametofont("LexiExample")
     max_scale_examples_visible = all(
-        label.winfo_height() >= max_scale_example_font.metrics("linespace") * 2 - 2
+        label.winfo_height() >= 24
         for label in app.example_labels
     )
     max_scale_example_bottoms = [
@@ -1328,7 +1364,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
                 and label.cget("bg") == SURFACE
                 and label.cget("justify") == "center"
                 and abs(label.winfo_rootx() + label.winfo_width() / 2 - review_max_scale_answer_center) <= 3
-                and label.winfo_height() >= review_max_scale_example_font.metrics("linespace") * 2 - 2
+                and label.winfo_height() >= 24
                 for label in app.review_example_labels
             )
             and all(
@@ -1361,13 +1397,14 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and study_header_centered
             and answers_above_ratings
             and examples_visible
-            and examples_compact
+            and examples_expanded
             and examples_centered_stack
             and rating_buttons_visible
             and max_scale_button_fit
             and max_scale_layout_fit
             and max_scale_examples_fit
             and review_header_ready
+            and reminder_filters_ready
             and review_card_layout_ready
             and review_max_scale_layout_ready
         ),
@@ -1381,7 +1418,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "answerBounds": [answer_top, answer_bottom],
         "exampleBounds": example_bounds,
         "examplesVisible": examples_visible,
-        "examplesCompact": examples_compact,
+        "examplesExpanded": examples_expanded,
         "examplesCenteredStack": examples_centered_stack,
         "studyHeaderCentered": study_header_centered,
         "revealAboveAnswerArea": reveal_above_answer_area,
@@ -1404,6 +1441,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "maxScaleExampleBottoms": max_scale_example_bottoms,
         "maxScaleExamplesFit": max_scale_examples_fit,
         "reviewHeaderReady": review_header_ready,
+        "reminderFiltersReady": reminder_filters_ready,
         "reviewCardLayoutReady": review_card_layout_ready,
         "reviewExampleBounds": review_example_bounds,
         "reviewMaxScaleLayoutReady": review_max_scale_layout_ready,

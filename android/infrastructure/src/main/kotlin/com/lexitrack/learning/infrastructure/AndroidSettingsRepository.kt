@@ -7,6 +7,7 @@ import com.lexitrack.learning.application.DEFAULT_REMINDER_INTERVAL_MINUTES
 import com.lexitrack.learning.application.MAX_REMINDER_INTERVAL_MINUTES
 import com.lexitrack.learning.application.MIN_REMINDER_INTERVAL_MINUTES
 import com.lexitrack.learning.application.STUDY_ORDER_RANDOM
+import com.lexitrack.learning.application.SUPPORTED_VOCABULARY_LEVELS
 import com.lexitrack.learning.application.UserSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +52,12 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         _settings.value = _settings.value.copy(reviewLevels = safeLevels)
     }
 
+    override suspend fun setReminderLevels(levels: Set<String>) {
+        val safeLevels = levels.map(String::uppercase).filter { it in SUPPORTED_VOCABULARY_LEVELS }.toSet()
+        preferences.edit().putStringSet(KEY_REMINDER_LEVELS, safeLevels).apply()
+        _settings.value = _settings.value.copy(reminderLevels = safeLevels)
+    }
+
     override suspend fun setReminderEnabled(enabled: Boolean) {
         preferences.edit().putBoolean(KEY_REMINDER_ENABLED, enabled).apply()
         _settings.value = _settings.value.copy(reminderEnabled = enabled)
@@ -76,6 +83,8 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
             .map(String::uppercase).toSet(),
         reviewLevels = preferences.getStringSet(KEY_REVIEW_LEVELS, emptySet()).orEmpty()
             .map(String::uppercase).toSet(),
+        reminderLevels = preferences.getStringSet(KEY_REMINDER_LEVELS, emptySet()).orEmpty()
+            .map(String::uppercase).filter { it in SUPPORTED_VOCABULARY_LEVELS }.toSet(),
         reminderEnabled = preferences.getBoolean(KEY_REMINDER_ENABLED, false),
         reminderIntervalMinutes = preferences
             .getFloat(KEY_REMINDER_INTERVAL_MINUTES, DEFAULT_REMINDER_INTERVAL_MINUTES)
@@ -89,6 +98,7 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         const val KEY_STUDY_ORDER = "study_order"
         const val KEY_STUDY_LEVELS = "study_levels"
         const val KEY_REVIEW_LEVELS = "review_levels"
+        const val KEY_REMINDER_LEVELS = "reminder_levels"
         const val KEY_REMINDER_ENABLED = "reminder_enabled"
         const val KEY_REMINDER_INTERVAL_MINUTES = "reminder_interval_minutes"
     }

@@ -22,6 +22,7 @@ data class UserSettings(
     val studyOrder: String = STUDY_ORDER_RANDOM,
     val studyLevels: Set<String> = emptySet(),
     val reviewLevels: Set<String> = emptySet(),
+    val reminderLevels: Set<String> = emptySet(),
     val reminderEnabled: Boolean = false,
     val reminderIntervalMinutes: Float = DEFAULT_REMINDER_INTERVAL_MINUTES,
 )
@@ -29,6 +30,7 @@ data class UserSettings(
 const val DEFAULT_REVIEW_BATCH_SIZE = 20
 const val STUDY_ORDER_ALPHABETICAL = "alphabetical"
 const val STUDY_ORDER_RANDOM = "random"
+val SUPPORTED_VOCABULARY_LEVELS = setOf("CET4", "CET6", "CUSTOM")
 const val DEFAULT_REMINDER_INTERVAL_MINUTES = 30.0f
 const val MIN_REMINDER_INTERVAL_MINUTES = 0.5f
 const val MAX_REMINDER_INTERVAL_MINUTES = 120.0f
@@ -63,6 +65,7 @@ interface SettingsRepository {
     suspend fun setStudyOrder(order: String)
     suspend fun setStudyLevels(levels: Set<String>)
     suspend fun setReviewLevels(levels: Set<String>)
+    suspend fun setReminderLevels(levels: Set<String>)
     suspend fun setReminderEnabled(enabled: Boolean)
     suspend fun setReminderIntervalMinutes(minutes: Float)
 }

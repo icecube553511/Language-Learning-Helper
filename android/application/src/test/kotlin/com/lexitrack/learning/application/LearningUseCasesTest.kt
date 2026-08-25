@@ -180,6 +180,43 @@ class LearningUseCasesTest {
     }
 
     @Test
+    fun `reminder level filter is independent and applies before due-word preference`() = runTest {
+        val cet4 = word("cet4-reminder").copy(levels = setOf("CET4"))
+        val cet6 = word("cet6-reminder").copy(levels = setOf("CET6"))
+        val custom = word("custom-reminder").copy(levels = setOf("CUSTOM"))
+        val localVocabulary = FakeVocabularyRepository(listOf(cet4, cet6, custom))
+        val settings = FakeSettingsRepository(
+            UserSettings(
+                studyLevels = setOf("CET4"),
+                reviewLevels = setOf("CET6"),
+                reminderLevels = setOf("CUSTOM"),
+            ),
+        )
+        reviews.scheduleFlow.value = mapOf(
+            cet4.id to ScheduleState(lastReviewedAtUtc = now - 100.0, dueAtUtc = now - 1.0),
+            cet6.id to ScheduleState(lastReviewedAtUtc = now - 100.0, dueAtUtc = now - 1.0),
+        )
+        val useCase = GetReminderCardUseCase(
+            localVocabulary,
+            reviews,
+            settings,
+            time,
+            randomUnit = { 0.0 },
+        )
+
+        assertEquals(custom.id, useCase()?.id)
+        assertEquals(setOf("CET4"), settings.settings.value.studyLevels)
+        assertEquals(setOf("CET6"), settings.settings.value.reviewLevels)
+
+        UpdateReminderLevelsUseCase(settings)(setOf("cet4", "cet6"))
+        assertEquals(setOf("CET4", "CET6"), settings.settings.value.reminderLevels)
+        assertEquals(cet6.id, useCase(excludeId = cet4.id)?.id)
+        assertFailsWith<IllegalArgumentException> {
+            UpdateReminderLevelsUseCase(settings)(setOf("CET4", "other"))
+        }
+    }
+
+    @Test
     fun `initialize migrates legacy review schedules with default weight`() = runTest {
         val wordId = words.first().id
         reviews.scheduleFlow.value = mapOf(
@@ -286,6 +323,10 @@ private class FakeSettingsRepository(
 
     override suspend fun setReviewLevels(levels: Set<String>) {
         settings.value = settings.value.copy(reviewLevels = levels)
+    }
+
+    override suspend fun setReminderLevels(levels: Set<String>) {
+        settings.value = settings.value.copy(reminderLevels = levels)
     }
 
     override suspend fun setReminderEnabled(enabled: Boolean) {

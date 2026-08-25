@@ -38,6 +38,7 @@ class JsonLearningRepository:
             "studyOrder": DEFAULT_STUDY_ORDER,
             "studyLevels": [],
             "reviewLevels": [],
+            "reminderLevels": [],
             "reminderEnabled": False,
             "reminderIntervalMinutes": DEFAULT_REMINDER_INTERVAL_MINUTES,
         }
@@ -204,6 +205,12 @@ class JsonLearningRepository:
 
     def set_review_levels(self, levels: set[str]) -> None:
         self._set_levels("reviewLevels", levels)
+
+    def get_reminder_levels(self) -> set[str]:
+        return self._get_levels("reminderLevels")
+
+    def set_reminder_levels(self, levels: set[str]) -> None:
+        self._set_levels("reminderLevels", levels)
 
     def update_entry_labels(self, word_ids: set[str], level: str, tags: set[str]) -> int:
         normalized_ids = {str(item) for item in word_ids}

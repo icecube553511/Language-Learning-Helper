@@ -25,14 +25,15 @@ class ReminderReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             val scheduler = AndroidReminderScheduler(appContext)
             try {
-                val settings = AndroidSettingsRepository(appContext).settings.value
+                val settingsRepository = AndroidSettingsRepository(appContext)
+                val settings = settingsRepository.settings.value
                 if (intent.action == AndroidReminderScheduler.ACTION_BOOT || intent.action == Intent.ACTION_TIMEZONE_CHANGED) {
                     if (settings.reminderEnabled) scheduler.schedule(settings.reminderIntervalMinutes)
                     return@launch
                 }
                 if (!settings.reminderEnabled) return@launch
                 if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) {
-                    AndroidSettingsRepository(appContext).setReminderEnabled(false)
+                    settingsRepository.setReminderEnabled(false)
                     scheduler.cancel()
                     return@launch
                 }
@@ -44,6 +45,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 val entry = GetReminderCardUseCase(
                     vocabulary = vocabulary,
                     reviews = reviews,
+                    settings = settingsRepository,
                     time = SystemTimeProvider(),
                 )(previousId)
                 if (entry != null) {

@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.random.Random
 
 enum class MainSection {
     DASHBOARD,
@@ -47,6 +46,7 @@ data class MainUiState(
     val studyOrder: String = "random",
     val studyLevels: Set<String> = emptySet(),
     val reviewLevels: Set<String> = emptySet(),
+    val reminderLevels: Set<String> = emptySet(),
     val availableLevels: List<String> = listOf("CET4", "CET6", "CUSTOM"),
     val searchQuery: String = "",
     val searchResults: List<VocabularyEntry> = emptyList(),
@@ -277,6 +277,12 @@ class MainViewModel(
         viewModelScope.launch { useCases.updateReviewLevels(normalized) }
     }
 
+    fun setReminderLevels(levels: Set<String>) {
+        val normalized = levels.map(String::uppercase).toSet()
+        _uiState.value = _uiState.value.copy(reminderLevels = normalized)
+        viewModelScope.launch { useCases.updateReminderLevels(normalized) }
+    }
+
     fun setReminderSettings(enabled: Boolean, intervalMinutes: Float) {
         if (intervalMinutes !in 0.5f..120.0f) {
             _uiState.value = _uiState.value.copy(
@@ -293,7 +299,7 @@ class MainViewModel(
     }
 
     fun previewWordReminder() {
-        showWordReminder(useCases.words.value, preview = true)
+        showWordReminder(preview = true)
     }
 
     fun showWordReminderById(wordId: String) {
@@ -350,7 +356,11 @@ class MainViewModel(
             studyOrder = settings.studyOrder,
             studyLevels = settings.studyLevels,
             reviewLevels = settings.reviewLevels,
-            availableLevels = useCases.words.value.flatMap { it.levels }.map(String::uppercase).toSet().ifEmpty { setOf("CET4", "CET6", "CUSTOM") }.sorted(),
+            reminderLevels = settings.reminderLevels,
+            availableLevels = (
+                setOf("CET4", "CET6", "CUSTOM") +
+                    useCases.words.value.flatMap { it.levels }.map(String::uppercase)
+                ).sorted(),
             reminderEnabled = settings.reminderEnabled,
             reminderIntervalMinutes = settings.reminderIntervalMinutes,
             reviewReminderMessage = reminder,
@@ -381,24 +391,21 @@ class MainViewModel(
         if (!appInForeground || !settings.reminderEnabled || words.isEmpty()) return
         wordReminderJob = viewModelScope.launch {
             delay((delayMinutes * 60_000).toLong().coerceAtLeast(1L))
-            showWordReminder(words, preview = false)
+            showWordReminder(preview = false)
+            if (appInForeground && useCases.settings.value.reminderEnabled) {
+                scheduleWordReminder(useCases.words.value, useCases.settings.value)
+            }
         }
     }
 
-    private fun showWordReminder(words: List<VocabularyEntry>, preview: Boolean) {
-        if (words.isEmpty()) {
+    private fun showWordReminder(preview: Boolean) {
+        val card = useCases.reminderCard(previousReminderWordId)
+        if (card == null) {
             if (preview) {
-                _uiState.value = _uiState.value.copy(transientMessage = "当前词库中没有可展示的单词。")
+                _uiState.value = _uiState.value.copy(transientMessage = "所选提醒词汇组中没有可展示的单词。")
             }
             return
         }
-        val now = System.currentTimeMillis() / 1000.0
-        val dueIds = useCases.schedules.value
-            .filterValues { it.lastReviewedAtUtc != null && it.dueAtUtc <= now }
-            .keys
-        val candidates = words.filter { it.id in dueIds }.ifEmpty { words }
-        val freshCandidates = candidates.filter { it.id != previousReminderWordId }.ifEmpty { candidates }
-        val card = freshCandidates[Random.nextInt(freshCandidates.size)]
         previousReminderWordId = card.id
         wordReminderIsPreview = preview
         _uiState.value = _uiState.value.copy(wordReminderCard = card)

@@ -69,7 +69,7 @@ class LearningServiceTests(unittest.TestCase):
         service.set_study_order("alphabetical")
         self.assertEqual(service.next_card().word_id, "alpha")
 
-    def test_study_and_review_level_filters_are_independent(self):
+    def test_study_review_and_reminder_level_filters_are_independent(self):
         cet4 = VocabularyEntry.create("four", "四级", sample_entry("four").examples, level="CET4")
         cet6 = VocabularyEntry.create("six", "六级", sample_entry("six").examples, level="CET6")
         repository = JsonLearningRepository(Path(self.temp.name), [cet4, cet6])
@@ -81,8 +81,13 @@ class LearningServiceTests(unittest.TestCase):
         service = LearningService(repository, words_learnt_repository=learnt_repository)
         service.set_study_levels({"CET6"})
         service.set_review_levels({"CET4"})
+        service.set_reminder_levels({"CET6"})
 
         self.assertEqual(service.study_levels(), {"CET6"})
+        self.assertEqual(service.reminder_levels(), {"CET6"})
+        self.assertEqual(service.reminder_card(rng=random.Random(0)).word_id, "six")
+        with self.assertRaises(ValueError):
+            service.set_reminder_levels({"OTHER"})
         self.assertEqual([entry.word_id for entry in service.start_review_session(count=20, rng=random.Random(0))], ["four"])
         service.set_review_levels({"CET4", "CET6"})
         self.assertEqual({entry.word_id for entry in service.start_review_session(count=20, rng=random.Random(0))}, {"four", "six"})
