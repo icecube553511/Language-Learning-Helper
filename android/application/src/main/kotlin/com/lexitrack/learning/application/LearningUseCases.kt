@@ -53,13 +53,25 @@ class InitializeAppUseCase(
 class GetNextCardUseCase(
     private val vocabulary: VocabularyRepository,
     private val learntWords: LearntWordsRepository,
+    private val settings: SettingsRepository,
+    private val randomUnit: () -> Double = { Random.Default.nextDouble() },
 ) {
     operator fun invoke(): VocabularyEntry? {
         val learntIds = learntWords.learntWords.value.keys
-        return vocabulary.words.value
+        val candidates = vocabulary.words.value
             .asSequence()
             .filter { it.id !in learntIds }
-            .firstOrNull()
+            .filter { entry ->
+                settings.settings.value.studyLevels.isEmpty() ||
+                    entry.levels.any { it.uppercase() in settings.settings.value.studyLevels }
+            }
+            .toList()
+        if (candidates.isEmpty()) return null
+        if (settings.settings.value.studyOrder == STUDY_ORDER_ALPHABETICAL) {
+            return candidates.minByOrNull { it.id }
+        }
+        val index = (randomUnit().coerceIn(0.0, 0.9999999999999999) * candidates.size).toInt()
+        return candidates[index]
     }
 }
 
@@ -107,6 +119,10 @@ class BuildReviewSessionUseCase(
         val candidates = learntWords.learntWords.value.values
             .asSequence()
             .mapNotNull { learnt -> entriesById[learnt.wordId]?.let { it to learnt.weight } }
+            .filter { (entry, _) ->
+                settings.settings.value.reviewLevels.isEmpty() ||
+                    entry.levels.any { it.uppercase() in settings.settings.value.reviewLevels }
+            }
             .sortedBy { (entry, _) -> entry.id }
             .toList()
         if (candidates.isEmpty()) return emptyList()
@@ -188,11 +204,45 @@ class SearchVocabularyUseCase(
     }
 }
 
+class GetReminderCardUseCase(
+    private val vocabulary: VocabularyRepository,
+    private val reviews: ReviewRepository,
+    private val time: TimeProvider,
+    private val randomUnit: () -> Double = { Random.Default.nextDouble() },
+) {
+    operator fun invoke(excludeId: String = ""): VocabularyEntry? {
+        val words = vocabulary.words.value
+        if (words.isEmpty()) return null
+        val now = time.nowUtcSeconds()
+        val dueIds = reviews.schedules.value
+            .filterValues { it.lastReviewedAtUtc != null && it.dueAtUtc <= now }
+            .keys
+        val candidates = words.filter { it.id in dueIds }.ifEmpty { words }
+        val fresh = candidates.filter { it.id != excludeId }.ifEmpty { candidates }
+        val index = (randomUnit().coerceIn(0.0, 0.9999999999999999) * fresh.size).toInt()
+        return fresh[index]
+    }
+}
+
 class ImportVocabularyUseCase(
     private val vocabulary: VocabularyRepository,
 ) {
     suspend operator fun invoke(bytes: ByteArray): ImportReport =
         vocabulary.importCsv(ByteArrayInputStream(bytes))
+}
+
+class UpdateVocabularyLabelsUseCase(private val vocabulary: VocabularyRepository) {
+    suspend operator fun invoke(wordIds: Set<String>, levels: Set<String>, tags: Set<String>): Int {
+        val normalizedLevels = levels.map(String::uppercase).toSet()
+        require(normalizedLevels.isNotEmpty() && normalizedLevels.all { it in setOf("CET4", "CET6", "CUSTOM") }) {
+            "词汇组只能包含 CET4、CET6 或 custom"
+        }
+        return vocabulary.updateLabels(
+            wordIds,
+            normalizedLevels,
+            tags.map(String::trim).filter(String::isNotEmpty).toSet(),
+        )
+    }
 }
 
 class UpdateFontScaleUseCase(
@@ -212,6 +262,40 @@ class UpdateReviewBatchSizeUseCase(
         val bounded = count.coerceIn(1, maximum)
         settings.setReviewBatchSize(bounded)
         return bounded
+    }
+}
+
+class UpdateStudyOrderUseCase(private val settings: SettingsRepository) {
+    suspend operator fun invoke(order: String) {
+        require(order == STUDY_ORDER_ALPHABETICAL || order == STUDY_ORDER_RANDOM) {
+            "学习顺序必须为 alphabetical 或 random"
+        }
+        settings.setStudyOrder(order)
+    }
+}
+
+class UpdateStudyLevelsUseCase(private val settings: SettingsRepository) {
+    suspend operator fun invoke(levels: Set<String>) {
+        settings.setStudyLevels(levels.map(String::uppercase).toSet())
+    }
+}
+
+class UpdateReviewLevelsUseCase(private val settings: SettingsRepository) {
+    suspend operator fun invoke(levels: Set<String>) {
+        settings.setReviewLevels(levels.map(String::uppercase).toSet())
+    }
+}
+
+class UpdateReminderSettingsUseCase(
+    private val settings: SettingsRepository,
+) {
+    suspend operator fun invoke(enabled: Boolean, intervalMinutes: Float): Float {
+        require(intervalMinutes in MIN_REMINDER_INTERVAL_MINUTES..MAX_REMINDER_INTERVAL_MINUTES) {
+            "提醒间隔需在 0.5 到 120 分钟之间"
+        }
+        settings.setReminderEnabled(enabled)
+        settings.setReminderIntervalMinutes(intervalMinutes)
+        return intervalMinutes
     }
 }
 
@@ -269,8 +353,13 @@ data class AppUseCases(
     val rateReviewWord: RateReviewWordUseCase,
     val search: SearchVocabularyUseCase,
     val importVocabulary: ImportVocabularyUseCase,
+    val updateVocabularyLabels: UpdateVocabularyLabelsUseCase,
     val updateFontScale: UpdateFontScaleUseCase,
     val updateReviewBatchSize: UpdateReviewBatchSizeUseCase,
+    val updateStudyOrder: UpdateStudyOrderUseCase,
+    val updateStudyLevels: UpdateStudyLevelsUseCase,
+    val updateReviewLevels: UpdateReviewLevelsUseCase,
+    val updateReminderSettings: UpdateReminderSettingsUseCase,
     val dashboard: BuildDashboardUseCase,
     val forecast: BuildForecastUseCase,
     val words: StateFlow<List<VocabularyEntry>>,

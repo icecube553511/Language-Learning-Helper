@@ -91,6 +91,21 @@ class AndroidVocabularyRepository(
         batch.report
     }
 
+    override suspend fun updateLabels(wordIds: Set<String>, levels: Set<String>, tags: Set<String>): Int = mutex.withLock {
+        val editableIds = importedEntries.mapTo(mutableSetOf()) { it.id }.intersect(wordIds)
+        var updated = 0
+        importedEntries.replaceAll { entry ->
+            if (entry.id !in editableIds) return@replaceAll entry
+            updated += 1
+            entry.copy(levels = levels, tags = tags)
+        }
+        if (updated > 0) {
+            preferences.edit().putString(KEY_IMPORTED, VocabularyJsonCodec.encodeEntries(importedEntries)).apply()
+            _words.value = merge(_words.value.filter { it.id !in editableIds }, importedEntries.filter { it.id in editableIds })
+        }
+        updated
+    }
+
     private fun merge(
         first: List<VocabularyEntry>,
         second: List<VocabularyEntry>,

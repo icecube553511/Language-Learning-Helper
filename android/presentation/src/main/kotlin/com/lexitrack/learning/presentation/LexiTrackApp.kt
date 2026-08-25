@@ -42,7 +42,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -52,10 +54,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -83,8 +89,10 @@ import kotlin.math.max
 fun LexiTrackApp(
     viewModel: MainViewModel,
     onChooseCsv: () -> Unit,
+    onReminderSettingsRequested: (Boolean, Float) -> Unit = { _, _ -> },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var labelEditorOpen by remember { mutableStateOf(false) }
     LexiTrackTheme(state.fontScale) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -116,17 +124,24 @@ fun LexiTrackApp(
                         title = "学习卡",
                         emptyTitle = "新词学习已完成",
                         emptyMessage = "导入更多词条或前往复习巩固已学内容",
+                        filterTitle = "学习词汇组",
+                        selectedLevels = state.studyLevels,
+                        availableLevels = state.availableLevels,
+                        onLevelsChange = viewModel::setStudyLevels,
                     )
                     MainSection.REVIEW -> ReviewScreen(
                         state = state,
                         onStart = viewModel::startReviewSession,
                         onReveal = viewModel::revealReviewAnswer,
                         onRate = viewModel::rateReviewCurrent,
+                        onLevelsChange = viewModel::setReviewLevels,
                     )
                     MainSection.LIBRARY -> LibraryScreen(
                         state = state,
                         onQueryChange = viewModel::updateSearch,
                         onChooseCsv = onChooseCsv,
+                        onToggleSelection = viewModel::toggleVocabularySelection,
+                        onEditLabels = { labelEditorOpen = true },
                     )
                     MainSection.INSIGHTS -> InsightsScreen(state.forecast)
                     MainSection.SETTINGS -> SettingsScreen(
@@ -135,6 +150,15 @@ fun LexiTrackApp(
                         learntWordCount = state.learntWordCount,
                         reviewBatchSize = state.reviewBatchSize,
                         onReviewBatchSizeChange = viewModel::setReviewBatchSize,
+                        reminderEnabled = state.reminderEnabled,
+                        reminderIntervalMinutes = state.reminderIntervalMinutes,
+                        studyOrder = state.studyOrder,
+                        onStudyOrderChange = viewModel::setStudyOrder,
+                        onReminderSettingsChange = { enabled, interval ->
+                            onReminderSettingsRequested(enabled, interval)
+                            viewModel.setReminderSettings(enabled, interval)
+                        },
+                        onPreviewReminder = viewModel::previewWordReminder,
                     )
                 }
             }
@@ -142,6 +166,16 @@ fun LexiTrackApp(
 
         state.importReport?.let { report ->
             ImportReportDialog(report, viewModel::dismissImportReport)
+        }
+        if (labelEditorOpen) {
+            VocabularyLabelDialog(
+                selectionCount = state.selectedVocabularyIds.size,
+                onDismiss = { labelEditorOpen = false },
+                onSave = { levels, tags ->
+                    viewModel.updateSelectedVocabularyLabels(levels, tags)
+                    labelEditorOpen = false
+                },
+            )
         }
         state.transientMessage?.let { message ->
             MessageDialog(message, viewModel::dismissMessage)
@@ -163,6 +197,37 @@ fun LexiTrackApp(
                 dismissButton = {
                     TextButton(onClick = viewModel::dismissReviewReminder) { Text("稍后") }
                 },
+            )
+        } ?: state.wordReminderCard?.let { card ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissWordReminder,
+                icon = { Icon(Icons.Outlined.School, contentDescription = null) },
+                title = { Text("单词学习提醒") },
+                text = {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(card.word, style = MaterialTheme.typography.headlineMedium, color = Ink)
+                        Text(card.phonetic.ifBlank { "音标待补充" }, style = MaterialTheme.typography.bodyMedium, color = MutedInk)
+                        Text(card.meaning, style = MaterialTheme.typography.titleMedium, color = Ink)
+                        HorizontalDivider()
+                        card.examples.take(3).forEachIndexed { index, example ->
+                            Text(
+                                "${index + 1}. ${example.english}\n${example.chinese}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Ink,
+                            )
+                        }
+                        if (card.mnemonic.isNotBlank()) {
+                            Text("助记  ${card.mnemonic}", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = viewModel::dismissWordReminder) { Text("知道了") }
+                },
+                dismissButton = null,
             )
         }
     }
@@ -356,15 +421,29 @@ private fun StudyScreen(
     title: String,
     emptyTitle: String,
     emptyMessage: String,
+    filterTitle: String = "",
+    selectedLevels: Set<String> = emptySet(),
+    availableLevels: List<String> = emptyList(),
+    onLevelsChange: (Set<String>) -> Unit = {},
 ) {
     if (card == null) {
-        EmptyState(Icons.Outlined.CheckCircle, emptyTitle, emptyMessage)
+        Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+            if (filterTitle.isNotBlank()) {
+                LevelFilterRow(filterTitle, selectedLevels, availableLevels, onLevelsChange)
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                EmptyState(Icons.Outlined.CheckCircle, emptyTitle, emptyMessage)
+            }
+        }
         return
     }
     Column(
         modifier = Modifier.fillMaxSize().padding(20.dp),
     ) {
         PageHeader(title, card.levels.sorted().joinToString(" / "))
+        if (filterTitle.isNotBlank()) {
+            LevelFilterRow(filterTitle, selectedLevels, availableLevels, onLevelsChange)
+        }
         Spacer(Modifier.height(12.dp))
         Surface(
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -408,6 +487,7 @@ private fun ReviewScreen(
     onStart: () -> Unit,
     onReveal: () -> Unit,
     onRate: (ReviewRating) -> Unit,
+    onLevelsChange: (Set<String>) -> Unit,
 ) {
     if (!state.reviewSessionStarted) {
         Column(
@@ -415,6 +495,7 @@ private fun ReviewScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             PageHeader("复习", "按掌握权重抽取已学单词")
+            LevelFilterRow("复习词汇组", state.reviewLevels, state.availableLevels, onLevelsChange)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
@@ -480,7 +561,34 @@ private fun ReviewScreen(
         title = "复习卡 ${completed + 1} / ${state.reviewSessionSize}",
         emptyTitle = "本轮复习完成",
         emptyMessage = "可再次主动开始复习",
+        filterTitle = "复习词汇组",
+        selectedLevels = state.reviewLevels,
+        availableLevels = state.availableLevels,
+        onLevelsChange = onLevelsChange,
     )
+}
+
+@Composable
+private fun LevelFilterRow(
+    title: String,
+    selected: Set<String>,
+    available: List<String>,
+    onChange: (Set<String>) -> Unit,
+) {
+    val effectiveSelection = if (selected.isEmpty()) available.toSet() else selected
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = MutedInk)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            available.forEach { level ->
+                val label = when (level) { "CET4" -> "四级"; "CET6" -> "六级"; "CUSTOM" -> "自定义"; else -> level }
+                FilterChip(
+                    selected = level in effectiveSelection,
+                    onClick = { onChange(if (level in effectiveSelection) effectiveSelection - level else effectiveSelection + level) },
+                    label = { Text(label) },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -583,6 +691,8 @@ private fun LibraryScreen(
     state: MainUiState,
     onQueryChange: (String) -> Unit,
     onChooseCsv: () -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onEditLabels: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(20.dp))
@@ -613,7 +723,17 @@ private fun LibraryScreen(
                     Icon(Icons.Outlined.UploadFile, contentDescription = "导入 CSV")
                 }
             }
+            Button(
+                onClick = onEditLabels,
+                enabled = state.selectedVocabularyIds.isNotEmpty(),
+                modifier = Modifier.heightIn(min = 56.dp),
+            ) { Text("标签 (${state.selectedVocabularyIds.size})") }
         }
+        Text(
+            "CSV 的 level 支持 CET4、CET6、custom（多个用 | 分隔），tags 也用 | 分隔；勾选导入词条可批量修改。",
+            style = MaterialTheme.typography.labelMedium,
+            color = MutedInk,
+        )
         Spacer(Modifier.height(12.dp))
         if (state.searchResults.isEmpty()) {
             EmptyState(Icons.AutoMirrored.Outlined.List, "没有匹配词条", "可调整搜索条件或导入 CSV 词库")
@@ -623,7 +743,13 @@ private fun LibraryScreen(
                 contentPadding = PaddingValues(bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(state.searchResults, key = { it.id }) { entry -> VocabularyRow(entry) }
+                items(state.searchResults, key = { it.id }) { entry ->
+                    VocabularyRow(
+                        entry = entry,
+                        selected = entry.id in state.selectedVocabularyIds,
+                        onToggleSelection = { onToggleSelection(entry.id) },
+                    )
+                }
                 if (state.totalSearchResults > state.searchResults.size) {
                     item {
                         Text(
@@ -640,7 +766,7 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun VocabularyRow(entry: VocabularyEntry) {
+private fun VocabularyRow(entry: VocabularyEntry, selected: Boolean, onToggleSelection: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -649,6 +775,9 @@ private fun VocabularyRow(entry: VocabularyEntry) {
     ) {
         Column(modifier = Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (entry.source == "csv" || entry.source == "user") {
+                    Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
+                }
                 Text(
                     entry.word,
                     modifier = Modifier.weight(1f),
@@ -673,6 +802,39 @@ private fun VocabularyRow(entry: VocabularyEntry) {
             )
         }
     }
+}
+
+@Composable
+private fun VocabularyLabelDialog(
+    selectionCount: Int,
+    onDismiss: () -> Unit,
+    onSave: (Set<String>, Set<String>) -> Unit,
+) {
+    var levels by remember { mutableStateOf(setOf("CUSTOM")) }
+    var tags by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("批量修改标签") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("已选择 $selectionCount 个导入词条")
+                LevelFilterRow("词汇组", levels, listOf("CET4", "CET6", "CUSTOM")) { levels = it }
+                OutlinedTextField(
+                    value = tags,
+                    onValueChange = { tags = it },
+                    label = { Text("tags（用 | 分隔）") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(levels, tags.split('|').map(String::trim).filter(String::isNotEmpty).toSet()) },
+                enabled = levels.isNotEmpty(),
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -785,7 +947,18 @@ private fun SettingsScreen(
     learntWordCount: Int,
     reviewBatchSize: Int,
     onReviewBatchSizeChange: (Int) -> Unit,
+    reminderEnabled: Boolean,
+    reminderIntervalMinutes: Float,
+    onReminderSettingsChange: (Boolean, Float) -> Unit,
+    onPreviewReminder: () -> Unit,
+    studyOrder: String,
+    onStudyOrderChange: (String) -> Unit,
 ) {
+    var reminderEnabledDraft by remember(reminderEnabled) { mutableStateOf(reminderEnabled) }
+    var reminderIntervalDraft by remember(reminderIntervalMinutes) {
+        mutableStateOf(reminderIntervalMinutes.toString().removeSuffix(".0"))
+    }
+    var reminderIntervalError by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -811,6 +984,21 @@ private fun SettingsScreen(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("90%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
                     Text("140%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
+                }
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(8.dp),
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("学习顺序", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Text("默认随机，也可按字母顺序学习。", style = MaterialTheme.typography.bodyMedium, color = MutedInk)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = studyOrder == "random", onClick = { onStudyOrderChange("random") }, label = { Text("随机顺序") })
+                    FilterChip(selected = studyOrder == "alphabetical", onClick = { onStudyOrderChange("alphabetical") }, label = { Text("按字母排序") })
                 }
             }
         }
@@ -847,6 +1035,55 @@ private fun SettingsScreen(
                 Text("Preview", style = MaterialTheme.typography.labelMedium, color = BrandNavy)
                 Text("Vocabulary", style = MaterialTheme.typography.headlineMedium, color = Ink)
                 Text("词汇；词汇量", style = MaterialTheme.typography.bodyLarge, color = MutedInk)
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(8.dp),
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("弹窗单词卡片", style = MaterialTheme.typography.titleMedium, color = Ink)
+                        Text("前台卡片与后台系统通知", style = MaterialTheme.typography.labelMedium, color = MutedInk)
+                    }
+                    Switch(
+                        checked = reminderEnabledDraft,
+                        onCheckedChange = { reminderEnabledDraft = it },
+                    )
+                }
+                OutlinedTextField(
+                    value = reminderIntervalDraft,
+                    onValueChange = {
+                        reminderIntervalDraft = it
+                        reminderIntervalError = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("弹窗间隔") },
+                    suffix = { Text("min") },
+                    singleLine = true,
+                    isError = reminderIntervalError,
+                    supportingText = if (reminderIntervalError) {
+                        { Text("请输入 0.5 到 120 之间的数字") }
+                    } else {
+                        null
+                    },
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            val interval = reminderIntervalDraft.replace(',', '.').toFloatOrNull()
+                            if (interval == null || interval !in 0.5f..120.0f) {
+                                reminderIntervalError = true
+                            } else {
+                                onReminderSettingsChange(reminderEnabledDraft, interval)
+                            }
+                        },
+                    ) { Text("保存设置") }
+                    TextButton(onClick = onPreviewReminder) { Text("立即预览") }
+                }
             }
         }
         Surface(

@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertFailsWith
 
 class LearningUseCasesTest {
     private val now = 1_704_067_200.0
@@ -56,7 +57,7 @@ class LearningUseCasesTest {
             words.first().id to learnt(words.first().id, 1.0),
         )
 
-        val card = GetNextCardUseCase(vocabulary, learntWords)()
+        val card = GetNextCardUseCase(vocabulary, learntWords, FakeSettingsRepository(), randomUnit = { 0.0 })()
 
         assertNotEquals(words.first().id, card?.id)
     }
@@ -119,6 +120,40 @@ class LearningUseCasesTest {
     }
 
     @Test
+    fun `study defaults to random and supports alphabetical order and level filters`() = runTest {
+        val zeta = word("zeta").copy(levels = setOf("CET4"))
+        val alpha = word("alpha").copy(levels = setOf("CET6"))
+        val localVocabulary = FakeVocabularyRepository(listOf(zeta, alpha))
+        val settings = FakeSettingsRepository()
+
+        val randomCard = GetNextCardUseCase(localVocabulary, learntWords, settings, randomUnit = { 0.99 })()
+        assertEquals(alpha.id, randomCard?.id)
+
+        settings.setStudyOrder(STUDY_ORDER_ALPHABETICAL)
+        assertEquals(alpha.id, GetNextCardUseCase(localVocabulary, learntWords, settings)()?.id)
+
+        settings.setStudyLevels(setOf("CET4"))
+        assertEquals(zeta.id, GetNextCardUseCase(localVocabulary, learntWords, settings)()?.id)
+    }
+
+    @Test
+    fun `study and review level filters are independent and support multiple levels`() = runTest {
+        val cet4 = word("cet4").copy(levels = setOf("CET4"))
+        val cet6 = word("cet6").copy(levels = setOf("CET6"))
+        val localVocabulary = FakeVocabularyRepository(listOf(cet4, cet6))
+        val settings = FakeSettingsRepository(UserSettings(studyLevels = setOf("CET6"), reviewLevels = setOf("CET4")))
+        learntWords.wordsFlow.value = mapOf(cet4.id to learnt(cet4.id, 1.0))
+
+        assertEquals(cet6.id, GetNextCardUseCase(localVocabulary, learntWords, settings)()?.id)
+        val review = BuildReviewSessionUseCase(localVocabulary, learntWords, settings, randomUnit = { 0.0 })()
+        assertEquals(listOf(cet4.id), review.map { it.id })
+
+        learntWords.wordsFlow.value = learntWords.wordsFlow.value + (cet6.id to learnt(cet6.id, 1.0))
+        settings.setReviewLevels(setOf("CET4", "CET6"))
+        assertEquals(setOf(cet4.id, cet6.id), BuildReviewSessionUseCase(localVocabulary, learntWords, settings)().map { it.id }.toSet())
+    }
+
+    @Test
     fun `batch size is clamped to learnt word count and at least one`() = runTest {
         val settings = FakeSettingsRepository()
         val useCase = UpdateReviewBatchSizeUseCase(settings, learntWords)
@@ -130,6 +165,18 @@ class LearningUseCasesTest {
         )
         assertEquals(2, useCase(99))
         assertEquals(2, settings.settings.value.reviewBatchSize)
+    }
+
+    @Test
+    fun `reminder settings accept fractional minutes and reject invalid bounds`() = runTest {
+        val settings = FakeSettingsRepository()
+        val useCase = UpdateReminderSettingsUseCase(settings)
+
+        assertEquals(1.25f, useCase(true, 1.25f))
+        assertEquals(true, settings.settings.value.reminderEnabled)
+        assertEquals(1.25f, settings.settings.value.reminderIntervalMinutes)
+        assertFailsWith<IllegalArgumentException> { useCase(true, 0.25f) }
+        assertFailsWith<IllegalArgumentException> { useCase(true, 121.0f) }
     }
 
     @Test
@@ -187,6 +234,14 @@ private class FakeVocabularyRepository(initial: List<VocabularyEntry>) : Vocabul
     override val status = MutableStateFlow(CatalogStatus(loading = false))
     override suspend fun initialize() = Unit
     override suspend fun importCsv(input: InputStream) = ImportReport.Empty
+
+    override suspend fun updateLabels(wordIds: Set<String>, levels: Set<String>, tags: Set<String>): Int {
+        var count = 0
+        words.value = words.value.map { entry ->
+            if (entry.id !in wordIds) entry else entry.copy(levels = levels, tags = tags).also { count += 1 }
+        }
+        return count
+    }
 }
 
 private class FakeReviewRepository : ReviewRepository {
@@ -219,6 +274,26 @@ private class FakeSettingsRepository(
 
     override suspend fun setReviewBatchSize(count: Int) {
         settings.value = settings.value.copy(reviewBatchSize = count)
+    }
+
+    override suspend fun setStudyOrder(order: String) {
+        settings.value = settings.value.copy(studyOrder = order)
+    }
+
+    override suspend fun setStudyLevels(levels: Set<String>) {
+        settings.value = settings.value.copy(studyLevels = levels)
+    }
+
+    override suspend fun setReviewLevels(levels: Set<String>) {
+        settings.value = settings.value.copy(reviewLevels = levels)
+    }
+
+    override suspend fun setReminderEnabled(enabled: Boolean) {
+        settings.value = settings.value.copy(reminderEnabled = enabled)
+    }
+
+    override suspend fun setReminderIntervalMinutes(minutes: Float) {
+        settings.value = settings.value.copy(reminderIntervalMinutes = minutes)
     }
 }
 

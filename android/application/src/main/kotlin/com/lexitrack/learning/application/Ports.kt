@@ -19,9 +19,19 @@ data class CatalogStatus(
 data class UserSettings(
     val fontScale: Float = 1.0f,
     val reviewBatchSize: Int = DEFAULT_REVIEW_BATCH_SIZE,
+    val studyOrder: String = STUDY_ORDER_RANDOM,
+    val studyLevels: Set<String> = emptySet(),
+    val reviewLevels: Set<String> = emptySet(),
+    val reminderEnabled: Boolean = false,
+    val reminderIntervalMinutes: Float = DEFAULT_REMINDER_INTERVAL_MINUTES,
 )
 
 const val DEFAULT_REVIEW_BATCH_SIZE = 20
+const val STUDY_ORDER_ALPHABETICAL = "alphabetical"
+const val STUDY_ORDER_RANDOM = "random"
+const val DEFAULT_REMINDER_INTERVAL_MINUTES = 30.0f
+const val MIN_REMINDER_INTERVAL_MINUTES = 0.5f
+const val MAX_REMINDER_INTERVAL_MINUTES = 120.0f
 
 interface VocabularyRepository {
     val words: StateFlow<List<VocabularyEntry>>
@@ -29,6 +39,7 @@ interface VocabularyRepository {
 
     suspend fun initialize()
     suspend fun importCsv(input: InputStream): ImportReport
+    suspend fun updateLabels(wordIds: Set<String>, levels: Set<String>, tags: Set<String>): Int
 }
 
 interface ReviewRepository {
@@ -49,6 +60,11 @@ interface SettingsRepository {
 
     suspend fun setFontScale(scale: Float)
     suspend fun setReviewBatchSize(count: Int)
+    suspend fun setStudyOrder(order: String)
+    suspend fun setStudyLevels(levels: Set<String>)
+    suspend fun setReviewLevels(levels: Set<String>)
+    suspend fun setReminderEnabled(enabled: Boolean)
+    suspend fun setReminderIntervalMinutes(minutes: Float)
 }
 
 interface TimeProvider {

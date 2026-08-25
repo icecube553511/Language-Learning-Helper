@@ -2,7 +2,7 @@
 
 LexiTrack 是一个离线优先的 CET-4/CET-6 英语学习软件 monorepo，同时交付 Windows 与 Android 客户端。两个客户端使用相同的词库版本、CSV 契约、记忆曲线版本和功能清单，并在同一提交中推进。
 
-`v0.2.0` 新增独立复习入口：学习评分过的词会写入本地 `Words_Learnt`，主动复习按掌握权重无放回抽取；应用运行期间会按现有记忆排期提醒到期复习，设置中可调整每轮复习数量。
+学习评分过的词会写入本地 `Words_Learnt`，主动复习按掌握权重无放回抽取。双端默认随机学习，也可按字母排序；学习与复习可分别多选四级、六级和自定义词汇组。Android 在后台通过系统高优先级通知展示学习卡，Windows 在应用运行期间显示置顶卡片。
 
 ## 目录
 
@@ -53,7 +53,7 @@ CSV 必须使用 UTF-8 或 UTF-8 BOM，遵循 RFC 4180。以下列为必填：
 word,meaning,example1_en,example1_zh,example2_en,example2_zh,example3_en,example3_zh
 ```
 
-以下列为选填：
+以下列为选填；`level` 可用 `|` 分隔多个词汇组，`tags` 可用 `|` 分隔多个标签：
 
 ```text
 phonetic,level,tags,mnemonic

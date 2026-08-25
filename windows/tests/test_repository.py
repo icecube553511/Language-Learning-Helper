@@ -42,11 +42,29 @@ class RepositoryTests(unittest.TestCase):
         repo.record_activity("serene", 1704067200)
         repo.set_font_scale(1.25)
         repo.set_review_batch_size(14)
+        repo.set_study_order("alphabetical")
+        repo.set_study_levels({"CET4", "CET6"})
+        repo.set_review_levels({"CET6"})
+        repo.set_reminder_enabled(True)
+        repo.set_reminder_interval_minutes(2.75)
         loaded = JsonLearningRepository(directory, [sample_entry()])
         self.assertEqual(loaded.review_state("serene").state, "review")
         self.assertEqual(loaded.get_font_scale(), 1.25)
         self.assertEqual(loaded.get_review_batch_size(), 14)
+        self.assertEqual(loaded.get_study_order(), "alphabetical")
+        self.assertEqual(loaded.get_study_levels(), {"CET4", "CET6"})
+        self.assertEqual(loaded.get_review_levels(), {"CET6"})
+        self.assertTrue(loaded.get_reminder_enabled())
+        self.assertEqual(loaded.get_reminder_interval_minutes(), 2.75)
         self.assertEqual(sum(len(v) for v in loaded._activity.values()), 1)
+
+    def test_reminder_interval_falls_back_and_is_bounded(self):
+        directory = Path(self.temp.name)
+        repo = JsonLearningRepository(directory)
+        repo.set_reminder_interval_minutes(0.1)
+        self.assertEqual(repo.get_reminder_interval_minutes(), 0.5)
+        repo.set_reminder_interval_minutes(999)
+        self.assertEqual(repo.get_reminder_interval_minutes(), 120.0)
 
     def test_catalog_gracefully_handles_missing_file(self):
         loader = CatalogLoader(Path(self.temp.name) / "missing.json")
@@ -69,6 +87,19 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(repo.add_entries([sample_entry()]), 1)
         loaded = JsonLearningRepository(directory)
         self.assertEqual([item.word for item in loaded.all_entries()], ["serene"])
+
+    def test_batch_labels_only_update_user_entries(self):
+        directory = Path(self.temp.name)
+        built_in = sample_entry("built-in")
+        user = sample_entry("user")
+        repo = JsonLearningRepository(directory, [built_in])
+        repo.add_entries([user])
+
+        self.assertEqual(repo.update_entry_labels({built_in.word_id, user.word_id}, "CET6", {"exam", "batch"}), 1)
+        entries = {entry.word_id: entry for entry in repo.all_entries()}
+        self.assertEqual(entries[built_in.word_id].level, "CET4")
+        self.assertEqual(entries[user.word_id].level, "CET6")
+        self.assertEqual(entries[user.word_id].tags, ("batch", "exam"))
 
     def test_words_learnt_uses_independent_json_file(self):
         directory = Path(self.temp.name)

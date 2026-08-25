@@ -2,6 +2,10 @@
 
 Android 8.0 及以上的本地英语学习应用。内置四六级词库，提供学习卡、独立加权复习、四档评分、词库搜索、CSV 导入、记忆保持率与未来七天复习负载。学习卡与复习卡将单词、音标、释义和三组双语例句逐组居中排列，四档大按钮固定在卡片底部，页面不响应纵向滚动。学习进度、`Words_Learnt`、导入词条和偏好都保存在设备本地。
 
+设置页可开启单词提醒，间隔以分钟为单位并支持 `0.5` 到 `120` 的浮点数。前台显示完整卡片；后台由 `AlarmManager` 触发高优先级系统通知，点击通知打开对应完整卡片。Android 13+ 需要用户授予通知权限，实际显示时刻和横幅样式受 Doze、厂商省电策略及通知频道设置影响。提醒不提供延后选项。
+
+学习默认随机抽取，也可在设置中切换为字母顺序。学习与复习页面分别多选四级、六级和自定义词汇组，两个筛选互不影响。导入时可批量填写 `level`/`tags`，导入后可在词库中勾选多个自定义词条批量修改标签。
+
 ## 安装预发布版
 
 在 GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 下载 `app-debug.apk` 与同包的 `SHA256SUMS.txt`。当前 `v0.2.0` 是面向 Android 8.0+ 的开发预览包，使用 Android Debug 证书签名且包含可调试标记，不是应用商店正式包。设备需允许浏览器或文件管理器“安装未知应用”；也可使用下方 ADB 命令安装。
@@ -55,7 +59,7 @@ adb shell am start -n com.lexitrack.learning/.MainActivity
 word,meaning,example1_en,example1_zh,example2_en,example2_zh,example3_en,example3_zh
 ```
 
-选填列：`phonetic,level,tags,mnemonic`。`level` 只能是 `CET4`、`CET6` 或 `custom`，默认 `custom`；多个标签使用 `|` 分隔。
+选填列：`phonetic,level,tags,mnemonic`。`level` 只能包含 `CET4`、`CET6` 或 `custom`，默认 `custom`；多个词汇组和多个标签均使用 `|` 分隔。
 
 ```csv
 word,meaning,phonetic,level,tags,mnemonic,example1_en,example1_zh,example2_en,example2_zh,example3_en,example3_zh

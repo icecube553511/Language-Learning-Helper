@@ -12,6 +12,9 @@
 - domain 和 application 不得导入 Tkinter、Android SDK、文件系统或具体持久化类。
 - Windows 与 Android 的业务语义、数据字段、默认值、边界和错误码必须同步；共享契约是单一事实来源。
 - 每个功能切片同时更新 Windows、Android、共享契约和测试，并在同一提交中留下记录。
+- 学习顺序默认 `random`，可选 `alphabetical`；学习和复习词汇组是两个独立的多选设置。
+- 内置词条 memberships 只读；CSV 导入和批量标签编辑只更新用户导入词条。
+- Android 后台提醒由 AlarmManager/Receiver/Notification 外层适配器负责，application/domain 不得依赖 Android SDK。
 - 保留工作区中已有的用户修改；不要使用破坏性还原命令覆盖它们。
 
 ## 代码风格

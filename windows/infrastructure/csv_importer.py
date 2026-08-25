@@ -18,7 +18,7 @@ REQUIRED_COLUMNS = (
 )
 OPTIONAL_COLUMNS = ("phonetic", "level", "tags", "mnemonic")
 KNOWN_COLUMNS = set(REQUIRED_COLUMNS) | set(OPTIONAL_COLUMNS)
-VALID_LEVELS = {"CET4", "CET6", "custom"}
+VALID_LEVELS = {"CET4", "CET6", "CUSTOM"}
 
 
 class CsvVocabularyImporter:
@@ -73,7 +73,7 @@ class CsvVocabularyImporter:
                         meaning=values["meaning"],
                         examples=examples,
                         phonetic=values.get("phonetic", ""),
-                        level=values.get("level", "") or "custom",
+                        level="/".join(sorted({item.strip().upper() for item in (values.get("level", "") or "custom").replace(",", "|").split("|") if item.strip()})),
                         tags=values.get("tags", "").split("|") if values.get("tags") else [],
                         mnemonic=values.get("mnemonic", ""),
                     )
@@ -99,8 +99,9 @@ class CsvVocabularyImporter:
             if not values.get(field, ""):
                 return ImportIssue(row, field, "empty_required", f"{field} 不得为空")
         level = values.get("level", "") or "custom"
-        if level not in VALID_LEVELS:
-            return ImportIssue(row, "level", "invalid_level", "level 必须为 CET4、CET6 或 custom")
+        levels = {item.strip().upper() for item in level.replace(",", "|").split("|") if item.strip()}
+        if not levels or not levels.issubset(VALID_LEVELS):
+            return ImportIssue(row, "level", "invalid_level", "level 必须为 CET4、CET6 或 custom，可用 | 分隔多个词书")
         english = [values[f"example{index}_en"] for index in range(1, 4)]
         if len({item.casefold() for item in english}) != 3:
             return ImportIssue(row, "examples", "duplicate_example", "三条英文例句必须互不相同")

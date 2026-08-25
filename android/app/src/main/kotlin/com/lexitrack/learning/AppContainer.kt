@@ -13,6 +13,11 @@ import com.lexitrack.learning.application.RateReviewWordUseCase
 import com.lexitrack.learning.application.SearchVocabularyUseCase
 import com.lexitrack.learning.application.UpdateFontScaleUseCase
 import com.lexitrack.learning.application.UpdateReviewBatchSizeUseCase
+import com.lexitrack.learning.application.UpdateReminderSettingsUseCase
+import com.lexitrack.learning.application.UpdateStudyLevelsUseCase
+import com.lexitrack.learning.application.UpdateReviewLevelsUseCase
+import com.lexitrack.learning.application.UpdateStudyOrderUseCase
+import com.lexitrack.learning.application.UpdateVocabularyLabelsUseCase
 import com.lexitrack.learning.infrastructure.AndroidLearntWordsRepository
 import com.lexitrack.learning.infrastructure.AndroidReviewRepository
 import com.lexitrack.learning.infrastructure.AndroidSettingsRepository
@@ -28,14 +33,19 @@ class AppContainer(context: Context) {
 
     val useCases = AppUseCases(
         initialize = InitializeAppUseCase(vocabulary, reviews, learntWords),
-        nextCard = GetNextCardUseCase(vocabulary, learntWords),
+        nextCard = GetNextCardUseCase(vocabulary, learntWords, settings),
         rateWord = RateWordUseCase(reviews, learntWords, time),
         startReviewSession = BuildReviewSessionUseCase(vocabulary, learntWords, settings),
         rateReviewWord = RateReviewWordUseCase(reviews, learntWords, time),
         search = SearchVocabularyUseCase(vocabulary),
         importVocabulary = ImportVocabularyUseCase(vocabulary),
+        updateVocabularyLabels = UpdateVocabularyLabelsUseCase(vocabulary),
         updateFontScale = UpdateFontScaleUseCase(settings),
         updateReviewBatchSize = UpdateReviewBatchSizeUseCase(settings, learntWords),
+        updateReminderSettings = UpdateReminderSettingsUseCase(settings),
+        updateStudyOrder = UpdateStudyOrderUseCase(settings),
+        updateStudyLevels = UpdateStudyLevelsUseCase(settings),
+        updateReviewLevels = UpdateReviewLevelsUseCase(settings),
         dashboard = BuildDashboardUseCase(vocabulary, reviews, learntWords, time),
         forecast = BuildForecastUseCase(vocabulary, reviews, time),
         words = vocabulary.words,

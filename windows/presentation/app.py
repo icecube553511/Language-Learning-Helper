@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
@@ -87,6 +88,11 @@ class LexiTrackApp(tk.Tk):
         self.review_total = 0
         self.review_answer_visible = False
         self._last_reminded_due_count = 0
+        self._word_reminder_after_id: str | None = None
+        self._word_reminder_popup: tk.Toplevel | None = None
+        self._word_reminder_is_preview = False
+        self._word_reminder_previous_id = ""
+        self._word_reminder_next_at = 0.0
         self.answer_visible = False
         self.forecast_days = 7
         self._build_shell()
@@ -94,6 +100,7 @@ class LexiTrackApp(tk.Tk):
         self._bind_shortcuts()
         self.show_page("dashboard")
         self.after(1_000, self._check_review_reminder)
+        self.after(250, self._schedule_word_reminder)
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -121,6 +128,7 @@ class LexiTrackApp(tk.Tk):
             ("review", "复习", "review"),
             ("library", "词库", "library"),
             ("analytics", "记忆分析", "analytics"),
+            ("reminder", "学习提醒", "clock"),
             ("settings", "设置", "settings"),
         ]
         for key, label, icon in nav_specs:
@@ -140,6 +148,7 @@ class LexiTrackApp(tk.Tk):
         self._build_review_page()
         self._build_library_page()
         self._build_analytics_page()
+        self._build_reminder_page()
         self._build_settings_page()
 
     def _new_page(self, key: str, title: str, subtitle: str) -> tuple[tk.Frame, tk.Frame]:
@@ -236,6 +245,7 @@ class LexiTrackApp(tk.Tk):
         study_meta.pack(fill=tk.X, padx=16, pady=(10, 0))
         self.study_level = tk.Label(study_meta, text="", bg="#E7F5F0", fg=ACCENT, font="LexiSmall", padx=10, pady=5)
         self.study_level.pack(side=tk.LEFT)
+        self.study_filter_vars = self._build_level_filters(study_meta, "学习", self.service.study_levels, self._save_study_levels, inline=True)
         self.study_status = tk.Label(study_meta, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
         self.study_status.pack(side=tk.RIGHT)
         self.study_word = tk.Label(self.study_card, text="", bg=SURFACE, fg=TEXT, font="LexiWord")
@@ -264,7 +274,7 @@ class LexiTrackApp(tk.Tk):
                 color=color,
                 width=8,
             )
-            button.grid(row=0, column=column, sticky="nsew", padx=6, pady=4)
+            button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
             self.rating_buttons.append(button)
         self.answer_panel = tk.Frame(self.study_card, bg=SURFACE)
         self.answer_panel.bind("<Configure>", self._resize_study_answer, add="+")
@@ -308,6 +318,7 @@ class LexiTrackApp(tk.Tk):
         self.review_toolbar = toolbar
         self.review_summary = tk.Label(toolbar, text="", bg=BG, fg=MUTED, font="LexiBody")
         self.review_summary.pack(side=tk.LEFT)
+        self.review_filter_vars = self._build_level_filters(toolbar, "复习", self.service.review_levels, self._save_review_levels, inline=True)
         self.review_start_button = self._primary_button(toolbar, "开始复习", self.start_review_session, width=10)
         self.review_start_button.pack(side=tk.RIGHT)
         self.review_card = self._card(body)
@@ -342,7 +353,7 @@ class LexiTrackApp(tk.Tk):
                 color=color,
                 width=8,
             )
-            button.grid(row=0, column=column, sticky="nsew", padx=6, pady=4)
+            button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
             self.review_rating_buttons.append(button)
         self.review_answer_panel = tk.Frame(self.review_card, bg=SURFACE)
         self.review_answer_panel.bind("<Configure>", self._resize_review_answer, add="+")
@@ -418,12 +429,15 @@ class LexiTrackApp(tk.Tk):
         upload_icon.pack(side=tk.LEFT, padx=(16, 4))
         draw_icon(upload_icon, "upload", ACCENT)
         self._outline_button(toolbar, "导入 CSV", self.choose_csv, width=10).pack(side=tk.LEFT)
+        self._outline_button(toolbar, "批量标签", self.batch_edit_labels, width=10).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(body, text="导入 CSV 时填写 level（CET4/CET6/custom，可用 | 分隔）和 tags（用 | 分隔）；词库列表支持批量修改自定义词条。", bg=BG, fg=MUTED, font="LexiSmall", anchor="w").pack(fill=tk.X, pady=(0, 7))
         self.library_count = tk.Label(body, text="", bg=BG, fg=MUTED, font="LexiSmall")
         self.library_count.pack(anchor="w", pady=(0, 7))
         table = self._card(body)
         table.pack(fill=tk.BOTH, expand=True)
         columns = ("word", "meaning", "level", "review")
-        self.library_tree = ttk.Treeview(table, columns=columns, show="headings", selectmode="browse")
+        self.library_tree = ttk.Treeview(table, columns=columns, show="headings", selectmode="extended")
+        self.library_item_ids: dict[str, str] = {}
         for key, title, width in (("word", "单词", 180), ("meaning", "中文释义", 430), ("level", "词书", 120), ("review", "下次复习", 150)):
             self.library_tree.heading(key, text=title)
             self.library_tree.column(key, width=width, anchor="w", stretch=key == "meaning")
@@ -446,6 +460,75 @@ class LexiTrackApp(tk.Tk):
         chart_card.pack(fill=tk.BOTH, expand=True)
         self.analytics_chart = MemoryChart(chart_card)
         self.analytics_chart.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+
+    def _build_reminder_page(self):
+        _, body = self._new_page(
+            "reminder",
+            "学习提醒",
+            "应用运行期间，按设定间隔弹出一张置顶单词卡片",
+        )
+        panel = self._card(body)
+        panel.pack(fill=tk.BOTH, expand=True)
+        inner = tk.Frame(panel, bg=SURFACE)
+        inner.pack(fill=tk.X, padx=30, pady=26)
+
+        tk.Label(inner, text="单词卡片提醒", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w")
+        tk.Label(
+            inner,
+            text="间隔单位为分钟，可输入小数；有效范围为 0.5 到 120 min。",
+            bg=SURFACE,
+            fg=MUTED,
+            font="LexiSmall",
+        ).pack(anchor="w", pady=(5, 18))
+
+        self.reminder_enabled_var = tk.BooleanVar(value=self.service.reminder_enabled())
+        tk.Checkbutton(
+            inner,
+            text="开启弹窗单词卡片",
+            variable=self.reminder_enabled_var,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=SURFACE,
+            activeforeground=TEXT,
+            selectcolor=SURFACE,
+            font="LexiBodyBold",
+            cursor="hand2",
+        ).pack(anchor="w", pady=(0, 18))
+
+        interval_row = tk.Frame(inner, bg=SURFACE)
+        interval_row.pack(anchor="w")
+        tk.Label(interval_row, text="弹窗间隔", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT)
+        self.reminder_interval_var = tk.StringVar(value=f"{self.service.reminder_interval_minutes():g}")
+        ttk.Entry(interval_row, textvariable=self.reminder_interval_var, width=12).pack(side=tk.LEFT, padx=(10, 6))
+        tk.Label(interval_row, text="min", bg=SURFACE, fg=TEXT, font="LexiBodyBold").pack(side=tk.LEFT)
+
+        self.reminder_status = tk.Label(
+            inner,
+            text="",
+            bg="#E7F5F0",
+            fg=ACCENT,
+            font="LexiBodyBold",
+            padx=12,
+            pady=9,
+        )
+        self.reminder_status.pack(anchor="w", pady=(24, 18))
+        actions = tk.Frame(inner, bg=SURFACE)
+        actions.pack(fill=tk.X)
+        self._primary_button(actions, "保存设置", self.save_reminder_settings, width=10).pack(side=tk.LEFT)
+        self._outline_button(actions, "立即预览", self.preview_word_reminder, width=10).pack(side=tk.LEFT, padx=10)
+
+        tk.Label(
+            panel,
+            text="弹窗展示单词、音标、释义和三组双语例句。关闭应用后不会继续计时。",
+            bg="#F7F9FA",
+            fg=MUTED,
+            font="LexiSmall",
+            wraplength=760,
+            justify="left",
+            padx=24,
+            pady=16,
+        ).pack(fill=tk.X, side=tk.BOTTOM)
+        self._refresh_word_reminder_status()
 
     def _build_settings_page(self):
         _, body = self._new_page("settings", "设置", "显示与本地数据")
@@ -496,6 +579,15 @@ class LexiTrackApp(tk.Tk):
             length=460,
         )
         self.review_batch_scale.pack(anchor="w", padx=18, pady=(6, 18))
+        order = self._card(body)
+        order.pack(fill=tk.X, pady=(16, 0))
+        tk.Label(order, text="学习顺序", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(18, 4))
+        tk.Label(order, text="默认随机；可切换为按字母排序。", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(anchor="w", padx=22)
+        self.study_order_var = tk.StringVar(value=self.service.study_order())
+        options = tk.Frame(order, bg=SURFACE)
+        options.pack(anchor="w", padx=18, pady=(8, 18))
+        for value, label in (("random", "随机顺序"), ("alphabetical", "按字母排序")):
+            tk.Radiobutton(options, text=label, value=value, variable=self.study_order_var, command=self.save_study_order, bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE, font="LexiBody").pack(side=tk.LEFT, padx=(0, 20))
         storage = self._card(body)
         storage.pack(fill=tk.X, pady=16)
         tk.Label(storage, text="本地数据", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(20, 5))
@@ -510,6 +602,43 @@ class LexiTrackApp(tk.Tk):
         tk.Label(storage, text=catalog_message, bg=SURFACE, fg=ACCENT if self.catalog_count else ORANGE, font="LexiBody").pack(anchor="w", padx=22, pady=(0, 20))
         self.change_font_scale(str(self.scale_var.get()))
         self.change_review_batch_size(str(self.review_batch_var.get()))
+
+    def _build_level_filters(self, parent, title: str, selected_getter, on_change, inline: bool = False):
+        background = parent.cget("bg")
+        frame = tk.Frame(parent, bg=background)
+        if inline:
+            frame.pack(side=tk.RIGHT, padx=(8, 0))
+        else:
+            frame.configure(height=26)
+            frame.pack(fill=tk.X, pady=(0, 4))
+            frame.pack_propagate(False)
+        tk.Label(frame, text=title, bg=background, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 6))
+        selected = selected_getter()
+        if not selected:
+            selected = {"CET4", "CET6", "CUSTOM"}
+        variables: dict[str, tk.BooleanVar] = {}
+        for value, label in (("CET4", "四级"), ("CET6", "六级"), ("CUSTOM", "自定义")):
+            var = tk.BooleanVar(value=value in selected)
+            variables[value] = var
+            tk.Checkbutton(frame, text=label, variable=var, command=on_change, bg=background, fg=TEXT, activebackground=background, selectcolor=background, font="LexiSmall", padx=0, pady=0, height=1).pack(side=tk.LEFT, padx=(0, 5))
+        return variables
+
+    def _selected_levels(self, variables: dict[str, tk.BooleanVar]) -> set[str]:
+        return {level for level, variable in variables.items() if variable.get()}
+
+    def _save_study_levels(self):
+        self.service.set_study_levels(self._selected_levels(self.study_filter_vars))
+        self.load_study_card()
+
+    def _save_review_levels(self):
+        self.service.set_review_levels(self._selected_levels(self.review_filter_vars))
+        self.review_queue = []
+        self.refresh_review_page()
+
+    def save_study_order(self):
+        self.service.set_study_order(self.study_order_var.get())
+        if self.current_page == "study":
+            self.load_study_card()
 
     def _bind_shortcuts(self):
         self.bind("<Control-k>", lambda _event: self._focus_search())
@@ -538,6 +667,8 @@ class LexiTrackApp(tk.Tk):
             self.refresh_library()
         elif key == "analytics":
             self.refresh_analytics()
+        elif key == "reminder":
+            self._refresh_word_reminder_status()
 
     def refresh_dashboard(self):
         snapshot = self.service.dashboard()
@@ -683,20 +814,177 @@ class LexiTrackApp(tk.Tk):
             self._last_reminded_due_count = 0
         self.after(60_000, self._check_review_reminder)
 
+    def save_reminder_settings(self):
+        try:
+            interval = float(self.reminder_interval_var.get().strip())
+            self.service.set_reminder_settings(self.reminder_enabled_var.get(), interval)
+        except (TypeError, ValueError) as exc:
+            message = str(exc) or "提醒间隔必须是有效数字"
+            messagebox.showerror("设置有误", message, parent=self)
+            return False
+        self.reminder_interval_var.set(f"{interval:g}")
+        self._schedule_word_reminder()
+        return True
+
+    def _cancel_word_reminder(self):
+        if self._word_reminder_after_id is not None:
+            try:
+                self.after_cancel(self._word_reminder_after_id)
+            except tk.TclError:
+                pass
+            self._word_reminder_after_id = None
+        self._word_reminder_next_at = 0.0
+
+    def _schedule_word_reminder(self, delay_minutes: float | None = None):
+        self._cancel_word_reminder()
+        if not self.service.reminder_enabled():
+            self._refresh_word_reminder_status()
+            return
+        interval = self.service.reminder_interval_minutes() if delay_minutes is None else float(delay_minutes)
+        delay_ms = max(1, round(interval * 60_000))
+        self._word_reminder_next_at = time.time() + delay_ms / 1000
+        self._word_reminder_after_id = self.after(delay_ms, self._on_word_reminder_due)
+        self._refresh_word_reminder_status()
+
+    def _refresh_word_reminder_status(self):
+        if not hasattr(self, "reminder_status"):
+            return
+        if not self.service.reminder_enabled():
+            self.reminder_status.configure(text="提醒已关闭", bg="#EDF1F4", fg=MUTED)
+        elif self._word_reminder_next_at:
+            remaining_minutes = max(0.0, (self._word_reminder_next_at - time.time()) / 60)
+            self.reminder_status.configure(
+                text=f"下一张卡片约在 {remaining_minutes:.1f} min 后弹出",
+                bg="#E7F5F0",
+                fg=ACCENT,
+            )
+        else:
+            self.reminder_status.configure(text="提醒将在应用启动后安排", bg="#EAF1FA", fg=BLUE)
+
+    def _on_word_reminder_due(self):
+        self._word_reminder_after_id = None
+        self._word_reminder_next_at = 0.0
+        self._show_word_reminder_popup(preview=False)
+
+    def preview_word_reminder(self):
+        self._show_word_reminder_popup(preview=True)
+
+    def _show_word_reminder_popup(self, preview: bool = False):
+        if self._word_reminder_popup is not None and self._word_reminder_popup.winfo_exists():
+            if not preview:
+                self._word_reminder_is_preview = False
+            self._word_reminder_popup.deiconify()
+            self._word_reminder_popup.lift()
+            return
+        entry = self.service.reminder_card(exclude_id=self._word_reminder_previous_id)
+        if entry is None:
+            if preview:
+                messagebox.showinfo("暂无单词", "当前词库中没有可展示的单词。", parent=self)
+            else:
+                self._schedule_word_reminder()
+            return
+        self._word_reminder_previous_id = entry.word_id
+        self._word_reminder_is_preview = preview
+
+        popup = tk.Toplevel(self)
+        self._word_reminder_popup = popup
+        popup.title("LexiTrack 词程 · 单词提醒")
+        popup.geometry("680x760")
+        popup.minsize(620, 700)
+        popup.configure(bg=SURFACE)
+        popup.transient(self)
+        try:
+            popup.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        heading = tk.Frame(popup, bg=SIDEBAR)
+        heading.pack(fill=tk.X)
+        tk.Label(heading, text="单词学习提醒", bg=SIDEBAR, fg="#FFFFFF", font="LexiBodyBold").pack(anchor="w", padx=26, pady=(18, 2))
+        tk.Label(heading, text="用一分钟巩固这张卡片", bg=SIDEBAR, fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=26, pady=(0, 18))
+
+        content = tk.Frame(popup, bg=SURFACE)
+        content.pack(fill=tk.BOTH, expand=True, padx=28, pady=14)
+        tk.Label(content, text=entry.word, bg=SURFACE, fg=TEXT, font="LexiWord").pack(anchor="w")
+        tk.Label(content, text=entry.phonetic or "音标待补充", bg=SURFACE, fg=MUTED, font="LexiBody").pack(anchor="w", pady=(2, 14))
+        tk.Label(content, text=entry.meaning, bg=SURFACE, fg=TEXT, font="LexiBodyBold", wraplength=610, justify="left").pack(anchor="w")
+        tk.Label(content, text="双语例句", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(anchor="w", pady=(12, 4))
+        for index, example in enumerate(entry.examples[:3], start=1):
+            tk.Label(
+                content,
+                text=f"{index}. {example.english}\n   {example.chinese}",
+                bg=SURFACE,
+                fg=TEXT,
+                font="LexiExample",
+                wraplength=610,
+                justify="left",
+            ).pack(anchor="w", fill=tk.X, pady=(0, 4))
+        if entry.mnemonic:
+            tk.Label(
+                content,
+                text=f"助记  {entry.mnemonic}",
+                bg="#FFF1E2",
+                fg="#8A531F",
+                font="LexiSmall",
+                wraplength=580,
+                justify="left",
+                padx=12,
+                pady=8,
+            ).pack(fill=tk.X, pady=(8, 0))
+
+        actions = tk.Frame(popup, bg="#F7F9FA")
+        actions.pack(fill=tk.X, side=tk.BOTTOM)
+        action_inner = tk.Frame(actions, bg="#F7F9FA")
+        action_inner.pack(fill=tk.X, padx=24, pady=18)
+        self._primary_button(action_inner, "在词库查看", lambda: self._open_reminder_word(entry.word), width=10).pack(side=tk.LEFT)
+        self._outline_button(action_inner, "知道了", self._dismiss_word_reminder, width=8).pack(side=tk.RIGHT)
+        actions.pack_configure(before=content)
+        popup.protocol("WM_DELETE_WINDOW", self._dismiss_word_reminder)
+        try:
+            self.bell()
+        except tk.TclError:
+            pass
+        popup.after(100, popup.lift)
+
+    def _dismiss_word_reminder(self):
+        was_preview = self._word_reminder_is_preview
+        popup = self._word_reminder_popup
+        self._word_reminder_popup = None
+        self._word_reminder_is_preview = False
+        if popup is not None and popup.winfo_exists():
+            popup.destroy()
+        if not was_preview:
+            self._schedule_word_reminder()
+
+    def _open_reminder_word(self, word: str):
+        self._dismiss_word_reminder()
+        self.search_var.set(word)
+        self.show_page("library")
+        self.deiconify()
+        self.lift()
+
     def refresh_library(self):
         entries = self.service.search(self.search_var.get())
         for item in self.library_tree.get_children():
             self.library_tree.delete(item)
         states = {state.word_id: state for state in self.service.repository.all_review_states()}
         visible = entries[:1000]
+        self.library_item_ids.clear()
         for entry in visible:
             state = states.get(entry.word_id)
             due = "未学习" if state is None else datetime.fromtimestamp(state.due_at_utc).strftime("%m-%d %H:%M")
-            self.library_tree.insert("", tk.END, values=(entry.word, entry.meaning.replace("\\r", " ")[:90], entry.level, due))
+            item_id = self.library_tree.insert("", tk.END, values=(entry.word, entry.meaning.replace("\\r", " ")[:90], entry.level, due))
+            self.library_item_ids[item_id] = entry.word_id
         suffix = "（仅显示前 1,000 条）" if len(entries) > 1000 else ""
         self.library_count.configure(text=f"找到 {len(entries):,} 条 {suffix}")
 
     def choose_csv(self):
+        messagebox.showinfo(
+            "导入标签",
+            "请在 CSV 的 level 列填写 CET4、CET6 或 custom；多个词书用 | 分隔。\n"
+            "tags 列也支持用 | 分隔多个标签，可对整批行填写相同标签。导入后可在词库中批量修改自定义词条。",
+            parent=self,
+        )
         path = filedialog.askopenfilename(title="导入 CSV v1", filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")])
         if not path:
             return
@@ -726,6 +1014,39 @@ class LexiTrackApp(tk.Tk):
             tree.insert("", tk.END, values=(issue.row, "跳过" if issue.status == "skipped" else "失败", issue.field, issue.error_code, issue.message))
         tree.pack(fill=tk.BOTH, expand=True)
         self._primary_button(dialog, "关闭", dialog.destroy, width=9).pack(anchor="e", padx=24, pady=(0, 20))
+
+    def batch_edit_labels(self):
+        selected = self.library_tree.selection()
+        word_ids = {self.library_item_ids[item_id] for item_id in selected if item_id in self.library_item_ids}
+        if not word_ids:
+            messagebox.showinfo("批量标签", "请先在词库中选择一个或多个自定义词条。", parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("批量修改标签")
+        dialog.geometry("480x270")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        tk.Label(dialog, text=f"已选择 {len(word_ids)} 个词条", bg=BG, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=24, pady=(22, 8))
+        tk.Label(dialog, text="仅对自定义词条生效；level 可填 CET4、CET6、custom 或用 | 分隔多个词书。", bg=BG, fg=MUTED, font="LexiSmall", wraplength=420, justify="left").pack(anchor="w", padx=24)
+        form = tk.Frame(dialog, bg=BG)
+        form.pack(fill=tk.X, padx=24, pady=16)
+        tk.Label(form, text="level", bg=BG, fg=MUTED, font="LexiSmall").grid(row=0, column=0, sticky="w", pady=6)
+        level_var = tk.StringVar(value="custom")
+        tk.Entry(form, textvariable=level_var, font="LexiBody", width=32).grid(row=0, column=1, padx=10, sticky="w")
+        tk.Label(form, text="tags", bg=BG, fg=MUTED, font="LexiSmall").grid(row=1, column=0, sticky="w", pady=6)
+        tags_var = tk.StringVar()
+        tk.Entry(form, textvariable=tags_var, font="LexiBody", width=32).grid(row=1, column=1, padx=10, sticky="w")
+        def save():
+            levels = {item.strip().upper() for item in level_var.get().replace(",", "|").split("|") if item.strip()}
+            if not levels or not levels.issubset({"CET4", "CET6", "CUSTOM"}):
+                messagebox.showerror("标签有误", "level 只能包含 CET4、CET6、custom。", parent=dialog)
+                return
+            count = self.service.update_entry_labels(word_ids, "/".join(sorted(levels)), {item.strip() for item in tags_var.get().split("|") if item.strip()})
+            dialog.destroy()
+            self.refresh_library()
+            messagebox.showinfo("批量标签", f"已更新 {count} 个自定义词条。", parent=self)
+        self._primary_button(dialog, "保存标签", save, width=10).pack(side=tk.RIGHT, padx=24, pady=12)
+        self._outline_button(dialog, "取消", dialog.destroy, width=8).pack(side=tk.RIGHT, pady=12)
 
     def set_forecast_days(self, days: int):
         self.forecast_days = days
@@ -805,7 +1126,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         pass
     app.update()
     visited = []
-    for page in ("dashboard", "study", "review", "library", "analytics", "settings"):
+    for page in ("dashboard", "study", "review", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
         app.update()
         visited.append(page)

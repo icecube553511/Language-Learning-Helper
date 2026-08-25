@@ -10,7 +10,7 @@
 word,meaning,example1_en,example1_zh,example2_en,example2_zh,example3_en,example3_zh
 ```
 
-选填列：`phonetic,level,tags,mnemonic`。未知列忽略并在汇总中提示。`level` 可用值为 `CET4`、`CET6`、`custom`，默认 `custom`。多个 `tags` 用竖线分隔。
+选填列：`phonetic,level,tags,mnemonic`。未知列忽略并在汇总中提示。`level` 可由 `CET4`、`CET6`、`custom` 中一个或多个值组成，默认 `custom`；多个词汇组和多个 `tags` 均用竖线分隔。导入后，两端都允许对导入词条批量替换词汇组和标签，内置词条只读。
 
 ```csv
 word,meaning,phonetic,level,tags,mnemonic,example1_en,example1_zh,example2_en,example2_zh,example3_en,example3_zh
@@ -26,4 +26,3 @@ negotiate,"v. 谈判,协商",/nɪˈɡəʊʃieɪt/,CET6,business|meeting,go + tia
 - 无效行不进入学习队列；有效行可以导入，结果必须提供总行数、成功、跳过、失败以及 `row/field/errorCode/message`。
 
 标准错误码：`missing_column`、`empty_required`、`duplicate_example`、`duplicate_word`、`invalid_level`、`too_long`、`invalid_encoding`、`malformed_csv`。
-

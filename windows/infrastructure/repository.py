@@ -7,7 +7,15 @@ from pathlib import Path
 import tempfile
 import threading
 
-from domain.models import DEFAULT_REVIEW_BATCH_SIZE, ReviewState, VocabularyEntry
+from domain.models import (
+    DEFAULT_STUDY_ORDER,
+    DEFAULT_REMINDER_INTERVAL_MINUTES,
+    DEFAULT_REVIEW_BATCH_SIZE,
+    MAX_REMINDER_INTERVAL_MINUTES,
+    MIN_REMINDER_INTERVAL_MINUTES,
+    ReviewState,
+    VocabularyEntry,
+)
 from infrastructure.catalog import entry_from_payload
 
 
@@ -27,6 +35,11 @@ class JsonLearningRepository:
         self._settings: dict[str, object] = {
             "fontScale": 1.0,
             "reviewBatchSize": DEFAULT_REVIEW_BATCH_SIZE,
+            "studyOrder": DEFAULT_STUDY_ORDER,
+            "studyLevels": [],
+            "reviewLevels": [],
+            "reminderEnabled": False,
+            "reminderIntervalMinutes": DEFAULT_REMINDER_INTERVAL_MINUTES,
         }
         self._load()
 
@@ -152,4 +165,101 @@ class JsonLearningRepository:
     def set_review_batch_size(self, size: int) -> None:
         with self._lock:
             self._settings["reviewBatchSize"] = max(1, int(size))
+            self._save_locked()
+
+    def get_study_order(self) -> str:
+        with self._lock:
+            value = str(self._settings.get("studyOrder", DEFAULT_STUDY_ORDER))
+            return value if value in {"alphabetical", "random"} else DEFAULT_STUDY_ORDER
+
+    def set_study_order(self, order: str) -> None:
+        if order not in {"alphabetical", "random"}:
+            raise ValueError("学习顺序必须为 alphabetical 或 random")
+        with self._lock:
+            self._settings["studyOrder"] = order
+            self._save_locked()
+
+    def _get_levels(self, key: str) -> set[str]:
+        with self._lock:
+            raw = self._settings.get(key, [])
+            if isinstance(raw, str):
+                raw = raw.replace(",", "|").split("|")
+            if not isinstance(raw, list):
+                return set()
+            return {str(item).strip().upper() for item in raw if str(item).strip()}
+
+    def _set_levels(self, key: str, levels: set[str]) -> None:
+        with self._lock:
+            self._settings[key] = sorted({str(item).strip().upper() for item in levels if str(item).strip()})
+            self._save_locked()
+
+    def get_study_levels(self) -> set[str]:
+        return self._get_levels("studyLevels")
+
+    def set_study_levels(self, levels: set[str]) -> None:
+        self._set_levels("studyLevels", levels)
+
+    def get_review_levels(self) -> set[str]:
+        return self._get_levels("reviewLevels")
+
+    def set_review_levels(self, levels: set[str]) -> None:
+        self._set_levels("reviewLevels", levels)
+
+    def update_entry_labels(self, word_ids: set[str], level: str, tags: set[str]) -> int:
+        normalized_ids = {str(item) for item in word_ids}
+        normalized_level = level.strip() or "custom"
+        normalized_tags = tuple(sorted({tag.strip() for tag in tags if tag.strip()}))
+        updated = 0
+        with self._lock:
+            for word_id in normalized_ids:
+                entry = self._user_entries.get(word_id)
+                if entry is None:
+                    continue
+                self._user_entries[word_id] = VocabularyEntry(
+                    word_id=entry.word_id,
+                    word=entry.word,
+                    meaning=entry.meaning,
+                    examples=entry.examples,
+                    phonetic=entry.phonetic,
+                    level=normalized_level,
+                    tags=normalized_tags,
+                    mnemonic=entry.mnemonic,
+                    source=entry.source,
+                )
+                updated += 1
+            if updated:
+                self._save_locked()
+        return updated
+
+    def get_reminder_enabled(self) -> bool:
+        with self._lock:
+            return self._settings.get("reminderEnabled", False) is True
+
+    def set_reminder_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self._settings["reminderEnabled"] = bool(enabled)
+            self._save_locked()
+
+    def get_reminder_interval_minutes(self) -> float:
+        with self._lock:
+            try:
+                return min(
+                    MAX_REMINDER_INTERVAL_MINUTES,
+                    max(
+                        MIN_REMINDER_INTERVAL_MINUTES,
+                        float(self._settings.get(
+                            "reminderIntervalMinutes",
+                            DEFAULT_REMINDER_INTERVAL_MINUTES,
+                        )),
+                    ),
+                )
+            except (TypeError, ValueError):
+                return DEFAULT_REMINDER_INTERVAL_MINUTES
+
+    def set_reminder_interval_minutes(self, minutes: float) -> None:
+        with self._lock:
+            self._settings["reminderIntervalMinutes"] = min(
+                MAX_REMINDER_INTERVAL_MINUTES,
+                max(MIN_REMINDER_INTERVAL_MINUTES, float(minutes)),
+            )
             self._save_locked()

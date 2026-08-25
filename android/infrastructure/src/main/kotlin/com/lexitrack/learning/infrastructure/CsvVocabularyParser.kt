@@ -76,7 +76,13 @@ class CsvVocabularyParser {
                             word = word,
                             meaning = values.getValue("meaning"),
                             phonetic = values["phonetic"].orEmpty(),
-                            levels = setOf(values["level"].orEmpty().ifBlank { "custom" }),
+                            levels = (values["level"].orEmpty().ifBlank { "custom" })
+                                .replace(',', '|')
+                                .split('|')
+                                .map(String::trim)
+                                .filter(String::isNotEmpty)
+                                .map(String::uppercase)
+                                .toSet(),
                             tags = values["tags"].orEmpty().split('|').map(String::trim)
                                 .filter(String::isNotEmpty).toSet(),
                             mnemonic = values["mnemonic"].orEmpty(),
@@ -129,9 +135,15 @@ class CsvVocabularyParser {
         }?.let { (field, _) ->
             return failure(row, values["word"], field, "too_long", "字段超过允许长度。")
         }
-        val level = values["level"].orEmpty().ifBlank { "custom" }
-        if (level !in VALID_LEVELS) {
-            return failure(row, values["word"], "level", "invalid_level", "level 只能是 CET4、CET6 或 custom。")
+        val levels = values["level"].orEmpty().ifBlank { "custom" }
+            .replace(',', '|')
+            .split('|')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .map(String::uppercase)
+            .toSet()
+        if (levels.isEmpty() || !levels.all { it in VALID_LEVELS }) {
+            return failure(row, values["word"], "level", "invalid_level", "level 只能是 CET4、CET6 或 custom，可用 | 分隔多个词书。")
         }
         val normalizedExamples = (1..3).map { values.getValue("example${it}_en").lowercase() }
         if (normalizedExamples.distinct().size != normalizedExamples.size) {
@@ -180,6 +192,6 @@ class CsvVocabularyParser {
         )
         val OPTIONAL_COLUMNS = setOf("phonetic", "level", "tags", "mnemonic")
         val ALL_COLUMNS = REQUIRED_COLUMNS + OPTIONAL_COLUMNS
-        val VALID_LEVELS = setOf("CET4", "CET6", "custom")
+        val VALID_LEVELS = setOf("CET4", "CET6", "CUSTOM")
     }
 }

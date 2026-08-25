@@ -98,4 +98,4 @@ Android 构建需要 JDK 17、Android SDK 35；Windows 打包还需要 windows/r
 
 ## 当前架构审查提示
 
-共享 JSON 和 Android 已使用可多选的 memberships 语义；Windows 现有适配器仍保留历史单值 level 表示。后续功能应在应用边界统一为集合语义，并通过兼容读取迁移旧数据，不能把共享词库再次压缩成单个标签。
+共享 JSON 和 Android 使用可多选的 memberships 集合；Windows 为兼容旧状态仍持久化 `level` 字符串，但领域模型通过 `VocabularyEntry.levels` 暴露集合语义。筛选和新增功能必须使用集合接口，不得直接按单个字符串比较。

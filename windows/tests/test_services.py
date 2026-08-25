@@ -59,6 +59,34 @@ class LearningServiceTests(unittest.TestCase):
         self.assertEqual(self.service.set_font_scale(2), 1.4)
         self.assertEqual(self.service.set_font_scale(0), 0.9)
 
+    def test_study_order_defaults_to_random_and_supports_alphabetical(self):
+        entries = [sample_entry("zeta"), sample_entry("alpha")]
+        repository = JsonLearningRepository(Path(self.temp.name), entries)
+        service = LearningService(repository, words_learnt_repository=JsonWordsLearntRepository(Path(self.temp.name)))
+
+        self.assertEqual(service.study_order(), "random")
+        self.assertEqual(service.next_card(rng=random.Random(0)).word_id, "zeta")
+        service.set_study_order("alphabetical")
+        self.assertEqual(service.next_card().word_id, "alpha")
+
+    def test_study_and_review_level_filters_are_independent(self):
+        cet4 = VocabularyEntry.create("four", "四级", sample_entry("four").examples, level="CET4")
+        cet6 = VocabularyEntry.create("six", "六级", sample_entry("six").examples, level="CET6")
+        repository = JsonLearningRepository(Path(self.temp.name), [cet4, cet6])
+        learnt_repository = JsonWordsLearntRepository(Path(self.temp.name))
+        learnt_repository.save_learnt_words([
+            LearntWord(cet4.word_id, 1.0, 100, 100),
+            LearntWord(cet6.word_id, 1.0, 100, 100),
+        ])
+        service = LearningService(repository, words_learnt_repository=learnt_repository)
+        service.set_study_levels({"CET6"})
+        service.set_review_levels({"CET4"})
+
+        self.assertEqual(service.study_levels(), {"CET6"})
+        self.assertEqual([entry.word_id for entry in service.start_review_session(count=20, rng=random.Random(0))], ["four"])
+        service.set_review_levels({"CET4", "CET6"})
+        self.assertEqual({entry.word_id for entry in service.start_review_session(count=20, rng=random.Random(0))}, {"four", "six"})
+
     def test_study_ratings_create_initial_weights(self):
         entries = [sample_entry(word) for word in ("again", "hard", "good", "easy")]
         repository = JsonLearningRepository(Path(self.temp.name), entries)
@@ -127,6 +155,27 @@ class LearningServiceTests(unittest.TestCase):
         self.assertEqual(self.service.set_review_batch_size(0), 1)
         self.assertEqual(self.service.set_review_batch_size(99), 1)
         self.assertEqual(self.service.review_batch_size(), 1)
+
+    def test_reminder_settings_accept_fractional_minutes_and_validate_bounds(self):
+        self.assertEqual(self.service.set_reminder_settings(True, 1.25), 1.25)
+        self.assertTrue(self.service.reminder_enabled())
+        self.assertEqual(self.service.reminder_interval_minutes(), 1.25)
+        with self.assertRaises(ValueError):
+            self.service.set_reminder_settings(True, 0.25)
+        with self.assertRaises(ValueError):
+            self.service.set_reminder_settings(True, 121)
+
+    def test_reminder_card_prefers_due_words_and_avoids_previous(self):
+        entries = [sample_entry(word) for word in ("due-a", "due-b", "later")]
+        repository = JsonLearningRepository(Path(self.temp.name), entries)
+        service = LearningService(repository)
+        repository.save_review_state(ReviewState("due-a", due_at_utc=900, last_reviewed_at_utc=100))
+        repository.save_review_state(ReviewState("due-b", due_at_utc=900, last_reviewed_at_utc=100))
+        repository.save_review_state(ReviewState("later", due_at_utc=1100, last_reviewed_at_utc=100))
+
+        card = service.reminder_card(exclude_id="due-a", rng=random.Random(3), now_utc=1000)
+
+        self.assertEqual(card.word_id, "due-b")
 
     def test_due_review_count_and_due_only_session_use_schedule(self):
         entries = [sample_entry("due"), sample_entry("later")]

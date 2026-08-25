@@ -6,7 +6,16 @@ from datetime import datetime, timedelta
 import random
 import time
 
-from domain.models import LearntWord, ImportReport, ReviewRating, ReviewState, VocabularyEntry
+from domain.models import (
+    DEFAULT_STUDY_ORDER,
+    MAX_REMINDER_INTERVAL_MINUTES,
+    MIN_REMINDER_INTERVAL_MINUTES,
+    ImportReport,
+    LearntWord,
+    ReviewRating,
+    ReviewState,
+    VocabularyEntry,
+)
 from domain.ports import LearningRepository, WordsLearntRepository
 from domain.scheduler import SECONDS_PER_DAY, retention_at, schedule_review
 
@@ -92,16 +101,74 @@ class LearningService:
             due_next_30_days=sum(now < state.due_at_utc <= now + 30 * SECONDS_PER_DAY for state in reviewed),
         )
 
-    def next_card(self, now_utc: float | None = None, exclude_id: str = "") -> VocabularyEntry | None:
+    def next_card(
+        self,
+        now_utc: float | None = None,
+        exclude_id: str = "",
+        rng: random.Random | None = None,
+    ) -> VocabularyEntry | None:
         entries = self.repository.all_entries()
         learnt_ids = set(self._learnt_by_id())
         fresh = [
             entry for entry in entries
-            if entry.word_id not in learnt_ids and entry.word_id != exclude_id
+            if entry.word_id not in learnt_ids
+            and entry.word_id != exclude_id
+            and self._matches_levels(entry, self.study_levels())
         ]
         if fresh:
-            return fresh[0]
+            if self.study_order() == "alphabetical":
+                return sorted(fresh, key=lambda item: item.word_id)[0]
+            return (rng or random.SystemRandom()).choice(fresh)
         return None
+
+    @staticmethod
+    def _matches_levels(entry: VocabularyEntry, levels: set[str]) -> bool:
+        return not levels or bool(entry.levels.intersection({item.upper() for item in levels}))
+
+    def study_order(self) -> str:
+        getter = getattr(self.repository, "get_study_order", None)
+        value = getter() if getter else DEFAULT_STUDY_ORDER
+        return value if value in {"alphabetical", "random"} else DEFAULT_STUDY_ORDER
+
+    def set_study_order(self, order: str) -> str:
+        if order not in {"alphabetical", "random"}:
+            raise ValueError("学习顺序必须为 alphabetical 或 random")
+        setter = getattr(self.repository, "set_study_order", None)
+        if setter:
+            setter(order)
+        return order
+
+    def study_levels(self) -> set[str]:
+        getter = getattr(self.repository, "get_study_levels", None)
+        return set(getter()) if getter else set()
+
+    def set_study_levels(self, levels: set[str]) -> set[str]:
+        normalized = {str(item).strip().upper() for item in levels if str(item).strip()}
+        setter = getattr(self.repository, "set_study_levels", None)
+        if setter:
+            setter(normalized)
+        return normalized
+
+    def review_levels(self) -> set[str]:
+        getter = getattr(self.repository, "get_review_levels", None)
+        return set(getter()) if getter else set()
+
+    def set_review_levels(self, levels: set[str]) -> set[str]:
+        normalized = {str(item).strip().upper() for item in levels if str(item).strip()}
+        setter = getattr(self.repository, "set_review_levels", None)
+        if setter:
+            setter(normalized)
+        return normalized
+
+    def available_levels(self) -> list[str]:
+        levels = {level for entry in self.repository.all_entries() for level in entry.levels}
+        return sorted(levels or {"CUSTOM"})
+
+    def update_entry_labels(self, word_ids: set[str], level: str, tags: set[str]) -> int:
+        updater = getattr(self.repository, "update_entry_labels", None)
+        if updater is None:
+            return 0
+        return updater(word_ids, level, tags)
 
     def rate_card(
         self,
@@ -133,7 +200,7 @@ class LearningService:
         entries = {entry.word_id: entry for entry in self.repository.all_entries()}
         learnt = [
             word for word in self._learnt_by_id().values()
-            if word.word_id in entries
+            if word.word_id in entries and self._matches_levels(entries[word.word_id], self.review_levels())
         ]
         if due_only:
             now = time.time() if now_utc is None else now_utc
@@ -196,6 +263,39 @@ class LearningService:
         bounded = min(max(1, int(size)), max(1, total))
         self.repository.set_review_batch_size(bounded)
         return bounded
+
+    def reminder_enabled(self) -> bool:
+        return self.repository.get_reminder_enabled()
+
+    def reminder_interval_minutes(self) -> float:
+        return self.repository.get_reminder_interval_minutes()
+
+    def set_reminder_settings(self, enabled: bool, interval_minutes: float) -> float:
+        minutes = float(interval_minutes)
+        if not MIN_REMINDER_INTERVAL_MINUTES <= minutes <= MAX_REMINDER_INTERVAL_MINUTES:
+            raise ValueError("提醒间隔需在 0.5 到 120 分钟之间")
+        self.repository.set_reminder_enabled(enabled)
+        self.repository.set_reminder_interval_minutes(minutes)
+        return minutes
+
+    def reminder_card(
+        self,
+        exclude_id: str = "",
+        rng: random.Random | None = None,
+        now_utc: float | None = None,
+    ) -> VocabularyEntry | None:
+        entries = self.repository.all_entries()
+        if not entries:
+            return None
+        now = time.time() if now_utc is None else now_utc
+        due_ids = {
+            state.word_id
+            for state in self.repository.all_review_states()
+            if state.last_reviewed_at_utc is not None and state.due_at_utc <= now
+        }
+        candidates = [entry for entry in entries if entry.word_id in due_ids] or entries
+        without_previous = [entry for entry in candidates if entry.word_id != exclude_id]
+        return (rng or random.SystemRandom()).choice(without_previous or candidates)
 
     def due_review_count(self, now_utc: float | None = None) -> int:
         now = time.time() if now_utc is None else now_utc

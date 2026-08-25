@@ -7,6 +7,12 @@ import unicodedata
 
 ALGORITHM_VERSION = "lexi-sm2-v1"
 DEFAULT_REVIEW_BATCH_SIZE = 20
+DEFAULT_STUDY_ORDER = "random"
+STUDY_ORDER_ALPHABETICAL = "alphabetical"
+STUDY_ORDER_RANDOM = "random"
+DEFAULT_REMINDER_INTERVAL_MINUTES = 30.0
+MIN_REMINDER_INTERVAL_MINUTES = 0.5
+MAX_REMINDER_INTERVAL_MINUTES = 120.0
 
 
 INITIAL_REVIEW_WEIGHTS = {
@@ -63,6 +69,12 @@ class VocabularyEntry:
     tags: tuple[str, ...] = ()
     mnemonic: str = ""
     source: str = "user"
+
+    @property
+    def levels(self) -> frozenset[str]:
+        """Expose the shared membership set while preserving the v1 string field."""
+        values = self.level.replace(",", "/").replace("|", "/").split("/")
+        return frozenset(item.strip().upper() for item in values if item.strip()) or frozenset({"CUSTOM"})
 
     @classmethod
     def create(

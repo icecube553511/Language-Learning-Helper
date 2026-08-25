@@ -131,6 +131,9 @@ def verify_platform_markers() -> None:
         for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "contentVersion"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
+        for key in ("fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+            if marker.get(key) != parity.get(key):
+                fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
             fail(f"{platform} capabilities differ from shared parity manifest")
 
