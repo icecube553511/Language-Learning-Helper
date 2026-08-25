@@ -42,59 +42,6 @@ class Tooltip:
             self.window = None
 
 
-class ScrollableFrame(tk.Frame):
-    def __init__(self, parent, background: str = "#FFFFFF"):
-        super().__init__(parent, bg=background)
-        self.canvas = tk.Canvas(
-            self,
-            bg=background,
-            bd=0,
-            highlightthickness=0,
-            takefocus=True,
-        )
-        self.scrollbar = tk.Scrollbar(
-            self,
-            orient=tk.VERTICAL,
-            command=self.canvas.yview,
-            width=14,
-        )
-        self.interior = tk.Frame(self.canvas, bg=background)
-        self.window_id = self.canvas.create_window((0, 0), window=self.interior, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.interior.bind("<Configure>", self._sync_scrollregion)
-        self.canvas.bind("<Configure>", self._sync_width)
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
-        self.canvas.bind("<Prior>", lambda _event: self.canvas.yview_scroll(-1, "pages"))
-        self.canvas.bind("<Next>", lambda _event: self.canvas.yview_scroll(1, "pages"))
-        self.canvas.bind("<Home>", lambda _event: self.canvas.yview_moveto(0.0))
-        self.canvas.bind("<End>", lambda _event: self.canvas.yview_moveto(1.0))
-
-    def _sync_scrollregion(self, _event=None):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def _sync_width(self, event):
-        self.canvas.itemconfigure(self.window_id, width=event.width)
-
-    def _on_mousewheel(self, event):
-        pointer_x = self.canvas.winfo_pointerx()
-        pointer_y = self.canvas.winfo_pointery()
-        left = self.canvas.winfo_rootx()
-        top = self.canvas.winfo_rooty()
-        if not (
-            left <= pointer_x <= left + self.canvas.winfo_width()
-            and top <= pointer_y <= top + self.canvas.winfo_height()
-        ):
-            return None
-        units = -1 if event.delta > 0 else 1
-        self.canvas.yview_scroll(units * 3, "units")
-        return "break"
-
-    def scroll_to_top(self):
-        self.canvas.yview_moveto(0.0)
-
-
 def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:
     canvas.delete("all")
     line = {"fill": color, "width": 2, "capstyle": tk.ROUND, "joinstyle": tk.ROUND}

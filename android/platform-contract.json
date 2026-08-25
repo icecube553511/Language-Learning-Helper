@@ -11,7 +11,8 @@
     "fourRatingReview": "ready",
     "csvImportV1": "ready",
     "memoryForecast": "ready",
-    "fontScaling": "ready"
+    "fontScaling": "ready",
+    "fixedStudyLayout": "ready"
   },
   "platforms": ["windows", "android"]
 }

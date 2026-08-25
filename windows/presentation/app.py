@@ -8,7 +8,7 @@ import tkinter.font as tkfont
 
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
-from presentation.widgets import MemoryChart, NavItem, ScrollableFrame, draw_icon
+from presentation.widgets import MemoryChart, NavItem, draw_icon
 
 
 BG = "#F3F6F7"
@@ -67,7 +67,7 @@ class LexiTrackApp(tk.Tk):
         self.catalog_error = catalog_error
         self.title("LexiTrack 词程")
         self.geometry("1220x800")
-        self.minsize(800, 560)
+        self.minsize(960, 640)
         self.configure(bg=BG)
         self.font_manager = FontManager(self, self.service.font_scale())
         self._configure_styles()
@@ -226,23 +226,12 @@ class LexiTrackApp(tk.Tk):
         self.study_word.pack(pady=(6, 0))
         self.study_phonetic = tk.Label(self.study_card, text="", bg=SURFACE, fg=MUTED, font="LexiBody")
         self.study_phonetic.pack()
-        self.answer_scroller = ScrollableFrame(self.study_card, background=SURFACE)
-        self.answer_panel = self.answer_scroller.interior
-        self.answer_scroller.canvas.bind("<Configure>", self._resize_study_answer, add="+")
-        self.study_meaning = tk.Label(self.answer_panel, text="", bg=SURFACE, fg=TEXT, font="LexiHeading", wraplength=780, justify="center")
-        self.study_meaning.pack(pady=(10, 14))
-        self.example_labels: list[tk.Label] = []
-        for _index in range(3):
-            label = tk.Label(self.answer_panel, text="", bg="#F5F8F9", fg=TEXT, font="LexiBody", wraplength=790, justify="left", anchor="w", padx=14, pady=8)
-            label.pack(fill=tk.X, padx=40, pady=4)
-            self.example_labels.append(label)
-        self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
-        controls = tk.Frame(self.study_card, bg=SURFACE, height=64)
-        controls.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 6))
-        controls.pack_propagate(False)
-        self.reveal_button = self._primary_button(controls, "揭晓答案", self.reveal_answer)
-        self.reveal_button.pack(pady=5)
-        self.rating_frame = tk.Frame(controls, bg=SURFACE)
+        self.study_controls = tk.Frame(self.study_card, bg=SURFACE, height=60)
+        self.study_controls.pack(fill=tk.X, pady=(4, 2))
+        self.study_controls.pack_propagate(False)
+        self.reveal_button = self._primary_button(self.study_controls, "查看答案", self.reveal_answer)
+        self.reveal_button.pack(pady=4)
+        self.rating_frame = tk.Frame(self.study_controls, bg=SURFACE)
         for column, (label, rating, color) in enumerate((
             ("忘记", ReviewRating.AGAIN, RED),
             ("模糊", ReviewRating.HARD, ORANGE),
@@ -258,6 +247,41 @@ class LexiTrackApp(tk.Tk):
                 width=5,
             )
             button.grid(row=0, column=column, sticky="ew", padx=4)
+        self.answer_panel = tk.Frame(self.study_card, bg=SURFACE)
+        self.answer_panel.bind("<Configure>", self._resize_study_answer, add="+")
+        self.study_meaning = tk.Label(
+            self.answer_panel,
+            text="",
+            bg=SURFACE,
+            fg=TEXT,
+            font="LexiHeading",
+            wraplength=780,
+            justify="center",
+            height=2,
+        )
+        self.study_meaning.pack(pady=(2, 6))
+        examples_grid = tk.Frame(self.answer_panel, bg=SURFACE)
+        examples_grid.pack(fill=tk.BOTH, expand=True, padx=18)
+        self.example_labels: list[tk.Label] = []
+        for index in range(3):
+            examples_grid.grid_columnconfigure(index, weight=1, uniform="examples")
+            examples_grid.grid_rowconfigure(0, weight=1)
+            label = tk.Label(
+                examples_grid,
+                text="",
+                bg="#F5F8F9",
+                fg=TEXT,
+                font="LexiSmall",
+                wraplength=790,
+                justify="left",
+                anchor="w",
+                padx=12,
+                pady=4,
+                height=6,
+            )
+            label.grid(row=0, column=index, sticky="nsew", padx=4, pady=2)
+            self.example_labels.append(label)
+        self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
     def _resize_study_answer(self, event):
         wrap_width = max(260, event.width - 96)
         self.study_meaning.configure(wraplength=wrap_width)
@@ -384,7 +408,7 @@ class LexiTrackApp(tk.Tk):
     def load_study_card(self, exclude_id: str = ""):
         self.current_card = self.service.next_card(exclude_id=exclude_id)
         self.answer_visible = False
-        self.answer_scroller.pack_forget()
+        self.answer_panel.pack_forget()
         self.rating_frame.pack_forget()
         self.reveal_button.pack()
         if self.current_card is None:
@@ -395,7 +419,7 @@ class LexiTrackApp(tk.Tk):
             self.study_status.configure(text="当前没有到期或未学习词条")
             return
         entry = self.current_card
-        self.reveal_button.configure(text="揭晓答案", command=self.reveal_answer)
+        self.reveal_button.configure(text="查看答案", command=self.reveal_answer)
         self.study_level.configure(text=entry.level or "custom")
         self.study_word.configure(text=entry.word)
         self.study_phonetic.configure(text=entry.phonetic)
@@ -417,10 +441,9 @@ class LexiTrackApp(tk.Tk):
             self.study_mnemonic.pack(pady=(8, 0))
         else:
             self.study_mnemonic.pack_forget()
-        self.answer_scroller.pack(fill=tk.BOTH, expand=True, padx=(12, 6), pady=(8, 2))
-        self.answer_scroller.scroll_to_top()
         self.reveal_button.pack_forget()
         self.rating_frame.pack(fill=tk.X, padx=14, pady=5)
+        self.answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 8))
 
     def rate_current(self, rating: ReviewRating):
         if self.current_card is None or not self.answer_visible:
@@ -498,7 +521,7 @@ class LexiTrackApp(tk.Tk):
 
 
 def run_gui_smoke(app: LexiTrackApp) -> dict:
-    app.geometry("815x565")
+    app.geometry("960x640")
     try:
         app.attributes("-alpha", 0.0)
     except tk.TclError:
@@ -510,21 +533,20 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         app.update()
         visited.append(page)
     app.show_page("study")
+    app.update()
+    reveal_label = app.reveal_button.cget("text")
     app.reveal_answer()
     app.update()
-    scroll_bbox = app.answer_scroller.canvas.bbox("all")
-    scrollregion_ready = bool(scroll_bbox and scroll_bbox[3] > 0)
-    app.answer_scroller.canvas.yview_moveto(1.0)
-    app.update()
-    canvas_top = app.answer_scroller.canvas.winfo_rooty()
-    canvas_bottom = canvas_top + app.answer_scroller.canvas.winfo_height()
-    third_top = app.example_labels[2].winfo_rooty()
-    third_bottom = third_top + app.example_labels[2].winfo_height()
-    third_example_reachable = (
-        app.current_card is None
-        or (third_bottom > canvas_top + 2 and third_top < canvas_bottom - 2)
-    )
+    answer_top = app.answer_panel.winfo_rooty()
+    answer_bottom = answer_top + app.answer_panel.winfo_height()
+    example_bounds = [
+        [label.winfo_rooty(), label.winfo_rooty() + label.winfo_height()]
+        for label in app.example_labels
+    ]
     rating_bottom = app.rating_frame.winfo_rooty() + app.rating_frame.winfo_height()
+    controls_top = app.study_controls.winfo_rooty()
+    controls_bottom = controls_top + app.study_controls.winfo_height()
+    phonetic_bottom = app.study_phonetic.winfo_rooty() + app.study_phonetic.winfo_height()
     card_bottom = app.study_card.winfo_rooty() + app.study_card.winfo_height()
     window_bottom = app.winfo_rooty() + app.winfo_height()
     rating_buttons_visible = (
@@ -534,13 +556,22 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and rating_bottom <= card_bottom + 2
         and rating_bottom <= window_bottom + 2
     )
-    answer_viewport_usable = app.answer_scroller.canvas.winfo_height() >= 120
+    examples_visible = app.current_card is None or all(
+        top >= answer_top - 2 and bottom <= answer_bottom + 2 and bottom <= window_bottom + 2
+        for top, bottom in example_bounds
+    )
+    controls_above_answers = (
+        controls_top >= phonetic_bottom - 2
+        and controls_bottom <= answer_top + 2
+    )
+    study_has_scrollbar = any(isinstance(widget, tk.Scrollbar) for widget in app.study_card.winfo_children())
     result = {
         "ok": (
             set(visited) == set(app.pages)
-            and scrollregion_ready
-            and answer_viewport_usable
-            and third_example_reachable
+            and reveal_label == "查看答案"
+            and not study_has_scrollbar
+            and controls_above_answers
+            and examples_visible
             and rating_buttons_visible
         ),
         "pages": visited,
@@ -548,11 +579,12 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "studyCardReady": app.current_card is None or len(app.current_card.examples) >= 3,
         "fontScale": app.service.font_scale(),
         "viewport": [app.winfo_width(), app.winfo_height()],
-        "answerScrollregion": list(scroll_bbox) if scroll_bbox else [],
-        "answerViewport": [canvas_top, canvas_bottom, app.answer_scroller.canvas.winfo_height(), *app.answer_scroller.canvas.yview()],
-        "answerViewportUsable": answer_viewport_usable,
-        "thirdExampleBounds": [third_top, third_bottom, app.example_labels[2].winfo_height()],
-        "thirdExampleReachable": third_example_reachable,
+        "revealLabel": reveal_label,
+        "studyScrollDisabled": not study_has_scrollbar,
+        "answerBounds": [answer_top, answer_bottom],
+        "exampleBounds": example_bounds,
+        "examplesVisible": examples_visible,
+        "controlsAboveAnswers": controls_above_answers,
         "ratingBounds": [app.rating_frame.winfo_rooty(), rating_bottom, card_bottom, window_bottom],
         "ratingButtonsVisible": rating_buttons_visible,
         "studyGeometry": {
