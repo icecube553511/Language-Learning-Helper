@@ -2,7 +2,7 @@
 
 ## 决策
 
-LexiTrack 使用单一 monorepo 维护两个离线客户端。Windows 与 Android 可以使用各自最稳定的平台 UI 技术，但必须服从版本化的共享契约和 golden tests。
+LexiTrack 使用单一 monorepo 维护两个离线客户端。Windows 与 Android 可以使用各自最稳定的平台 UI 技术，但必须服从版本化的共享契约、品牌资产和 golden tests。
 
 ```text
 Presentation  --->  Application  --->  Domain
@@ -16,6 +16,8 @@ Presentation  --->  Application  --->  Domain
 - `Infrastructure`：JSON/SharedPreferences 持久化、独立 `Words_Learnt`、内置词库、CSV 解析、系统文件选择器。
 - `Presentation`：Tkinter 或 Compose 页面、状态与无障碍语义。
 - Composition Root：唯一负责组装具体实现的最外层入口。
+
+跨端品牌源资产位于 `shared/assets/branding/`。平台最外层的图标资源由此派生，不得由 `domain` 或 `application` 直接引用。
 
 ## 一致性边界
 

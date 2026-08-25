@@ -11,6 +11,7 @@ windows/                 Windows 桌面客户端（Python + Tkinter）
 android/                 Android 客户端（Kotlin + Jetpack Compose）
 shared/contracts/        双端共享的数据、算法和功能契约
 shared/content/          经过质量门禁的 CET-4/CET-6 内容
+shared/assets/branding/  Windows 与 Android 共用的品牌源资产
 tools/                   数据生成、质量检查和双端同步检查
 ```
 

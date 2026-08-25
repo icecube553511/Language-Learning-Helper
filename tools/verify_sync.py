@@ -121,6 +121,20 @@ def verify_catalog() -> None:
         fail(f"Membership counts are stale: {membership_counts}")
 
 
+def verify_branding() -> None:
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    relative_path = parity.get("branding", {}).get("appImage")
+    if not relative_path:
+        fail("Shared app image is not declared")
+    image_path = ROOT / relative_path
+    if not image_path.is_file():
+        fail(f"Shared app image is missing: {relative_path}")
+    with image_path.open("rb") as image_file:
+        signature = image_file.read(8)
+    if signature != b"\x89PNG\r\n\x1a\n":
+        fail(f"Shared app image is not a PNG: {relative_path}")
+
+
 def verify_platform_markers() -> None:
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     for platform in parity["platforms"]:
@@ -131,7 +145,7 @@ def verify_platform_markers() -> None:
         for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "contentVersion"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
-        for key in ("fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+        for key in ("branding", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
@@ -142,8 +156,9 @@ def main() -> int:
     verify_scheduler()
     verify_weighted_review()
     verify_catalog()
+    verify_branding()
     verify_platform_markers()
-    print("Synchronization contract verified for Windows, Android and shared content.")
+    print("Synchronization contract verified for Windows, Android and shared resources.")
     return 0
 
 

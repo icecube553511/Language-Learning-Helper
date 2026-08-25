@@ -49,6 +49,7 @@ Android app (composition root) -> presentation -> application -> domain
 ~~~text
 shared/contracts/       双端数据、算法、CSV 与能力契约及 golden vectors
 shared/content/         版本化 CET-4/CET-6 词库与许可声明
+shared/assets/branding/ 双端共用的品牌源资产
 tools/                  词库生成和双端同步校验
 windows/domain/         领域模型、调度器和端口
 windows/application/    用例服务

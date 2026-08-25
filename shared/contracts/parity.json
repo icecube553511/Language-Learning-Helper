@@ -3,6 +3,7 @@
   "schemaVersion": 3,
   "algorithmVersion": "lexi-sm2-v1",
   "contentVersion": "cet-2026.08-v1",
+  "branding": { "appImage": "shared/assets/branding/app_image.png" },
   "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
   "learningReminder": { "minimumMinutes": 0.5, "maximumMinutes": 120.0, "defaultMinutes": 30.0 },
   "studyOrder": { "default": "random", "allowed": ["random", "alphabetical"] },

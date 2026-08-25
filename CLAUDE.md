@@ -39,6 +39,7 @@ Android 构建使用 JDK 17 与 SDK 35；Windows 打包前安装 windows/require
 
 - shared/contracts/：跨端 schema、算法、CSV 和能力门禁。
 - shared/content/：生成的内置词库，不手工编辑大 JSON；使用 tools/build_catalog.py 更新。
+- shared/assets/branding/：Windows 与 Android 共用的 canonical 品牌源资产，平台图标资源由此派生。
 - windows/{domain,application,infrastructure,presentation}/：Windows 四层。
 - android/{domain,application,infrastructure,presentation}/：Android 四层；android/app 是组合根。
 - .github/workflows/ci.yml：双端 CI 和可追踪构建产物。
