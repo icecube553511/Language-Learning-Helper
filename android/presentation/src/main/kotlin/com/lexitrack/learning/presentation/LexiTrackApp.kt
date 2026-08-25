@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -494,6 +495,7 @@ private fun RevealedCardContent(
             modifier = Modifier.fillMaxWidth(),
             style = MaterialTheme.typography.titleMedium,
             color = Ink,
+            textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -503,6 +505,8 @@ private fun RevealedCardContent(
                 card.mnemonic,
                 style = MaterialTheme.typography.labelMedium,
                 color = MutedInk,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -514,18 +518,25 @@ private fun RevealedCardContent(
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             card.examples.take(3).forEachIndexed { index, example ->
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Text(
                         "${index + 1}. ${example.english}",
+                        modifier = Modifier.fillMaxWidth(),
                         style = MaterialTheme.typography.labelMedium,
                         color = Ink,
+                        textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         example.chinese,
+                        modifier = Modifier.fillMaxWidth(),
                         style = MaterialTheme.typography.labelMedium,
                         color = MutedInk,
+                        textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

@@ -27,6 +27,8 @@ BORDER = "#DDE3E8"
 class FontManager:
     BASE_SIZES = {
         "LexiChart": 9,
+        "LexiExample": 7,
+        "LexiMeaningCompact": 7,
         "LexiSmall": 11,
         "LexiBody": 13,
         "LexiBodyBold": 13,
@@ -41,13 +43,19 @@ class FontManager:
         self.fonts: dict[str, tkfont.Font] = {}
         for name, size in self.BASE_SIZES.items():
             family = "Consolas" if name == "LexiMono" else "Microsoft YaHei UI"
-            weight = "bold" if name in {"LexiBodyBold", "LexiHeading", "LexiTitle", "LexiWord"} else "normal"
+            weight = "bold" if name in {"LexiBodyBold", "LexiHeading", "LexiTitle", "LexiWord", "LexiMeaningCompact"} else "normal"
             self.fonts[name] = tkfont.Font(root=root, name=name, family=family, size=size, weight=weight)
         self.apply(scale)
 
     def apply(self, scale: float):
         for name, base_size in self.BASE_SIZES.items():
-            self.fonts[name].configure(size=max(8, round(base_size * scale)))
+            if name == "LexiExample":
+                size = 6 if scale >= 1.3 else 7
+            elif name == "LexiMeaningCompact":
+                size = 7
+            else:
+                size = max(8, round(base_size * scale))
+            self.fonts[name].configure(size=size)
 
 
 class LexiTrackApp(tk.Tk):
@@ -268,29 +276,28 @@ class LexiTrackApp(tk.Tk):
             font="LexiBodyBold",
             wraplength=780,
             justify="center",
-            height=2,
+            height=1,
         )
-        self.study_meaning.pack(pady=(0, 2))
-        examples_grid = tk.Frame(self.answer_panel, bg=SURFACE)
-        examples_grid.pack(fill=tk.X, padx=18, pady=(0, 2))
-        self.study_examples_grid = examples_grid
+        self.study_meaning.pack()
+        examples_area = tk.Frame(self.answer_panel, bg=SURFACE)
+        examples_area.pack(fill=tk.X, padx=32)
+        self.study_examples_area = examples_area
         self.example_labels: list[tk.Label] = []
         for index in range(3):
-            examples_grid.grid_columnconfigure(index, weight=1, uniform="examples")
             label = tk.Label(
-                examples_grid,
+                examples_area,
                 text="",
-                bg="#F5F8F9",
+                bg=SURFACE,
                 fg=TEXT,
-                font="LexiSmall",
-                wraplength=790,
-                justify="left",
-                anchor="nw",
-                padx=12,
-                pady=4,
+                font="LexiExample",
+                wraplength=680,
+                justify="center",
+                anchor="center",
+                padx=4,
+                pady=0,
                 height=2,
             )
-            label.grid(row=0, column=index, sticky="new", padx=4, pady=2)
+            label.pack(fill=tk.X)
             self.example_labels.append(label)
         self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
 
@@ -298,6 +305,7 @@ class LexiTrackApp(tk.Tk):
         _, body = self._new_page("review", "复习", "按记忆权重巩固已经学习过的单词")
         toolbar = tk.Frame(body, bg=BG)
         toolbar.pack(fill=tk.X, pady=(0, 10))
+        self.review_toolbar = toolbar
         self.review_summary = tk.Label(toolbar, text="", bg=BG, fg=MUTED, font="LexiBody")
         self.review_summary.pack(side=tk.LEFT)
         self.review_start_button = self._primary_button(toolbar, "开始复习", self.start_review_session, width=10)
@@ -337,24 +345,63 @@ class LexiTrackApp(tk.Tk):
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=4)
             self.review_rating_buttons.append(button)
         self.review_answer_panel = tk.Frame(self.review_card, bg=SURFACE)
-        self.review_meaning = tk.Label(self.review_answer_panel, text="", bg=SURFACE, fg=TEXT, font="LexiBodyBold", wraplength=780, justify="center", height=2)
-        self.review_meaning.pack(pady=(0, 2))
-        examples = tk.Frame(self.review_answer_panel, bg=SURFACE)
-        examples.pack(fill=tk.X, padx=18, pady=(0, 2))
-        self.review_examples_grid = examples
+        self.review_answer_panel.bind("<Configure>", self._resize_review_answer, add="+")
+        self.review_meaning = tk.Label(self.review_answer_panel, text="", bg=SURFACE, fg=TEXT, font="LexiBodyBold", wraplength=780, justify="center", height=1)
+        self.review_meaning.pack()
+        examples_area = tk.Frame(self.review_answer_panel, bg=SURFACE)
+        examples_area.pack(fill=tk.X, padx=32)
+        self.review_examples_area = examples_area
         self.review_example_labels: list[tk.Label] = []
         for index in range(3):
-            examples.grid_columnconfigure(index, weight=1, uniform="review-examples")
-            label = tk.Label(examples, text="", bg="#F5F8F9", fg=TEXT, font="LexiSmall", wraplength=260, justify="left", anchor="nw", padx=12, pady=4, height=2)
-            label.grid(row=0, column=index, sticky="new", padx=4, pady=2)
+            label = tk.Label(examples_area, text="", bg=SURFACE, fg=TEXT, font="LexiExample", wraplength=680, justify="center", anchor="center", padx=4, pady=0, height=2)
+            label.pack(fill=tk.X)
             self.review_example_labels.append(label)
         self.refresh_review_page()
+
     def _resize_study_answer(self, event):
-        wrap_width = max(260, event.width - 96)
+        wrap_width = max(360, event.width - 80)
         self.study_meaning.configure(wraplength=wrap_width)
         self.study_mnemonic.configure(wraplength=wrap_width)
-        for label in self.example_labels:
-            label.configure(wraplength=wrap_width)
+        self._apply_answer_text(self.current_card, self.study_meaning, self.example_labels, wrap_width)
+
+    def _resize_review_answer(self, event):
+        wrap_width = max(360, event.width - 80)
+        self.review_meaning.configure(wraplength=wrap_width)
+        card = self.review_queue[0] if self.review_queue else None
+        self._apply_answer_text(card, self.review_meaning, self.review_example_labels, wrap_width)
+
+    def _elide_line(self, text: str, font_name: str, width: int) -> str:
+        font = tkfont.nametofont(font_name)
+        if font.measure(text) <= width:
+            return text
+        suffix = "..."
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if font.measure(text[:middle] + suffix) <= width:
+                low = middle
+            else:
+                high = middle - 1
+        return text[:low].rstrip() + suffix
+
+    def _apply_answer_text(
+        self,
+        card: VocabularyEntry | None,
+        meaning_label: tk.Label,
+        example_labels: list[tk.Label],
+        width: int,
+    ) -> None:
+        if card is None:
+            return
+        meaning = card.meaning
+        if int(meaning_label.cget("height")) == 1:
+            meaning = self._elide_line(meaning, meaning_label.cget("font"), width)
+        meaning_label.configure(text=meaning)
+        for index, label in enumerate(example_labels):
+            example = card.examples[index]
+            english = self._elide_line(f"{index + 1}. {example.english}", label.cget("font"), width)
+            chinese = self._elide_line(example.chinese, label.cget("font"), width)
+            label.configure(text=f"{english}\n{chinese}", wraplength=width)
 
     def _build_library_page(self):
         _, body = self._new_page("library", "词库", "CET-4、CET-6 与自定义词条")
@@ -531,10 +578,7 @@ class LexiTrackApp(tk.Tk):
             return
         entry = self.current_card
         self.answer_visible = True
-        self.study_meaning.configure(text=entry.meaning)
-        for index, label in enumerate(self.example_labels):
-            example = entry.examples[index]
-            label.configure(text=f"{index + 1}. {example.english}\n   {example.chinese}")
+        self._apply_answer_text(entry, self.study_meaning, self.example_labels, max(360, self.answer_panel.winfo_width() - 80))
         if entry.mnemonic:
             self.study_mnemonic.configure(text=f"助记  {entry.mnemonic}")
             self.study_mnemonic.pack(pady=(8, 0))
@@ -542,7 +586,7 @@ class LexiTrackApp(tk.Tk):
             self.study_mnemonic.pack_forget()
         self.study_controls.pack_forget()
         self.rating_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(2, 4))
-        self.answer_panel.pack(fill=tk.X, padx=12, pady=(2, 4))
+        self.answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
 
     def rate_current(self, rating: ReviewRating):
         if self.current_card is None or not self.answer_visible:
@@ -554,6 +598,10 @@ class LexiTrackApp(tk.Tk):
 
     def refresh_review_page(self):
         self._sync_review_batch_control()
+        if self.review_queue:
+            self.review_toolbar.pack_forget()
+        elif not self.review_toolbar.winfo_manager():
+            self.review_toolbar.pack(fill=tk.X, pady=(0, 10), before=self.review_card)
         learnt_count = self.service.learnt_word_count()
         due_count = self.service.due_review_count()
         batch_size = min(self.service.review_batch_size(), learnt_count) if learnt_count else 0
@@ -573,6 +621,8 @@ class LexiTrackApp(tk.Tk):
     def start_review_session(self):
         self.review_queue = self.service.start_review_session()
         self.review_total = len(self.review_queue)
+        if self.review_queue:
+            self.review_toolbar.pack_forget()
         self._show_next_review_card()
 
     def _show_next_review_card(self):
@@ -584,6 +634,7 @@ class LexiTrackApp(tk.Tk):
         if not self.review_queue:
             self.refresh_review_page()
             return
+        self.review_toolbar.pack_forget()
         card = self.review_queue[0]
         self.review_level.configure(text=card.level or "custom")
         self.review_word.configure(text=card.word)
@@ -599,13 +650,10 @@ class LexiTrackApp(tk.Tk):
             return
         card = self.review_queue[0]
         self.review_answer_visible = True
-        self.review_meaning.configure(text=card.meaning)
-        for index, label in enumerate(self.review_example_labels):
-            example = card.examples[index]
-            label.configure(text=f"{index + 1}. {example.english}\n   {example.chinese}")
+        self._apply_answer_text(card, self.review_meaning, self.review_example_labels, max(360, self.review_answer_panel.winfo_width() - 80))
         self.review_controls.pack_forget()
         self.review_rating_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(2, 4))
-        self.review_answer_panel.pack(fill=tk.X, padx=12, pady=(2, 4))
+        self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
 
     def rate_review_current(self, rating: ReviewRating):
         if not self.review_queue or not self.review_answer_visible:
@@ -698,10 +746,28 @@ class LexiTrackApp(tk.Tk):
     def change_font_scale(self, raw_value: str):
         scale = min(1.4, max(0.9, float(raw_value) / 100.0))
         self.font_manager.apply(scale)
-        meaning_lines = 1 if scale >= 1.3 else 2
-        meaning_font = "LexiSmall" if scale >= 1.3 else "LexiBodyBold"
-        self.study_meaning.configure(height=meaning_lines, font=meaning_font)
-        self.review_meaning.configure(height=meaning_lines, font=meaning_font)
+        meaning_font = "LexiMeaningCompact" if scale >= 1.3 else "LexiBodyBold"
+        self.study_meaning.configure(height=1, font=meaning_font)
+        self.review_meaning.configure(height=1, font=meaning_font)
+        self._apply_answer_text(
+            self.current_card,
+            self.study_meaning,
+            self.example_labels,
+            max(360, self.answer_panel.winfo_width() - 80),
+        )
+        review_card = self.review_queue[0] if self.review_queue else None
+        self._apply_answer_text(
+            review_card,
+            self.review_meaning,
+            self.review_example_labels,
+            max(360, self.review_answer_panel.winfo_width() - 80),
+        )
+        if self.answer_visible and self.answer_panel.winfo_manager():
+            self.answer_panel.pack_forget()
+            self.answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+        if self.review_answer_visible and self.review_answer_panel.winfo_manager():
+            self.review_answer_panel.pack_forget()
+            self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
         self.service.set_font_scale(scale)
         self.scale_text.configure(text=f"{round(scale * 100):d}%")
         ttk.Style(self).configure("Treeview", rowheight=max(32, round(34 * scale)))
@@ -745,7 +811,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         visited.append(page)
     app.show_page("review")
     app.update()
-    review_page_ready = (
+    review_header_ready = (
         app.review_start_button.winfo_width() > 0
         and app.review_summary.winfo_width() > 0
     )
@@ -764,10 +830,28 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     app.update()
     answer_top = app.answer_panel.winfo_rooty()
     answer_bottom = answer_top + app.answer_panel.winfo_height()
+    answer_left = app.answer_panel.winfo_rootx()
+    answer_width = app.answer_panel.winfo_width()
+    answer_center = answer_left + answer_width / 2
     example_bounds = [
         [label.winfo_rooty(), label.winfo_rooty() + label.winfo_height()]
         for label in app.example_labels
     ]
+    examples_centered_stack = app.current_card is None or (
+        all(
+            label.winfo_manager() == "pack"
+            and label.cget("bg") == SURFACE
+            and label.cget("justify") == "center"
+            and label.cget("anchor") == "center"
+            and abs(label.winfo_rootx() + label.winfo_width() / 2 - answer_center) <= 3
+            and label.winfo_width() >= answer_width * 0.65
+            for label in app.example_labels
+        )
+        and all(
+            example_bounds[index][1] <= example_bounds[index + 1][0] + 2
+            for index in range(len(example_bounds) - 1)
+        )
+    )
     rating_top = app.rating_frame.winfo_rooty()
     rating_bottom = rating_top + app.rating_frame.winfo_height()
     window_bottom = app.winfo_rooty() + app.winfo_height()
@@ -793,27 +877,35 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         top >= answer_top - 2 and bottom <= answer_bottom + 2 and bottom <= window_bottom + 2
         for top, bottom in example_bounds
     )
-    examples_compact = (answer_bottom - answer_top) <= 180
+    examples_compact = app.study_examples_area.winfo_height() <= 160
     answers_above_ratings = (
         answer_top >= phonetic_bottom - 2
         and answer_bottom <= rating_top + 2
+    )
+    card_center = app.study_card.winfo_rootx() + app.study_card.winfo_width() / 2
+    study_header_centered = all(
+        abs(widget.winfo_rootx() + widget.winfo_width() / 2 - card_center) <= 3
+        for widget in (app.study_word, app.study_phonetic, app.study_meaning)
     )
     reveal_controls_hidden = app.study_controls.winfo_manager() == ""
     study_has_scrollbar = any(isinstance(widget, tk.Scrollbar) for widget in app.study_card.winfo_children())
     original_font_scale = app.service.font_scale()
     app.change_font_scale("140")
-    app.update()
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
     max_scale_font = tkfont.nametofont("LexiBodyBold")
     max_scale_rating_top = app.rating_frame.winfo_rooty()
     max_scale_rating_bottom = app.rating_frame.winfo_rooty() + app.rating_frame.winfo_height()
+    max_scale_answer_top = app.answer_panel.winfo_rooty()
     max_scale_answer_bottom = app.answer_panel.winfo_rooty() + app.answer_panel.winfo_height()
     max_scale_window_bottom = app.winfo_rooty() + app.winfo_height()
-    max_scale_examples_top = app.study_examples_grid.winfo_rooty()
-    max_scale_examples_bottom = max_scale_examples_top + app.study_examples_grid.winfo_height()
-    max_scale_example_font = tkfont.nametofont("LexiSmall")
-    max_scale_examples_visible = (
-        max_scale_answer_bottom - max_scale_examples_top
-        >= max_scale_example_font.metrics("linespace") * 2
+    max_scale_examples_top = app.study_examples_area.winfo_rooty()
+    max_scale_examples_bottom = max_scale_examples_top + app.study_examples_area.winfo_height()
+    max_scale_example_font = tkfont.nametofont("LexiExample")
+    max_scale_examples_visible = all(
+        label.winfo_height() >= max_scale_example_font.metrics("linespace") * 2 - 2
+        for label in app.example_labels
     )
     max_scale_example_bottoms = [
         label.winfo_rooty() + label.winfo_height()
@@ -831,7 +923,113 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and max_scale_examples_visible
     )
     app.change_font_scale(str(original_font_scale * 100))
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+
+    if app.current_card is not None:
+        app.rate_current(ReviewRating.GOOD)
+    app.show_page("review")
+    app.start_review_session()
     app.update()
+    review_example_bounds: list[list[int]] = []
+    review_card_layout_ready = False
+    review_max_scale_example_bounds: list[list[int]] = []
+    review_max_scale_layout_ready = False
+    if app.review_queue:
+        review_reveal_top = app.review_reveal_button.winfo_rooty()
+        review_phonetic_bottom = app.review_phonetic.winfo_rooty() + app.review_phonetic.winfo_height()
+        app.reveal_review_answer()
+        for _ in range(3):
+            app.update_idletasks()
+            app.update()
+        review_answer_top = app.review_answer_panel.winfo_rooty()
+        review_answer_bottom = review_answer_top + app.review_answer_panel.winfo_height()
+        review_answer_center = app.review_answer_panel.winfo_rootx() + app.review_answer_panel.winfo_width() / 2
+        review_example_bounds = [
+            [label.winfo_rooty(), label.winfo_rooty() + label.winfo_height()]
+            for label in app.review_example_labels
+        ]
+        review_rating_top = app.review_rating_frame.winfo_rooty()
+        review_rating_bottom = review_rating_top + app.review_rating_frame.winfo_height()
+        review_card_bottom = app.review_card.winfo_rooty() + app.review_card.winfo_height()
+        review_font = tkfont.nametofont("LexiBodyBold")
+        review_examples_centered_stack = (
+            all(
+                label.winfo_manager() == "pack"
+                and label.cget("bg") == SURFACE
+                and label.cget("justify") == "center"
+                and label.cget("anchor") == "center"
+                and abs(label.winfo_rootx() + label.winfo_width() / 2 - review_answer_center) <= 3
+                for label in app.review_example_labels
+            )
+            and all(
+                review_example_bounds[index][1] <= review_example_bounds[index + 1][0] + 2
+                for index in range(len(review_example_bounds) - 1)
+            )
+        )
+        review_buttons_fit = all(
+            button.cget("text") == label
+            and button.winfo_width() >= review_font.measure(label) + 24
+            and button.winfo_height() >= review_font.metrics("linespace") + 16
+            for button, label in zip(app.review_rating_buttons, expected_labels)
+        )
+        review_card_layout_ready = (
+            review_reveal_top >= review_phonetic_bottom - 2
+            and app.review_controls.winfo_manager() == ""
+            and app.review_answer_panel.winfo_manager() == "pack"
+            and review_examples_centered_stack
+            and review_answer_bottom <= review_rating_top + 2
+            and app.review_rating_frame.winfo_manager() == "pack"
+            and review_rating_bottom <= review_card_bottom + 2
+            and review_buttons_fit
+            and not any(isinstance(widget, tk.Scrollbar) for widget in app.review_card.winfo_children())
+        )
+        app.change_font_scale("140")
+        for _ in range(3):
+            app.update_idletasks()
+            app.update()
+        review_max_scale_answer_top = app.review_answer_panel.winfo_rooty()
+        review_max_scale_answer_bottom = review_max_scale_answer_top + app.review_answer_panel.winfo_height()
+        review_max_scale_answer_center = app.review_answer_panel.winfo_rootx() + app.review_answer_panel.winfo_width() / 2
+        review_max_scale_rating_top = app.review_rating_frame.winfo_rooty()
+        review_max_scale_rating_bottom = review_max_scale_rating_top + app.review_rating_frame.winfo_height()
+        review_max_scale_card_bottom = app.review_card.winfo_rooty() + app.review_card.winfo_height()
+        review_max_scale_example_bounds = [
+            [label.winfo_rooty(), label.winfo_rooty() + label.winfo_height()]
+            for label in app.review_example_labels
+        ]
+        review_max_scale_font = tkfont.nametofont("LexiBodyBold")
+        review_max_scale_example_font = tkfont.nametofont("LexiExample")
+        review_max_scale_layout_ready = (
+            all(
+                label.winfo_manager() == "pack"
+                and label.cget("bg") == SURFACE
+                and label.cget("justify") == "center"
+                and abs(label.winfo_rootx() + label.winfo_width() / 2 - review_max_scale_answer_center) <= 3
+                and label.winfo_height() >= review_max_scale_example_font.metrics("linespace") * 2 - 2
+                for label in app.review_example_labels
+            )
+            and all(
+                review_max_scale_example_bounds[index][1] <= review_max_scale_example_bounds[index + 1][0] + 2
+                for index in range(len(review_max_scale_example_bounds) - 1)
+            )
+            and all(
+                top >= review_max_scale_answer_top - 2 and bottom <= review_max_scale_answer_bottom + 2
+                for top, bottom in review_max_scale_example_bounds
+            )
+            and review_max_scale_answer_bottom <= review_max_scale_rating_top + 2
+            and review_max_scale_rating_bottom <= review_max_scale_card_bottom + 2
+            and all(
+                button.winfo_width() >= review_max_scale_font.measure(label) + 24
+                and button.winfo_height() >= review_max_scale_font.metrics("linespace") + 16
+                for button, label in zip(app.review_rating_buttons, expected_labels)
+            )
+        )
+        app.change_font_scale(str(original_font_scale * 100))
+        for _ in range(3):
+            app.update_idletasks()
+            app.update()
     result = {
         "ok": (
             set(visited) == set(app.pages)
@@ -839,14 +1037,18 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and not study_has_scrollbar
             and reveal_above_answer_area
             and reveal_controls_hidden
-        and answers_above_ratings
-        and examples_visible
-        and examples_compact
-        and rating_buttons_visible
-        and max_scale_button_fit
-        and max_scale_layout_fit
-        and max_scale_examples_fit
-            and review_page_ready
+            and study_header_centered
+            and answers_above_ratings
+            and examples_visible
+            and examples_compact
+            and examples_centered_stack
+            and rating_buttons_visible
+            and max_scale_button_fit
+            and max_scale_layout_fit
+            and max_scale_examples_fit
+            and review_header_ready
+            and review_card_layout_ready
+            and review_max_scale_layout_ready
         ),
         "pages": visited,
         "catalogCount": app.catalog_count,
@@ -859,6 +1061,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "exampleBounds": example_bounds,
         "examplesVisible": examples_visible,
         "examplesCompact": examples_compact,
+        "examplesCenteredStack": examples_centered_stack,
+        "studyHeaderCentered": study_header_centered,
         "revealAboveAnswerArea": reveal_above_answer_area,
         "revealControlsHidden": reveal_controls_hidden,
         "answersAboveRatings": answers_above_ratings,
@@ -867,13 +1071,22 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "ratingButtonFit": rating_button_fit,
         "maxScaleButtonFit": max_scale_button_fit,
         "maxScaleLayoutFit": max_scale_layout_fit,
-        "maxScaleBounds": [max_scale_answer_bottom, max_scale_rating_top, max_scale_rating_bottom, max_scale_window_bottom],
+        "maxScaleBounds": [max_scale_answer_top, max_scale_answer_bottom, max_scale_rating_top, max_scale_rating_bottom, max_scale_window_bottom],
+        "maxScaleAnswerChildren": [
+            [child.winfo_name(), child.winfo_rooty(), child.winfo_height()]
+            for child in app.answer_panel.winfo_children()
+            if child.winfo_manager()
+        ],
         "maxScaleExamplesBottom": max_scale_examples_bottom,
         "maxScaleExamplesVisible": max_scale_examples_visible,
         "maxScaleExamplesGeometry": [max_scale_examples_top, max_scale_answer_bottom, max_scale_example_font.metrics("linespace")],
         "maxScaleExampleBottoms": max_scale_example_bottoms,
         "maxScaleExamplesFit": max_scale_examples_fit,
-        "reviewPageReady": review_page_ready,
+        "reviewHeaderReady": review_header_ready,
+        "reviewCardLayoutReady": review_card_layout_ready,
+        "reviewExampleBounds": review_example_bounds,
+        "reviewMaxScaleLayoutReady": review_max_scale_layout_ready,
+        "reviewMaxScaleExampleBounds": review_max_scale_example_bounds,
         "studyGeometry": {
             "card": [app.study_card.winfo_rooty(), card_bottom, app.study_card.winfo_height()],
             "level": [app.study_level.winfo_rooty(), app.study_level.winfo_height()],
