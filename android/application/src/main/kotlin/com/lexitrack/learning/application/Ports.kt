@@ -5,6 +5,9 @@ import com.lexitrack.learning.domain.LearntWord
 import com.lexitrack.learning.domain.ReviewEvent
 import com.lexitrack.learning.domain.ScheduleState
 import com.lexitrack.learning.domain.VocabularyEntry
+import com.lexitrack.learning.domain.DictationDocument
+import com.lexitrack.learning.domain.MarkMode
+import com.lexitrack.learning.domain.DictationFormat
 import java.io.InputStream
 import java.time.LocalDate
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +28,7 @@ data class UserSettings(
     val reminderLevels: Set<String> = emptySet(),
     val reminderEnabled: Boolean = false,
     val reminderIntervalMinutes: Float = DEFAULT_REMINDER_INTERVAL_MINUTES,
+    val markMode: MarkMode = MarkMode.ASK,
 )
 
 const val DEFAULT_REVIEW_BATCH_SIZE = 20
@@ -42,6 +46,8 @@ interface VocabularyRepository {
     suspend fun initialize()
     suspend fun importCsv(input: InputStream): ImportReport
     suspend fun updateLabels(wordIds: Set<String>, levels: Set<String>, tags: Set<String>): Int
+
+    suspend fun updateTags(wordIds: Set<String>, add: Set<String>, remove: Set<String>): Int = 0
 }
 
 interface ReviewRepository {
@@ -68,7 +74,14 @@ interface SettingsRepository {
     suspend fun setReminderLevels(levels: Set<String>)
     suspend fun setReminderEnabled(enabled: Boolean)
     suspend fun setReminderIntervalMinutes(minutes: Float)
+    suspend fun setMarkMode(mode: MarkMode) = Unit
 }
+
+interface DictationExporter {
+    fun export(document: DictationDocument, format: DictationFormat): ExportedDictation
+}
+
+data class ExportedDictation(val bytes: ByteArray, val fileName: String, val mimeType: String)
 
 interface TimeProvider {
     fun nowUtcSeconds(): Double

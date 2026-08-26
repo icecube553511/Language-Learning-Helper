@@ -16,6 +16,7 @@ from domain.models import (
     ReviewState,
     VocabularyEntry,
 )
+from domain.dictation import MarkMode
 from infrastructure.catalog import entry_from_payload
 
 
@@ -32,6 +33,7 @@ class JsonLearningRepository:
         self._user_entries: dict[str, VocabularyEntry] = {}
         self._reviews: dict[str, ReviewState] = {}
         self._activity: dict[str, list[str]] = {}
+        self._tag_overrides: dict[str, set[str]] = {}
         self._settings: dict[str, object] = {
             "fontScale": 1.0,
             "reviewBatchSize": DEFAULT_REVIEW_BATCH_SIZE,
@@ -41,6 +43,7 @@ class JsonLearningRepository:
             "reminderLevels": [],
             "reminderEnabled": False,
             "reminderIntervalMinutes": DEFAULT_REMINDER_INTERVAL_MINUTES,
+            "markMode": MarkMode.ASK.value,
         }
         self._load()
 
@@ -72,6 +75,13 @@ class JsonLearningRepository:
         settings = payload.get("settings", {})
         if isinstance(settings, dict):
             self._settings.update(settings)
+        overrides = payload.get("tagOverrides", {})
+        if isinstance(overrides, dict):
+            self._tag_overrides = {
+                str(word_id): {str(tag).strip().casefold() for tag in tags if str(tag).strip()}
+                for word_id, tags in overrides.items()
+                if isinstance(tags, list)
+            }
 
     def _payload(self) -> dict:
         return {
@@ -79,6 +89,7 @@ class JsonLearningRepository:
             "userEntries": [entry.to_dict() for entry in self._user_entries.values()],
             "reviews": {word_id: state.to_dict() for word_id, state in self._reviews.items()},
             "activity": self._activity,
+            "tagOverrides": {word_id: sorted(tags) for word_id, tags in self._tag_overrides.items()},
             "settings": self._settings,
         }
 
@@ -101,7 +112,15 @@ class JsonLearningRepository:
         with self._lock:
             merged = dict(self._catalog)
             merged.update(self._user_entries)
-            return sorted(merged.values(), key=lambda item: item.word_id)
+            return sorted((self._with_tag_override(item) for item in merged.values()), key=lambda item: item.word_id)
+
+    def _with_tag_override(self, entry: VocabularyEntry) -> VocabularyEntry:
+        tags = self._tag_overrides.get(entry.word_id)
+        return entry if tags is None else VocabularyEntry(
+            word_id=entry.word_id, word=entry.word, meaning=entry.meaning,
+            examples=entry.examples, phonetic=entry.phonetic, level=entry.level,
+            tags=tuple(sorted(tags)), mnemonic=entry.mnemonic, source=entry.source,
+        )
 
     def add_entries(self, entries: list[VocabularyEntry]) -> int:
         added = 0
@@ -233,10 +252,41 @@ class JsonLearningRepository:
                     mnemonic=entry.mnemonic,
                     source=entry.source,
                 )
+                self._tag_overrides[word_id] = set(normalized_tags)
                 updated += 1
             if updated:
                 self._save_locked()
         return updated
+
+    def update_tags(self, word_ids: set[str], add: set[str], remove: set[str]) -> int:
+        normalized_ids = {str(item) for item in word_ids}
+        normalized_add = {str(tag).strip().casefold() for tag in add if str(tag).strip()}
+        normalized_remove = {str(tag).strip().casefold() for tag in remove if str(tag).strip()}
+        with self._lock:
+            known = set(self._catalog) | set(self._user_entries)
+            ids = normalized_ids & known
+            for word_id in ids:
+                entry = self._catalog.get(word_id) or self._user_entries.get(word_id)
+                if entry is None:
+                    continue
+                current = set(self._with_tag_override(entry).tags)
+                self._tag_overrides[word_id] = (current | normalized_add) - normalized_remove
+            if ids:
+                self._save_locked()
+            return len(ids)
+
+    def get_mark_mode(self) -> MarkMode:
+        with self._lock:
+            try:
+                return MarkMode(str(self._settings.get("markMode", MarkMode.ASK.value)).upper())
+            except ValueError:
+                return MarkMode.ASK
+
+    def set_mark_mode(self, mode: MarkMode) -> None:
+        resolved = mode if isinstance(mode, MarkMode) else MarkMode(str(mode).upper())
+        with self._lock:
+            self._settings["markMode"] = resolved.value
+            self._save_locked()
 
     def get_reminder_enabled(self) -> bool:
         with self._lock:

@@ -21,4 +21,8 @@ tasks.test {
         "weighted.review.golden.path",
         rootProject.file("../shared/contracts/weighted-review-golden-v1.json").absolutePath,
     )
+    systemProperty(
+        "dictation.export.golden.path",
+        rootProject.file("../shared/contracts/dictation-export-golden-v1.json").absolutePath,
+    )
 }

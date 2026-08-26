@@ -8,7 +8,13 @@ import com.lexitrack.learning.application.CatalogStatus
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ForecastDay
 import com.lexitrack.learning.application.UserSettings
+import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.domain.ImportReport
+import com.lexitrack.learning.domain.DictationDocument
+import com.lexitrack.learning.domain.DictationDocumentOptions
+import com.lexitrack.learning.domain.DictationFormat
+import com.lexitrack.learning.domain.DictationMissingField
+import com.lexitrack.learning.domain.MarkMode
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.VocabularyEntry
 import kotlinx.coroutines.delay
@@ -24,6 +30,7 @@ enum class MainSection {
     DASHBOARD,
     STUDY,
     REVIEW,
+    DICTATION,
     LIBRARY,
     INSIGHTS,
     SETTINGS,
@@ -39,6 +46,12 @@ data class MainUiState(
     val reviewQueue: List<VocabularyEntry> = emptyList(),
     val reviewCard: VocabularyEntry? = null,
     val reviewAnswerRevealed: Boolean = false,
+    val dictationEntries: List<VocabularyEntry> = emptyList(),
+    val dictationSelectedIds: Set<String> = emptySet(),
+    val dictationDocument: DictationDocument? = null,
+    val dictationExports: List<ExportedDictation> = emptyList(),
+    val dictationPreparing: Boolean = false,
+    val dictationMarkMode: MarkMode = MarkMode.ASK,
     val reviewSessionSize: Int = 0,
     val reviewSessionStarted: Boolean = false,
     val learntWordCount: Int = 0,
@@ -142,6 +155,78 @@ class MainViewModel(
         )
     }
 
+    fun toggleDictationSelection(wordId: String) {
+        val selected = _uiState.value.dictationSelectedIds
+        _uiState.value = _uiState.value.copy(
+            dictationSelectedIds = if (wordId in selected) selected - wordId else selected + wordId,
+        )
+    }
+
+    fun buildDictation(
+        options: DictationDocumentOptions,
+        count: Int,
+        levels: Set<String>,
+        includeEvaluated: Boolean,
+        manual: Boolean,
+        customExample: String,
+    ) {
+        _uiState.value = _uiState.value.copy(
+            dictationDocument = null,
+            dictationExports = emptyList(),
+            dictationPreparing = false,
+            transientMessage = null,
+        )
+        if (count < 1) {
+            _uiState.value = _uiState.value.copy(transientMessage = "默写数量必须大于 0")
+            return
+        }
+        val entries = if (manual) {
+            useCases.selectDictationCandidates.selected(
+                _uiState.value.dictationSelectedIds,
+                levels,
+                includeEvaluated,
+            )
+        } else {
+            useCases.selectDictationCandidates.random(count, levels, includeEvaluated)
+        }
+        if (entries.isEmpty()) {
+            _uiState.value = _uiState.value.copy(transientMessage = "没有符合当前条件的词条")
+            return
+        }
+        val effectiveOptions = if (customExample.isBlank()) options else options.copy(
+            customExamples = entries.associate { it.id to customExample.trim() },
+        )
+        val document = useCases.buildDictationDocument(entries, effectiveOptions)
+        _uiState.value = _uiState.value.copy(
+            dictationDocument = document,
+            dictationExports = emptyList(),
+            dictationPreparing = true,
+            dictationSelectedIds = entries.mapTo(mutableSetOf()) { it.id },
+            transientMessage = null,
+        )
+        viewModelScope.launch {
+            runCatching { useCases.exportDictationDocument(document) }
+                .onSuccess { outputs ->
+                    _uiState.value = _uiState.value.copy(dictationExports = outputs, dictationPreparing = false)
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        dictationPreparing = false,
+                        transientMessage = error.message ?: "无法生成默写文件。",
+                    )
+                }
+        }
+    }
+
+    fun finishDictationMark(mark: Boolean, dontAskAgain: Boolean) {
+        val ids = _uiState.value.dictationSelectedIds
+        viewModelScope.launch {
+            if (dontAskAgain) useCases.updateMarkMode(if (mark) MarkMode.ALWAYS else MarkMode.NEVER)
+            if (mark && ids.isNotEmpty()) useCases.updateProgramTags(ids, setOf("evaluated"), emptySet())
+            _uiState.value = _uiState.value.copy(transientMessage = if (mark) "已标记本次默写词条。" else null)
+        }
+    }
+
     fun revealReviewAnswer() {
         if (_uiState.value.reviewCard == null) return
         _uiState.value = _uiState.value.copy(reviewAnswerRevealed = true)
@@ -188,6 +273,24 @@ class MainViewModel(
                     _uiState.value = _uiState.value.copy(
                         selectedVocabularyIds = emptySet(),
                         transientMessage = "已更新 $count 个自定义词条。",
+                    )
+                    updateSearch(_uiState.value.searchQuery)
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(transientMessage = error.message ?: "无法修改标签。")
+                }
+        }
+    }
+
+    fun updateSelectedVocabularyTags(add: Set<String>, remove: Set<String>) {
+        val selected = _uiState.value.selectedVocabularyIds
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { useCases.updateProgramTags(selected, add, remove) }
+                .onSuccess { count ->
+                    _uiState.value = _uiState.value.copy(
+                        selectedVocabularyIds = emptySet(),
+                        transientMessage = "已更新 $count 个词条的标签。",
                     )
                     updateSearch(_uiState.value.searchQuery)
                 }
@@ -298,6 +401,11 @@ class MainViewModel(
         viewModelScope.launch { useCases.updateReminderSettings(enabled, intervalMinutes) }
     }
 
+    fun setMarkMode(mode: MarkMode) {
+        _uiState.value = _uiState.value.copy(dictationMarkMode = mode)
+        viewModelScope.launch { useCases.updateMarkMode(mode) }
+    }
+
     fun previewWordReminder() {
         showWordReminder(preview = true)
     }
@@ -364,6 +472,8 @@ class MainViewModel(
             reminderEnabled = settings.reminderEnabled,
             reminderIntervalMinutes = settings.reminderIntervalMinutes,
             reviewReminderMessage = reminder,
+            dictationEntries = useCases.words.value,
+            dictationMarkMode = settings.markMode,
         )
         pendingReminderWordId?.let { wordId ->
             useCases.words.value.firstOrNull { it.id == wordId }?.let { card ->

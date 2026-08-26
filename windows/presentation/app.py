@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 import time
 import tkinter as tk
@@ -9,6 +10,7 @@ import tkinter.font as tkfont
 
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
+from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
 from presentation.widgets import MemoryChart, NavItem, ScrollableExamplePanel, draw_icon
 
 
@@ -99,6 +101,9 @@ class LexiTrackApp(tk.Tk):
         self._word_reminder_next_at = 0.0
         self.answer_visible = False
         self.forecast_days = 7
+        self.dictation_document = None
+        self.dictation_document_word_ids: set[str] = set()
+        self.dictation_selected_ids: set[str] = set()
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
@@ -130,6 +135,7 @@ class LexiTrackApp(tk.Tk):
             ("dashboard", "总览", "dashboard"),
             ("study", "学习", "study"),
             ("review", "复习", "review"),
+            ("dictation", "默写", "edit"),
             ("library", "词库", "library"),
             ("analytics", "记忆分析", "analytics"),
             ("reminder", "学习提醒", "clock"),
@@ -150,6 +156,7 @@ class LexiTrackApp(tk.Tk):
         self._build_dashboard_page()
         self._build_study_page()
         self._build_review_page()
+        self._build_dictation_page()
         self._build_library_page()
         self._build_analytics_page()
         self._build_reminder_page()
@@ -379,6 +386,326 @@ class LexiTrackApp(tk.Tk):
             label.pack(fill=tk.BOTH, expand=True)
             self.review_example_labels.append(label)
         self.refresh_review_page()
+
+    def _build_dictation_page(self):
+        _, body = self._new_page("dictation", "默写", "选择词库内容，生成可打印的 A4 默写页")
+        controls = self._card(body)
+        controls.pack(fill=tk.X, pady=(0, 12))
+        inner = tk.Frame(controls, bg=SURFACE)
+        inner.pack(fill=tk.X, padx=18, pady=14)
+
+        row = tk.Frame(inner, bg=SURFACE)
+        row.pack(fill=tk.X, pady=(0, 9))
+        tk.Label(row, text="选择方式", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 8))
+        self.dictation_mode_var = tk.StringVar(value="random")
+        for value, label in (("random", "随机填写"), ("manual", "从词库选择")):
+            tk.Radiobutton(
+                row, text=label, value=value, variable=self.dictation_mode_var,
+                command=self._refresh_dictation_candidates, bg=SURFACE, fg=TEXT,
+                activebackground=SURFACE, selectcolor=SURFACE, font="LexiBody",
+            ).pack(side=tk.LEFT, padx=(0, 14))
+        tk.Label(row, text="默写数量", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(12, 5))
+        self.dictation_count_var = tk.StringVar(value="10")
+        ttk.Spinbox(row, from_=1, to=9999, textvariable=self.dictation_count_var, width=7).pack(side=tk.LEFT)
+        self.dictation_include_evaluated_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            row, text="包含已考察词", variable=self.dictation_include_evaluated_var,
+            command=self._refresh_dictation_candidates, bg=SURFACE, fg=TEXT,
+            activebackground=SURFACE, selectcolor=SURFACE, font="LexiSmall",
+        ).pack(side=tk.LEFT, padx=(16, 0))
+
+        level_row = tk.Frame(inner, bg=SURFACE)
+        level_row.pack(fill=tk.X, pady=(0, 9))
+        tk.Label(level_row, text="词库", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 8))
+        self.dictation_level_vars: dict[str, tk.BooleanVar] = {}
+        for value, label in (("CET4", "四级"), ("CET6", "六级"), ("CUSTOM", "自定义")):
+            variable = tk.BooleanVar(value=True)
+            self.dictation_level_vars[value] = variable
+            tk.Checkbutton(
+                level_row, text=label, variable=variable, command=self._refresh_dictation_candidates,
+                bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
+                font="LexiSmall", padx=0,
+            ).pack(side=tk.LEFT, padx=(0, 8))
+
+        format_row = tk.Frame(inner, bg=SURFACE)
+        format_row.pack(fill=tk.X, pady=(0, 9))
+        tk.Label(format_row, text="输出格式", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 8))
+        self.dictation_format_vars = {
+            DictationFormat.DOCX: tk.BooleanVar(value=True),
+            DictationFormat.PDF: tk.BooleanVar(value=True),
+        }
+        for value, label in ((DictationFormat.DOCX, "Word"), (DictationFormat.PDF, "PDF")):
+            tk.Checkbutton(
+                format_row, text=label, variable=self.dictation_format_vars[value],
+                bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
+                font="LexiSmall", padx=0,
+            ).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(format_row, text="字号", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(10, 5))
+        self.dictation_font_size_var = tk.StringVar(value="12")
+        ttk.Spinbox(format_row, from_=8, to=24, textvariable=self.dictation_font_size_var, width=5).pack(side=tk.LEFT)
+
+        field_row = tk.Frame(inner, bg=SURFACE)
+        field_row.pack(fill=tk.X, pady=(0, 9))
+        tk.Label(field_row, text="缺失项", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 8))
+        self.dictation_field_vars = {
+            DictationField.WORD: tk.BooleanVar(value=True),
+            DictationField.PART_OF_SPEECH: tk.BooleanVar(value=False),
+            DictationField.MEANING: tk.BooleanVar(value=False),
+        }
+        for value, label in ((DictationField.WORD, "单词"), (DictationField.PART_OF_SPEECH, "词性"), (DictationField.MEANING, "中文")):
+            tk.Checkbutton(
+                field_row, text=label, variable=self.dictation_field_vars[value],
+                bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
+                font="LexiSmall", padx=0,
+            ).pack(side=tk.LEFT, padx=(0, 12))
+        self.dictation_initial_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            field_row, text="显示首字母", variable=self.dictation_initial_var,
+            bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
+            font="LexiSmall", padx=0,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        example_row = tk.Frame(inner, bg=SURFACE)
+        example_row.pack(fill=tk.X, pady=(0, 10))
+        self.dictation_examples_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            example_row, text="添加例句", variable=self.dictation_examples_var,
+            bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
+            font="LexiSmall", padx=0,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(example_row, text="自填例句（可选，应用于本次所有词条）", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT)
+        self.dictation_custom_example_var = tk.StringVar()
+        ttk.Entry(example_row, textvariable=self.dictation_custom_example_var, width=58).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+
+        actions = tk.Frame(inner, bg=SURFACE)
+        actions.pack(fill=tk.X)
+        self._primary_button(actions, "预览 A4 页面", self.preview_dictation, width=14).pack(side=tk.LEFT)
+        self.dictation_status = tk.Label(actions, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
+        self.dictation_status.pack(side=tk.LEFT, padx=14)
+
+        selection = self._card(body)
+        selection.pack(fill=tk.BOTH, expand=True)
+        tk.Label(selection, text="手选词条", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=16, pady=(13, 2))
+        self.dictation_selection_count = tk.Label(selection, text="随机模式不需要手选", bg=SURFACE, fg=MUTED, font="LexiSmall")
+        self.dictation_selection_count.pack(anchor="w", padx=16, pady=(0, 8))
+        table = tk.Frame(selection, bg=SURFACE)
+        table.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        self.dictation_tree = ttk.Treeview(table, columns=("word", "meaning", "tags"), show="headings", selectmode="extended")
+        for key, title, width in (("word", "单词", 180), ("meaning", "中文释义", 480), ("tags", "标签", 220)):
+            self.dictation_tree.heading(key, text=title)
+            self.dictation_tree.column(key, width=width, anchor="w", stretch=key == "meaning")
+        self.dictation_tree.bind("<<TreeviewSelect>>", self._on_dictation_tree_select)
+        scrollbar = ttk.Scrollbar(table, orient=tk.VERTICAL, command=self.dictation_tree.yview)
+        self.dictation_tree.configure(yscrollcommand=scrollbar.set)
+        self.dictation_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.dictation_tree_item_ids: dict[str, str] = {}
+        self._refresh_dictation_candidates()
+
+    def _dictation_levels(self) -> set[str]:
+        selected = {level for level, variable in self.dictation_level_vars.items() if variable.get()}
+        return selected or set(self.dictation_level_vars)
+
+    def _refresh_dictation_candidates(self):
+        if not hasattr(self, "dictation_tree"):
+            return
+        entries = self.service.dictation_pool(
+            self._dictation_levels(),
+            self.dictation_include_evaluated_var.get(),
+        )
+        self.dictation_tree.delete(*self.dictation_tree.get_children())
+        self.dictation_tree_item_ids.clear()
+        for entry in entries[:2000]:
+            item_id = self.dictation_tree.insert(
+                "", tk.END,
+                values=(entry.word, entry.meaning.replace("\n", " ")[:100], " / ".join(sorted(entry.tags))),
+            )
+            self.dictation_tree_item_ids[item_id] = entry.word_id
+        self._on_dictation_tree_select()
+
+    def _on_dictation_tree_select(self, _event=None):
+        selected = self.dictation_tree.selection()
+        self.dictation_selected_ids = {
+            self.dictation_tree_item_ids[item_id]
+            for item_id in selected if item_id in self.dictation_tree_item_ids
+        }
+        if self.dictation_mode_var.get() == "manual":
+            self.dictation_selection_count.configure(text=f"已选择 {len(self.dictation_selected_ids)} 个词条")
+        else:
+            self.dictation_selection_count.configure(text="随机模式不需要手选")
+
+    def _dictation_options(self) -> DictationOptions:
+        formats = frozenset(value for value, variable in self.dictation_format_vars.items() if variable.get())
+        fields = frozenset(value for value, variable in self.dictation_field_vars.items() if variable.get())
+        custom = self.dictation_custom_example_var.get().strip()
+        custom_examples = None if not custom else {word_id: custom for word_id in self.dictation_selected_ids}
+        return DictationOptions(
+            formats=formats,
+            font_size_pt=int(self.dictation_font_size_var.get()),
+            missing_fields=fields,
+            show_initial=self.dictation_initial_var.get(),
+            include_examples=self.dictation_examples_var.get(),
+            custom_examples=custom_examples,
+        )
+
+    def preview_dictation(self):
+        try:
+            count = int(self.dictation_count_var.get())
+            if count < 1:
+                raise ValueError("默写数量必须大于 0")
+            options = self._dictation_options()
+            manual = self.dictation_mode_var.get() == "manual"
+            if manual:
+                if not self.dictation_selected_ids:
+                    raise ValueError("请先选择至少一个词条")
+                if len(self.dictation_selected_ids) < count and not self._confirm_manual_dictation(len(self.dictation_selected_ids), count):
+                    return
+                selected_entries = self.service.selected_dictation_candidates(
+                    self.dictation_selected_ids,
+                    self._dictation_levels(),
+                    self.dictation_include_evaluated_var.get(),
+                )
+                document = self.service.build_dictation_document(
+                    options, word_ids=self.dictation_selected_ids,
+                    levels=self._dictation_levels(),
+                    include_evaluated=self.dictation_include_evaluated_var.get(),
+                    entries=selected_entries,
+                )
+            else:
+                selected_entries = self.service.dictation_candidates(
+                    count, self._dictation_levels(), self.dictation_include_evaluated_var.get(),
+                )
+                document = self.service.build_dictation_document(
+                    options, entries=selected_entries,
+                )
+            custom = self.dictation_custom_example_var.get().strip()
+            if custom:
+                options = replace(options, custom_examples={entry.word_id: custom for entry in selected_entries})
+                document = self.service.build_dictation_document(options, entries=selected_entries)
+            if not document.rows:
+                raise ValueError("没有符合当前条件的词条")
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("默写设置有误", str(exc), parent=self)
+            return
+        self.dictation_document = document
+        self.dictation_document_word_ids = {entry.word_id for entry in selected_entries}
+        self._open_dictation_preview(document)
+
+    def _confirm_manual_dictation(self, selected_count: int, requested_count: int) -> bool:
+        dialog = tk.Toplevel(self)
+        dialog.title("确认选择")
+        dialog.geometry("430x170")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+        tk.Label(dialog, text=f"当前仅选择了{selected_count}/{requested_count}，是否确定选择", bg=BG, fg=TEXT, font="LexiBodyBold", wraplength=380).pack(padx=20, pady=(28, 18))
+        result = {"value": False}
+        buttons = tk.Frame(dialog, bg=BG)
+        buttons.pack()
+        def finish(value):
+            result["value"] = value
+            dialog.destroy()
+        self._primary_button(buttons, "确定选择", lambda: finish(True), width=10).pack(side=tk.LEFT, padx=6)
+        self._outline_button(buttons, "返回选择", lambda: finish(False), width=10).pack(side=tk.LEFT, padx=6)
+        self.wait_window(dialog)
+        return result["value"]
+
+    def _open_dictation_preview(self, document):
+        preview = tk.Toplevel(self)
+        preview.title("默写预览 · A4 portrait")
+        preview.geometry("720x780")
+        preview.minsize(620, 620)
+        preview.configure(bg=BG)
+        tk.Label(preview, text="A4 页面预览", bg=BG, fg=TEXT, font="LexiTitle").pack(anchor="w", padx=20, pady=(18, 2))
+        tk.Label(preview, text=f"{len(document.rows)} 个词条 · {document.options.font_size_pt} pt · {', '.join(item.value.upper() for item in sorted(document.options.formats, key=lambda value: value.value))}", bg=BG, fg=MUTED, font="LexiSmall").pack(anchor="w", padx=20, pady=(0, 10))
+        frame = tk.Frame(preview, bg=BG)
+        frame.pack(fill=tk.BOTH, expand=True, padx=20)
+        canvas = tk.Canvas(frame, bg="#DCE3E5", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        page_width, page_height, gap = 520, 736, 22
+        lines_per_page = 42
+        lines: list[str] = []
+        for index, row in enumerate(document.rows, 1):
+            lines.append(f"{index}. {row.word}    {row.part_of_speech}    {row.meaning}")
+            lines.extend(f"    e.g. {example}" for example in row.examples)
+            lines.append("")
+        page_count = max(1, (len(lines) + lines_per_page - 1) // lines_per_page)
+        total_height = page_count * (page_height + gap) + gap
+        canvas.configure(scrollregion=(0, 0, page_width + 80, total_height))
+        for page_index in range(page_count):
+            x, y = 35, gap + page_index * (page_height + gap)
+            canvas.create_rectangle(x, y, x + page_width, y + page_height, fill="#FFFFFF", outline="#C8D0D3")
+            page_lines = lines[page_index * lines_per_page:(page_index + 1) * lines_per_page]
+            canvas.create_text(x + 26, y + 26, anchor="nw", width=page_width - 52, text="\n".join(page_lines), fill=TEXT, font=("Microsoft YaHei UI", 10), spacing=4)
+            canvas.create_text(x + page_width - 24, y + page_height - 18, anchor="e", text=f"{page_index + 1} / {page_count}", fill=MUTED, font=("Microsoft YaHei UI", 8))
+        actions = tk.Frame(preview, bg=BG)
+        actions.pack(fill=tk.X, padx=20, pady=14)
+        self._primary_button(actions, "导出并保存", lambda: (preview.destroy(), self.export_dictation()), width=14).pack(side=tk.RIGHT)
+        self._outline_button(actions, "返回修改", preview.destroy, width=10).pack(side=tk.RIGHT, padx=8)
+
+    def export_dictation(self):
+        document = self.dictation_document
+        if document is None:
+            return
+        try:
+            outputs = self.service.export_dictation(document)
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc), parent=self)
+            return
+        successful: list[Path] = []
+        for output in outputs:
+            path = filedialog.asksaveasfilename(
+                title=f"保存 {output.file_name}",
+                initialfile=output.file_name,
+                defaultextension=Path(output.file_name).suffix,
+                filetypes=[("Word 文档", "*.docx")] if output.file_name.endswith(".docx") else [("PDF 文件", "*.pdf")],
+            )
+            if not path:
+                continue
+            try:
+                Path(path).write_bytes(output.bytes)
+                successful.append(Path(path))
+            except OSError as exc:
+                messagebox.showerror("保存失败", str(exc), parent=self)
+        if successful:
+            self._apply_dictation_mark()
+            messagebox.showinfo("导出完成", f"已保存 {len(successful)} 个文件。", parent=self)
+
+    def _apply_dictation_mark(self):
+        ids = {row_id for row_id in self._dictation_document_word_ids()}
+        mode = self.service.mark_mode()
+        if mode is MarkMode.ALWAYS:
+            self.service.update_program_tags(ids, {"evaluated"}, set())
+        elif mode is MarkMode.ASK:
+            self._show_dictation_mark_dialog(ids)
+
+    def _dictation_document_word_ids(self) -> set[str]:
+        return set(self.dictation_document_word_ids)
+
+    def _show_dictation_mark_dialog(self, word_ids: set[str]):
+        dialog = tk.Toplevel(self)
+        dialog.title("标记默写词条")
+        dialog.geometry("420x205")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+        tk.Label(dialog, text="是否将本次导出的词条标记为 evaluated？", bg=BG, fg=TEXT, font="LexiBodyBold", wraplength=370).pack(padx=20, pady=(26, 12))
+        dont_ask = tk.BooleanVar(value=False)
+        tk.Checkbutton(dialog, text="不再提示", variable=dont_ask, bg=BG, fg=TEXT, activebackground=BG, selectcolor=BG, font="LexiSmall").pack()
+        buttons = tk.Frame(dialog, bg=BG)
+        buttons.pack(pady=18)
+        def finish(mark: bool):
+            if dont_ask.get():
+                self.service.set_mark_mode(MarkMode.ALWAYS if mark else MarkMode.NEVER)
+            if mark:
+                self.service.update_program_tags(word_ids, {"evaluated"}, set())
+            dialog.destroy()
+        self._primary_button(buttons, "标记", lambda: finish(True), width=8).pack(side=tk.LEFT, padx=6)
+        self._outline_button(buttons, "不标记", lambda: finish(False), width=8).pack(side=tk.LEFT, padx=6)
+        self.wait_window(dialog)
 
     def _resize_study_answer(self, event):
         wrap_width = max(360, event.width - 80)
@@ -621,6 +948,15 @@ class LexiTrackApp(tk.Tk):
         options.pack(anchor="w", padx=18, pady=(8, 18))
         for value, label in (("random", "随机顺序"), ("alphabetical", "按字母排序")):
             tk.Radiobutton(options, text=label, value=value, variable=self.study_order_var, command=self.save_study_order, bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE, font="LexiBody").pack(side=tk.LEFT, padx=(0, 20))
+        mark = self._card(body)
+        mark.pack(fill=tk.X, pady=(0, 0))
+        tk.Label(mark, text="默写后的标记", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(18, 4))
+        tk.Label(mark, text="选择是否默认给本次导出的词条添加 evaluated 标签。", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(anchor="w", padx=22)
+        self.mark_mode_var = tk.StringVar(value=self.service.mark_mode().value)
+        mark_options = tk.Frame(mark, bg=SURFACE)
+        mark_options.pack(anchor="w", padx=18, pady=(8, 18))
+        for value, label in ((MarkMode.ALWAYS.value, "默认标记"), (MarkMode.NEVER.value, "默认不标记"), (MarkMode.ASK.value, "每次询问")):
+            tk.Radiobutton(mark_options, text=label, value=value, variable=self.mark_mode_var, command=self.save_mark_mode, bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE, font="LexiBody").pack(side=tk.LEFT, padx=(0, 20))
         storage = self._card(body)
         storage.pack(fill=tk.X, pady=16)
         tk.Label(storage, text="本地数据", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(20, 5))
@@ -635,6 +971,12 @@ class LexiTrackApp(tk.Tk):
         tk.Label(storage, text=catalog_message, bg=SURFACE, fg=ACCENT if self.catalog_count else ORANGE, font="LexiBody").pack(anchor="w", padx=22, pady=(0, 20))
         self.change_font_scale(str(self.scale_var.get()))
         self.change_review_batch_size(str(self.review_batch_var.get()))
+
+    def save_mark_mode(self):
+        try:
+            self.service.set_mark_mode(MarkMode(self.mark_mode_var.get()))
+        except ValueError as exc:
+            messagebox.showerror("设置有误", str(exc), parent=self)
 
     def _build_level_filters(self, parent, title: str, selected_getter, on_change, inline: bool = False):
         background = parent.cget("bg")
@@ -704,6 +1046,8 @@ class LexiTrackApp(tk.Tk):
             self.load_study_card()
         elif key == "review":
             self.refresh_review_page()
+        elif key == "dictation":
+            self._refresh_dictation_candidates()
         elif key == "library":
             self.refresh_library()
         elif key == "analytics":
@@ -1088,34 +1432,43 @@ class LexiTrackApp(tk.Tk):
         selected = self.library_tree.selection()
         word_ids = {self.library_item_ids[item_id] for item_id in selected if item_id in self.library_item_ids}
         if not word_ids:
-            messagebox.showinfo("批量标签", "请先在词库中选择一个或多个自定义词条。", parent=self)
+            messagebox.showinfo("批量标签", "请先在词库中选择一个或多个词条。", parent=self)
             return
         dialog = tk.Toplevel(self)
         dialog.title("批量修改标签")
-        dialog.geometry("480x270")
+        dialog.geometry("520x330")
         dialog.configure(bg=BG)
         dialog.transient(self)
         tk.Label(dialog, text=f"已选择 {len(word_ids)} 个词条", bg=BG, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=24, pady=(22, 8))
-        tk.Label(dialog, text="仅对自定义词条生效；level 可填 CET4、CET6、custom 或用 | 分隔多个词书。", bg=BG, fg=MUTED, font="LexiSmall", wraplength=420, justify="left").pack(anchor="w", padx=24)
-        form = tk.Frame(dialog, bg=BG)
-        form.pack(fill=tk.X, padx=24, pady=16)
-        tk.Label(form, text="level", bg=BG, fg=MUTED, font="LexiSmall").grid(row=0, column=0, sticky="w", pady=6)
-        level_var = tk.StringVar(value="custom")
-        tk.Entry(form, textvariable=level_var, font="LexiBody", width=32).grid(row=0, column=1, padx=10, sticky="w")
-        tk.Label(form, text="tags", bg=BG, fg=MUTED, font="LexiSmall").grid(row=1, column=0, sticky="w", pady=6)
-        tags_var = tk.StringVar()
-        tk.Entry(form, textvariable=tags_var, font="LexiBody", width=32).grid(row=1, column=1, padx=10, sticky="w")
+        tk.Label(dialog, text="只能操作程序内置标签；内置词库也可保留本地覆盖。", bg=BG, fg=MUTED, font="LexiSmall", wraplength=460, justify="left").pack(anchor="w", padx=24)
+        add_vars: dict[str, tk.BooleanVar] = {}
+        remove_vars: dict[str, tk.BooleanVar] = {}
+        for title, variables in (("添加标签", add_vars), ("删除标签", remove_vars)):
+            frame = tk.Frame(dialog, bg=BG)
+            frame.pack(fill=tk.X, padx=24, pady=(14, 0))
+            tk.Label(frame, text=title, bg=BG, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 12))
+            for tag in sorted(self.service.available_program_tags()):
+                variable = tk.BooleanVar(value=False)
+                variables[tag] = variable
+                tk.Checkbutton(frame, text=tag, variable=variable, bg=BG, fg=TEXT, activebackground=BG, selectcolor=BG, font="LexiSmall", padx=0).pack(side=tk.LEFT, padx=(0, 8))
         def save():
-            levels = {item.strip().upper() for item in level_var.get().replace(",", "|").split("|") if item.strip()}
-            if not levels or not levels.issubset({"CET4", "CET6", "CUSTOM"}):
-                messagebox.showerror("标签有误", "level 只能包含 CET4、CET6、custom。", parent=dialog)
+            add = {tag for tag, variable in add_vars.items() if variable.get()}
+            remove = {tag for tag, variable in remove_vars.items() if variable.get()}
+            if add & remove:
+                messagebox.showerror("标签有误", "同一标签不能同时添加和删除。", parent=dialog)
                 return
-            count = self.service.update_entry_labels(word_ids, "/".join(sorted(levels)), {item.strip() for item in tags_var.get().split("|") if item.strip()})
+            try:
+                count = self.service.update_program_tags(word_ids, add, remove)
+            except ValueError as exc:
+                messagebox.showerror("标签有误", str(exc), parent=dialog)
+                return
             dialog.destroy()
             self.refresh_library()
-            messagebox.showinfo("批量标签", f"已更新 {count} 个自定义词条。", parent=self)
-        self._primary_button(dialog, "保存标签", save, width=10).pack(side=tk.RIGHT, padx=24, pady=12)
-        self._outline_button(dialog, "取消", dialog.destroy, width=8).pack(side=tk.RIGHT, pady=12)
+            messagebox.showinfo("批量标签", f"已更新 {count} 个词条。", parent=self)
+        actions = tk.Frame(dialog, bg=BG)
+        actions.pack(side=tk.BOTTOM, fill=tk.X, pady=16)
+        self._primary_button(actions, "保存标签", save, width=10).pack(side=tk.RIGHT, padx=24)
+        self._outline_button(actions, "取消", dialog.destroy, width=8).pack(side=tk.RIGHT)
 
     def set_forecast_days(self, days: int):
         self.forecast_days = days
@@ -1224,7 +1577,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     reminder_popup_wheel_scroll = False
     reminder_popup_only_examples_wheel = False
     original_font_scale = app.service.font_scale()
-    for page in ("dashboard", "study", "review", "library", "analytics", "reminder", "settings"):
+    for page in ("dashboard", "study", "review", "dictation", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
         app.update()
         visited.append(page)

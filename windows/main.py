@@ -10,6 +10,7 @@ import sys
 from application.services import LearningService
 from infrastructure.catalog import CatalogLoader
 from infrastructure.csv_importer import CsvVocabularyImporter
+from infrastructure.dictation_exporter import DictationDocumentExporter
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
 from presentation.app import LexiTrackApp, run_gui_smoke
@@ -55,6 +56,7 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         repository,
         CsvVocabularyImporter(),
         words_learnt_repository,
+        DictationDocumentExporter(),
     )
     return LexiTrackApp(
         service=service,

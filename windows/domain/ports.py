@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .dictation import MarkMode
 from .models import LearntWord, ReviewState, VocabularyEntry
 
 
@@ -53,6 +54,12 @@ class LearningRepository(Protocol):
     def get_reminder_interval_minutes(self) -> float: ...
 
     def set_reminder_interval_minutes(self, minutes: float) -> None: ...
+
+    def update_tags(self, word_ids: set[str], add: set[str], remove: set[str]) -> int: ...
+
+    def get_mark_mode(self) -> MarkMode: ...
+
+    def set_mark_mode(self, mode: MarkMode) -> None: ...
 
 
 class WordsLearntRepository(Protocol):

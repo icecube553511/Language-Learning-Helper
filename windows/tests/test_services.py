@@ -13,6 +13,7 @@ ROOT_DIR = WINDOWS_DIR.parent
 sys.path.insert(0, str(WINDOWS_DIR))
 
 from application.services import LearningService
+from domain.dictation import DictationField, DictationOptions, MarkMode
 from domain.models import (
     ExampleSentence,
     LearntWord,
@@ -226,6 +227,30 @@ class LearningServiceTests(unittest.TestCase):
         self.assertEqual(migrated.weight, 0.2)
         self.assertEqual(migrated.learnt_at_utc, 1000)
         self.assertTrue((directory / "Words_Learnt.json").is_file())
+
+    def test_dictation_candidates_filter_evaluated_and_sample_without_replacement(self):
+        entries = [sample_entry(word) for word in ("alpha", "beta", "gamma")]
+        entries[-1] = VocabularyEntry.create("gamma", "gamma", entries[-1].examples, level="CET6", tags=("evaluated",))
+        repository = JsonLearningRepository(Path(self.temp.name), entries)
+        service = LearningService(repository)
+        result = service.dictation_candidates(5, rng=random.Random(1))
+        self.assertEqual({item.word_id for item in result}, {"alpha", "beta"})
+        self.assertEqual(len({item.word_id for item in result}), len(result))
+        self.assertEqual(service.dictation_candidates(5, include_evaluated=True, rng=random.Random(1))[-1].word_id, "gamma")
+
+    def test_selected_dictation_and_tags_and_mark_mode(self):
+        repository = JsonLearningRepository(Path(self.temp.name), [sample_entry("built")])
+        service = LearningService(repository)
+        self.assertEqual(service.available_program_tags(), {"cet4", "cet6", "gk", "zk", "evaluated"})
+        self.assertEqual(service.update_program_tags({"built"}, {"evaluated"}, set()), 1)
+        self.assertEqual(service.selected_dictation_candidates({"built"}), [])
+        self.assertEqual(service.selected_dictation_candidates({"built"}, include_evaluated=True)[0].word_id, "built")
+        with self.assertRaises(ValueError):
+            service.update_program_tags({"built"}, {"custom"}, set())
+        self.assertEqual(service.set_mark_mode(MarkMode.ALWAYS), MarkMode.ALWAYS)
+        self.assertEqual(service.mark_mode(), MarkMode.ALWAYS)
+        document = service.build_dictation_document(DictationOptions(missing_fields={DictationField.MEANING}), word_ids={"built"}, include_evaluated=True)
+        self.assertEqual(len(document.rows), 1)
 
 
 if __name__ == "__main__":

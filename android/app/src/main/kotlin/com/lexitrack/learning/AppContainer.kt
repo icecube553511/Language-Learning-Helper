@@ -20,10 +20,16 @@ import com.lexitrack.learning.application.UpdateStudyLevelsUseCase
 import com.lexitrack.learning.application.UpdateReviewLevelsUseCase
 import com.lexitrack.learning.application.UpdateStudyOrderUseCase
 import com.lexitrack.learning.application.UpdateVocabularyLabelsUseCase
+import com.lexitrack.learning.application.SelectDictationCandidatesUseCase
+import com.lexitrack.learning.application.BuildDictationDocumentUseCase
+import com.lexitrack.learning.application.ExportDictationDocumentUseCase
+import com.lexitrack.learning.application.UpdateProgramTagsUseCase
+import com.lexitrack.learning.application.UpdateMarkModeUseCase
 import com.lexitrack.learning.infrastructure.AndroidLearntWordsRepository
 import com.lexitrack.learning.infrastructure.AndroidReviewRepository
 import com.lexitrack.learning.infrastructure.AndroidSettingsRepository
 import com.lexitrack.learning.infrastructure.AndroidVocabularyRepository
+import com.lexitrack.learning.infrastructure.AndroidDictationExporter
 import com.lexitrack.learning.infrastructure.SystemTimeProvider
 
 class AppContainer(context: Context) {
@@ -45,6 +51,11 @@ class AppContainer(context: Context) {
         updateFontScale = UpdateFontScaleUseCase(settings),
         updateReviewBatchSize = UpdateReviewBatchSizeUseCase(settings, learntWords),
         updateReminderSettings = UpdateReminderSettingsUseCase(settings),
+        selectDictationCandidates = SelectDictationCandidatesUseCase(vocabulary),
+        buildDictationDocument = BuildDictationDocumentUseCase(),
+        exportDictationDocument = ExportDictationDocumentUseCase(AndroidDictationExporter()),
+        updateProgramTags = UpdateProgramTagsUseCase(vocabulary),
+        updateMarkMode = UpdateMarkModeUseCase(settings),
         updateStudyOrder = UpdateStudyOrderUseCase(settings),
         updateStudyLevels = UpdateStudyLevelsUseCase(settings),
         updateReviewLevels = UpdateReviewLevelsUseCase(settings),

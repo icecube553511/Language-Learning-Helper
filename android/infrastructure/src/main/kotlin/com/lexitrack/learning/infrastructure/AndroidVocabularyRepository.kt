@@ -5,6 +5,15 @@ import com.lexitrack.learning.application.CatalogStatus
 import com.lexitrack.learning.application.VocabularyRepository
 import com.lexitrack.learning.domain.ImportReport
 import com.lexitrack.learning.domain.VocabularyEntry
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.FileNotFoundException
 import java.io.InputStream
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +32,7 @@ class AndroidVocabularyRepository(
     private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val mutex = Mutex()
     private val importedEntries = mutableListOf<VocabularyEntry>()
+    private val tagOverrides = mutableMapOf<String, Set<String>>()
     private val _words = MutableStateFlow<List<VocabularyEntry>>(emptyList())
     private val _status = MutableStateFlow(CatalogStatus())
     private var initialized = false
@@ -36,6 +46,14 @@ class AndroidVocabularyRepository(
             runCatching { VocabularyJsonCodec.decodeCatalog(saved, "csv").entries }
                 .getOrDefault(emptyList())
                 .let(importedEntries::addAll)
+        }
+        val savedOverrides = preferences.getString(KEY_TAG_OVERRIDES, null)
+        if (!savedOverrides.isNullOrBlank()) {
+            runCatching {
+                Json.parseToJsonElement(savedOverrides).jsonObject.forEach { (id, value) ->
+                    tagOverrides[id] = value.jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull }.toSet()
+                }
+            }
         }
     }
 
@@ -53,7 +71,7 @@ class AndroidVocabularyRepository(
                 CatalogDecodeResult(emptyList(), 1)
             }
         }
-        _words.value = merge(decoded.entries, importedEntries)
+        _words.value = applyTagOverrides(merge(decoded.entries, importedEntries))
         _status.value = when {
             decoded.entries.isEmpty() && importedEntries.isEmpty() -> CatalogStatus(
                 loading = false,
@@ -85,7 +103,7 @@ class AndroidVocabularyRepository(
             preferences.edit()
                 .putString(KEY_IMPORTED, VocabularyJsonCodec.encodeEntries(importedEntries))
                 .apply()
-            _words.value = merge(_words.value, batch.entries)
+            _words.value = applyTagOverrides(merge(_words.value, batch.entries))
             _status.value = _status.value.copy(acceptedEntries = _words.value.size)
         }
         batch.report
@@ -97,13 +115,29 @@ class AndroidVocabularyRepository(
         importedEntries.replaceAll { entry ->
             if (entry.id !in editableIds) return@replaceAll entry
             updated += 1
-            entry.copy(levels = levels, tags = tags)
+            entry.copy(levels = levels, tags = tags).also { tagOverrides[it.id] = tags }
         }
         if (updated > 0) {
-            preferences.edit().putString(KEY_IMPORTED, VocabularyJsonCodec.encodeEntries(importedEntries)).apply()
-            _words.value = merge(_words.value.filter { it.id !in editableIds }, importedEntries.filter { it.id in editableIds })
+            preferences.edit()
+                .putString(KEY_IMPORTED, VocabularyJsonCodec.encodeEntries(importedEntries))
+                .putString(KEY_TAG_OVERRIDES, encodeTagOverrides())
+                .apply()
+            _words.value = applyTagOverrides(merge(_words.value.filter { it.id !in editableIds }, importedEntries.filter { it.id in editableIds }))
         }
         updated
+    }
+
+    override suspend fun updateTags(wordIds: Set<String>, add: Set<String>, remove: Set<String>): Int = mutex.withLock {
+        val ids = wordIds.intersect(_words.value.mapTo(mutableSetOf()) { it.id })
+        ids.forEach { id ->
+            val current = _words.value.first { it.id == id }.tags
+            tagOverrides[id] = (current + add).filterNot { tag -> remove.any { it.equals(tag, ignoreCase = true) } }.toSet()
+        }
+        if (ids.isNotEmpty()) {
+            preferences.edit().putString(KEY_TAG_OVERRIDES, encodeTagOverrides()).apply()
+            _words.value = applyTagOverrides(_words.value)
+        }
+        ids.size
     }
 
     private fun merge(
@@ -113,8 +147,18 @@ class AndroidVocabularyRepository(
         .distinctBy { it.id }
         .sortedBy { it.word.lowercase() }
 
+    private fun applyTagOverrides(entries: List<VocabularyEntry>): List<VocabularyEntry> =
+        entries.map { entry -> tagOverrides[entry.id]?.let { entry.copy(tags = it) } ?: entry }
+
+    private fun encodeTagOverrides(): String = buildJsonObject {
+        tagOverrides.toSortedMap().forEach { (id, tags) ->
+            put(id, buildJsonArray { tags.sorted().forEach { add(JsonPrimitive(it)) } })
+        }
+    }.toString()
+
     private companion object {
         const val PREFERENCES_NAME = "lexitrack_vocabulary"
         const val KEY_IMPORTED = "imported_entries"
+        const val KEY_TAG_OVERRIDES = "tag_overrides"
     }
 }

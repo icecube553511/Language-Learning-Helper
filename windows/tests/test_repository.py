@@ -10,6 +10,7 @@ import unittest
 WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
+from domain.dictation import MarkMode
 from domain.models import ExampleSentence, LearntWord, ReviewState, VocabularyEntry
 from infrastructure.catalog import CatalogLoader
 from infrastructure.repository import JsonLearningRepository
@@ -135,6 +136,20 @@ class RepositoryTests(unittest.TestCase):
         }), encoding="utf-8")
 
         self.assertEqual(JsonWordsLearntRepository(directory).learnt_word("serene").weight, 0.2)
+
+    def test_tag_override_and_mark_mode_survive_restart_without_changing_catalog_entry(self):
+        directory = Path(self.temp.name)
+        built_in = sample_entry("serene")
+        repo = JsonLearningRepository(directory, [built_in])
+        self.assertEqual(repo.update_tags({"serene"}, {"evaluated", "zk"}, {"cet4"}), 1)
+        repo.set_mark_mode(MarkMode.NEVER)
+        loaded = JsonLearningRepository(directory, [built_in])
+        loaded_entry = loaded.all_entries()[0]
+        self.assertEqual(set(loaded_entry.tags), {"evaluated", "zk"})
+        self.assertEqual(set(built_in.tags), set())
+        self.assertEqual(loaded.get_mark_mode(), MarkMode.NEVER)
+        payload = json.loads((directory / "learning-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["tagOverrides"]["serene"], ["evaluated", "zk"])
 
 
 if __name__ == "__main__":

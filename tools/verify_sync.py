@@ -79,6 +79,34 @@ def verify_weighted_review() -> None:
         fail("Unexpected default review batch size")
 
 
+def verify_dictation_contract() -> None:
+    contract_path = CONTRACTS / "dictation-export-v1.md"
+    golden_path = CONTRACTS / "dictation-export-golden-v1.json"
+    if not contract_path.is_file() or not contract_path.read_text(encoding="utf-8").strip():
+        fail("Dictation export contract is missing or empty")
+    if not golden_path.is_file():
+        fail("Dictation export golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "dictation-export-v1":
+        fail("Unexpected dictation export contract version")
+    page = payload.get("page", {})
+    if page.get("size") != "A4" or page.get("orientation") != "portrait":
+        fail("Dictation export must use A4 portrait")
+    font_size = payload.get("fontSizePt", {})
+    if (font_size.get("default"), font_size.get("minimum"), font_size.get("maximum")) != (12, 8, 24):
+        fail("Unexpected dictation export font-size bounds")
+    if payload.get("formats") != ["DOCX", "PDF"]:
+        fail("Dictation export formats differ from the shared contract")
+    if payload.get("allowedTags") != ["cet4", "cet6", "gk", "zk", "evaluated"]:
+        fail("Dictation program tag allowlist differs from the shared contract")
+    confirmation = payload.get("confirmation", {})
+    if confirmation.get("rendered") != "当前仅选择了3/10，是否确定选择":
+        fail("Dictation manual-selection confirmation text differs from the shared contract")
+    evaluated = payload.get("evaluated", {})
+    if evaluated.get("defaultPreference") != "ASK" or evaluated.get("preferences") != ["ASK", "ALWAYS", "NEVER"]:
+        fail("Dictation evaluated preferences differ from the shared contract")
+
+
 def verify_catalog() -> None:
     catalog_path = CONTENT / "catalog.json"
     manifest_path = CONTENT / "catalog-manifest.json"
@@ -162,6 +190,7 @@ def verify_platform_markers() -> None:
 def main() -> int:
     verify_scheduler()
     verify_weighted_review()
+    verify_dictation_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()

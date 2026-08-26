@@ -1,0 +1,208 @@
+{
+  "contractVersion": "dictation-export-v1",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "widthMm": 210,
+    "heightMm": 297
+  },
+  "formats": ["DOCX", "PDF"],
+  "fontSizePt": {
+    "default": 12,
+    "minimum": 8,
+    "maximum": 24
+  },
+  "blankVectors": [
+    {
+      "name": "ascii-word",
+      "text": "word",
+      "codePointLength": 4,
+      "blankCount": 8,
+      "rendered": "________"
+    },
+    {
+      "name": "precomposed-code-point",
+      "text": "é",
+      "codePointLength": 1,
+      "blankCount": 2,
+      "rendered": "__"
+    },
+    {
+      "name": "supplementary-code-point",
+      "text": "😀ab",
+      "codePointLength": 3,
+      "blankCount": 6,
+      "rendered": "______"
+    },
+    {
+      "name": "first-supplementary-code-point",
+      "text": "😀ab",
+      "showFirstLetter": true,
+      "firstCodePoint": "😀",
+      "remainingCodePointLength": 2,
+      "blankCount": 4,
+      "rendered": "😀 ____"
+    },
+    {
+      "name": "single-code-point-first-letter",
+      "text": "I",
+      "showFirstLetter": true,
+      "firstCodePoint": "I",
+      "remainingCodePointLength": 0,
+      "blankCount": 0,
+      "rendered": "I"
+    },
+    {
+      "name": "chinese-meaning",
+      "text": "谈判，协商",
+      "codePointLength": 5,
+      "blankCount": 9,
+      "rendered": "_________"
+    },
+    {
+      "name": "two-chinese-code-points",
+      "text": "中文",
+      "codePointLength": 2,
+      "blankCount": 4,
+      "rendered": "____"
+    }
+  ],
+  "partOfSpeechVectors": [
+    {
+      "name": "ordered-deduplicated-case-insensitive",
+      "meaningInput": "VT. 放弃, 抛弃 n. 放任 vt. 舍弃",
+      "tokens": ["vt", "n"],
+      "partOfSpeech": "vt / n",
+      "meaning": "放弃, 抛弃 放任 舍弃"
+    },
+    {
+      "name": "allowlist-and-ascii-boundaries",
+      "meaningInput": "adj. 艺术的 art. 冠词 abbr. 缩写 artist 艺术家 A. 第一流的",
+      "tokens": ["adj", "art", "abbr", "a"],
+      "partOfSpeech": "adj / art / abbr / a",
+      "meaning": "艺术的 冠词 缩写 artist 艺术家 第一流的"
+    },
+    {
+      "name": "no-token",
+      "meaningInput": "谈判，协商",
+      "tokens": [],
+      "partOfSpeech": "",
+      "meaning": "谈判，协商"
+    },
+    {
+      "name": "optional-dot-and-lowercase-dotless-output",
+      "meaningInput": "V 适应 ADV. 快速地 v. 调整",
+      "tokens": ["v", "adv"],
+      "partOfSpeech": "v / adv",
+      "meaning": "适应 快速地 调整"
+    }
+  ],
+  "exampleBoundaryVectors": [
+    {
+      "name": "case-insensitive-all-complete-words",
+      "word": "adapt",
+      "wordCodePointLength": 5,
+      "blankCount": 9,
+      "englishInput": "Adapt, adapt! adaptable and ADAPT.",
+      "chineseInput": "适应，适应！可适应的，再适应。",
+      "englishOutput": "_________, _________! adaptable and _________."
+    },
+    {
+      "name": "hyphenated-literal-target",
+      "word": "re-enter",
+      "wordCodePointLength": 8,
+      "blankCount": 15,
+      "englishInput": "Please re-enter; RE-ENTER now, but re-entered later.",
+      "chineseInput": "请重新进入；现在重新进入，但之后已经重新进入了。",
+      "englishOutput": "Please _______________; _______________ now, but re-entered later."
+    },
+    {
+      "name": "ascii-boundary-does-not-match-inside-word",
+      "word": "art",
+      "wordCodePointLength": 3,
+      "blankCount": 6,
+      "englishInput": "Art, ART and pop-art; artist and art2 stay.",
+      "chineseInput": "艺术、艺术和流行艺术；艺术家和 art2 保留。",
+      "englishOutput": "______, ______ and pop-______; artist and art2 stay."
+    },
+    {
+      "name": "first-code-point-applies-to-all-example-matches",
+      "word": "word",
+      "wordCodePointLength": 4,
+      "showFirstLetter": true,
+      "firstCodePoint": "w",
+      "remainingCodePointLength": 3,
+      "blankCount": 6,
+      "englishInput": "Word, WORD and wording.",
+      "chineseInput": "单词、单词和措辞。",
+      "englishOutput": "________, ________ and wording."
+    }
+  ],
+  "customExampleVector": {
+    "includeExample": true,
+    "word": "adapt",
+    "catalogExamples": [
+      { "english": "We adapt quickly.", "chinese": "我们很快适应。" },
+      { "english": "They adapt well.", "chinese": "他们适应得很好。" }
+    ],
+    "customExample": "People adapt together.",
+    "missingFields": ["word"],
+    "exampleOutput": "People _________ together.",
+    "renderedExampleLine": "e.g. People _________ together."
+  },
+  "catalogExampleSelectionVectors": [
+    {
+      "name": "first-complete-target-match-in-catalog-order",
+      "includeExample": true,
+      "word": "adapt",
+      "catalogExamples": [
+        { "english": "We change quickly.", "chinese": "我们快速改变。" },
+        { "english": "They adapt well.", "chinese": "他们适应得很好。" },
+        { "english": "Adaptation takes time.", "chinese": "适应需要时间。" }
+      ],
+      "selectedExample": "They adapt well."
+    },
+    {
+      "name": "fallback-first-nonempty-when-no-complete-target-match",
+      "includeExample": true,
+      "word": "art",
+      "catalogExamples": [
+        { "english": "   ", "chinese": "空白。" },
+        { "english": "The artist works here.", "chinese": "艺术家在这里工作。" },
+        { "english": "A smart plan.", "chinese": "一个聪明的计划。" }
+      ],
+      "selectedExample": "The artist works here."
+    }
+  ],
+  "selectionVector": {
+    "selectedMemberships": ["CET4", "custom"],
+    "excludeEvaluated": true,
+    "candidateIdsAfterFiltering": ["adapt", "re-enter"],
+    "requestedCount": 2,
+    "sampleWithoutReplacement": true
+  },
+  "confirmation": {
+    "template": "当前仅选择了{selectedCount}/{requestedCount}，是否确定选择",
+    "selectedCount": 3,
+    "requestedCount": 10,
+    "rendered": "当前仅选择了3/10，是否确定选择",
+    "confirm": "确定选择",
+    "back": "返回选择"
+  },
+  "evaluated": {
+    "defaultPreference": "ASK",
+    "preferences": ["ASK", "ALWAYS", "NEVER"],
+    "askText": "是否将本次导出的词条标记为 evaluated？",
+    "confirm": "标记",
+    "decline": "不标记",
+    "dontAskAgainLabel": "不再提示",
+    "dontAskAgainDefault": false,
+    "askTransitions": [
+      { "action": "MARK", "dontAskAgain": false, "persistedPreference": "ASK", "markCurrentExport": true },
+      { "action": "DO_NOT_MARK", "dontAskAgain": false, "persistedPreference": "ASK", "markCurrentExport": false },
+      { "action": "MARK", "dontAskAgain": true, "persistedPreference": "ALWAYS", "markCurrentExport": true },
+      { "action": "DO_NOT_MARK", "dontAskAgain": true, "persistedPreference": "NEVER", "markCurrentExport": false }
+    ]
+  },
+  "allowedTags": ["cet4", "cet6", "gk", "zk", "evaluated"]
+}

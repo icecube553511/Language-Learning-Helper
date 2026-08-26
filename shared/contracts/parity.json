@@ -26,7 +26,9 @@
     "independentVocabularyFilters": "ready",
     "reminderVocabularyFilters": "ready",
     "batchVocabularyLabels": "ready",
-    "androidBackgroundLearningReminders": "ready"
+    "androidBackgroundLearningReminders": "ready",
+    "dictationExport": "ready",
+    "programTagOverrides": "ready"
   },
   "platforms": ["windows", "android"]
 }

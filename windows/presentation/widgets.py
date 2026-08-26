@@ -83,6 +83,10 @@ def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:
     elif name == "clock":
         canvas.create_oval(4, 4, 24, 24, outline=color, width=2)
         canvas.create_line(14, 8, 14, 14, 19, 17, **line)
+    elif name == "edit":
+        canvas.create_line(7, 22, 21, 8, **line)
+        canvas.create_line(6, 24, 10, 23, **line)
+        canvas.create_line(20, 5, 23, 8, **line)
 
 
 class NavItem(tk.Frame):

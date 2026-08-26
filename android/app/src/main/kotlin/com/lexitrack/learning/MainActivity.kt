@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
 import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,11 +17,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lexitrack.learning.presentation.LexiTrackApp
 import com.lexitrack.learning.presentation.MainViewModel
 import com.lexitrack.learning.presentation.MainViewModelFactory
+import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.infrastructure.AndroidReminderScheduler
 import com.lexitrack.learning.infrastructure.ReminderReceiver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.ArrayDeque
 
 class MainActivity : ComponentActivity() {
     private val container by lazy { AppContainer(applicationContext) }
@@ -29,6 +32,10 @@ class MainActivity : ComponentActivity() {
     private var pendingReminderWordId: String? = null
     private var reminderEnabled = false
     private var reminderIntervalMinutes = 30.0f
+    private var dictationSaveLauncher: ActivityResultLauncher<String>? = null
+    private val dictationSaveQueue = ArrayDeque<ExportedDictation>()
+    private var dictationSavedCount = 0
+    private var dictationSaveCompletion: ((Int) -> Unit)? = null
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -78,6 +85,10 @@ class MainActivity : ComponentActivity() {
                         }
                 }
             }
+            val saveDictationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("*/*"),
+            ) { uri -> handleDictationSaveResult(uri) }
+            dictationSaveLauncher = saveDictationLauncher
             LexiTrackApp(
                 viewModel = viewModel,
                 onReminderSettingsRequested = { enabled, interval ->
@@ -93,7 +104,54 @@ class MainActivity : ComponentActivity() {
                 onChooseCsv = {
                     launcher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain"))
                 },
+                onSaveDictation = { outputs, onComplete ->
+                    requestDictationSave(outputs, onComplete)
+                },
             )
+        }
+    }
+
+    private fun requestDictationSave(outputs: List<ExportedDictation>, onComplete: (Int) -> Unit) {
+        dictationSaveQueue.clear()
+        dictationSaveQueue.addAll(outputs)
+        dictationSavedCount = 0
+        dictationSaveCompletion = onComplete
+        launchNextDictationSave()
+    }
+
+    private fun launchNextDictationSave() {
+        val output = dictationSaveQueue.peekFirst()
+        if (output == null) {
+            val completion = dictationSaveCompletion
+            dictationSaveCompletion = null
+            completion?.invoke(dictationSavedCount)
+            return
+        }
+        val launcher = dictationSaveLauncher
+        if (launcher == null) {
+            dictationSaveQueue.clear()
+            launchNextDictationSave()
+            return
+        }
+        launcher.launch(output.fileName)
+    }
+
+    private fun handleDictationSaveResult(uri: android.net.Uri?) {
+        val output = if (dictationSaveQueue.isEmpty()) null else dictationSaveQueue.removeFirst()
+        if (output == null) return
+        if (uri == null) {
+            launchNextDictationSave()
+            return
+        }
+        lifecycleScope.launch {
+            val saved = runCatching {
+                withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri)?.use { stream -> stream.write(output.bytes) }
+                        ?: error("无法打开保存位置。")
+                }
+            }.isSuccess
+            if (saved) dictationSavedCount += 1
+            launchNextDictationSave()
         }
     }
 
