@@ -30,6 +30,10 @@ jobs:
         run: |
           $smokeData = Join-Path $env:RUNNER_TEMP "lexitrack-smoke"
           $process = Start-Process -FilePath "./windows/dist/LexiTrack.exe" -ArgumentList @("--smoke-test", "--data-dir", $smokeData) -PassThru -Wait
+          $resultFile = Join-Path $smokeData "smoke-result.json"
+          if (Test-Path -LiteralPath $resultFile) {
+            Get-Content -LiteralPath $resultFile
+          }
           if ($process.ExitCode -ne 0) {
             throw "Packaged smoke test failed with exit code $($process.ExitCode)"
           }

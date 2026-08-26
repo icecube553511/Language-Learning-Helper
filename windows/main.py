@@ -104,7 +104,10 @@ def main(argv: list[str] | None = None) -> int:
                 "dictationPdfReady": False,
                 "dictationExportError": f"{type(error).__name__}: {error}",
             })
-        print(json.dumps(result, ensure_ascii=False))
+        rendered_result = json.dumps(result, ensure_ascii=False)
+        args.data_dir.mkdir(parents=True, exist_ok=True)
+        (args.data_dir / "smoke-result.json").write_text(rendered_result, encoding="utf-8")
+        print(rendered_result)
         ready = result["ok"] and result["studyCardReady"]
         ready = ready and result["dictationDocxReady"] and result["dictationPdfReady"]
         return 0 if ready else 1
