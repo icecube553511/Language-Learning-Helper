@@ -31,6 +31,17 @@ REMINDER_EXAMPLES_WIDTH = 624
 REMINDER_EXAMPLES_HEIGHT = 220
 
 
+def scroll_contract_ready(
+    is_scrollable: bool,
+    did_scroll: bool,
+    before: list[float],
+    after: list[float],
+) -> bool:
+    if is_scrollable:
+        return did_scroll
+    return before == [0.0, 1.0] and after == [0.0, 1.0]
+
+
 class FontManager:
     BASE_SIZES = {
         "LexiChart": 9,
@@ -1643,6 +1654,12 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         reminder_popup_fixed_limits = False
         popup_yview_before = []
         popup_yview_after = []
+    reminder_popup_scroll_contract_ready = scroll_contract_ready(
+        reminder_popup_examples_scrollable,
+        reminder_popup_wheel_scroll,
+        popup_yview_before,
+        popup_yview_after,
+    )
     app._dismiss_word_reminder()
     app.change_font_scale(str(original_font_scale * 100))
     for _ in range(3):
@@ -1937,8 +1954,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and reminder_popup_ready
             and reminder_popup_resizable
             and reminder_popup_fixed_limits
-            and reminder_popup_examples_scrollable
-            and reminder_popup_wheel_scroll
+            and reminder_popup_scroll_contract_ready
             and reminder_popup_only_examples_wheel
             and review_card_layout_ready
             and review_max_scale_layout_ready
