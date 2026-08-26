@@ -114,12 +114,21 @@ class ScrollableExamplePanel(tk.Frame):
     VIEWPORT_WIDTH = 640
     VIEWPORT_HEIGHT = 140
 
-    def __init__(self, parent, background: str, border: str):
+    def __init__(
+        self,
+        parent,
+        background: str,
+        border: str,
+        viewport_width: int = VIEWPORT_WIDTH,
+        viewport_height: int = VIEWPORT_HEIGHT,
+    ):
+        self.viewport_width = viewport_width
+        self.viewport_height = viewport_height
         super().__init__(
             parent,
             bg=background,
-            width=self.VIEWPORT_WIDTH,
-            height=self.VIEWPORT_HEIGHT,
+            width=viewport_width,
+            height=viewport_height,
             highlightbackground=border,
             highlightthickness=1,
         )
@@ -173,7 +182,7 @@ class ScrollableExamplePanel(tk.Frame):
     def available_text_width(self) -> int:
         canvas_width = self.canvas.winfo_width()
         if canvas_width <= 1:
-            canvas_width = self.VIEWPORT_WIDTH - int(self.scrollbar.cget("width"))
+            canvas_width = self.viewport_width - int(self.scrollbar.cget("width"))
         return max(360, canvas_width - 24)
 
     def scroll_to_top(self) -> None:

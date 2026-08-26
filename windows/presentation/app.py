@@ -23,6 +23,10 @@ BLUE = "#3973C6"
 ORANGE = "#D9822B"
 RED = "#C94B50"
 BORDER = "#DDE3E8"
+REMINDER_POPUP_WIDTH = 680
+REMINDER_POPUP_HEIGHT = 760
+REMINDER_EXAMPLES_WIDTH = 624
+REMINDER_EXAMPLES_HEIGHT = 220
 
 
 class FontManager:
@@ -88,6 +92,8 @@ class LexiTrackApp(tk.Tk):
         self._last_reminded_due_count = 0
         self._word_reminder_after_id: str | None = None
         self._word_reminder_popup: tk.Toplevel | None = None
+        self._word_reminder_examples_view: ScrollableExamplePanel | None = None
+        self._word_reminder_example_labels: list[tk.Label] = []
         self._word_reminder_is_preview = False
         self._word_reminder_previous_id = ""
         self._word_reminder_next_at = 0.0
@@ -934,8 +940,10 @@ class LexiTrackApp(tk.Tk):
         popup = tk.Toplevel(self)
         self._word_reminder_popup = popup
         popup.title("LexiTrack 词程 · 单词提醒")
-        popup.geometry("680x760")
-        popup.minsize(620, 700)
+        popup.geometry(f"{REMINDER_POPUP_WIDTH}x{REMINDER_POPUP_HEIGHT}")
+        popup.minsize(REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
+        popup.maxsize(REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
+        popup.resizable(False, False)
         popup.configure(bg=SURFACE)
         popup.transient(self)
         try:
@@ -954,16 +962,30 @@ class LexiTrackApp(tk.Tk):
         tk.Label(content, text=entry.phonetic or "音标待补充", bg=SURFACE, fg=MUTED, font="LexiBody").pack(anchor="w", pady=(2, 14))
         tk.Label(content, text=entry.meaning, bg=SURFACE, fg=TEXT, font="LexiBodyBold", wraplength=610, justify="left").pack(anchor="w")
         tk.Label(content, text="双语例句", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(anchor="w", pady=(12, 4))
+        examples_view = ScrollableExamplePanel(
+            content,
+            SURFACE,
+            BORDER,
+            viewport_width=REMINDER_EXAMPLES_WIDTH,
+            viewport_height=REMINDER_EXAMPLES_HEIGHT,
+        )
+        examples_view.pack(anchor="w")
+        self._word_reminder_examples_view = examples_view
+        self._word_reminder_example_labels: list[tk.Label] = []
         for index, example in enumerate(entry.examples[:3], start=1):
-            tk.Label(
-                content,
+            label = tk.Label(
+                examples_view.content,
                 text=f"{index}. {example.english}\n   {example.chinese}",
                 bg=SURFACE,
                 fg=TEXT,
                 font="LexiExample",
-                wraplength=610,
+                wraplength=examples_view.available_text_width(),
                 justify="left",
-            ).pack(anchor="w", fill=tk.X, pady=(0, 4))
+            )
+            label.pack(anchor="w", fill=tk.X, padx=(8, 4), pady=(0, 4))
+            examples_view.bind_mousewheel(label)
+            self._word_reminder_example_labels.append(label)
+        examples_view.scroll_to_top()
         if entry.mnemonic:
             tk.Label(
                 content,
@@ -995,6 +1017,8 @@ class LexiTrackApp(tk.Tk):
         was_preview = self._word_reminder_is_preview
         popup = self._word_reminder_popup
         self._word_reminder_popup = None
+        self._word_reminder_examples_view = None
+        self._word_reminder_example_labels = []
         self._word_reminder_is_preview = False
         if popup is not None and popup.winfo_exists():
             popup.destroy()
@@ -1195,6 +1219,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     app.update()
     visited = []
     reminder_filters_ready = False
+    reminder_popup_ready = False
+    reminder_popup_examples_scrollable = False
+    reminder_popup_wheel_scroll = False
+    reminder_popup_only_examples_wheel = False
+    original_font_scale = app.service.font_scale()
     for page in ("dashboard", "study", "review", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
         app.update()
@@ -1212,6 +1241,54 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     )
     app.show_page("study")
     app.update()
+    app.change_font_scale("140")
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+    app.preview_word_reminder()
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+    reminder_popup = app._word_reminder_popup
+    reminder_examples_view = app._word_reminder_examples_view
+    if reminder_popup is not None and reminder_examples_view is not None:
+        reminder_popup_ready = bool(reminder_popup.winfo_exists() and reminder_examples_view.winfo_ismapped())
+        reminder_popup_size = [reminder_popup.winfo_width(), reminder_popup.winfo_height()]
+        reminder_popup_resizable = tuple(int(value) for value in reminder_popup.resizable()) == (0, 0)
+        reminder_popup_fixed_limits = (
+            tuple(int(value) for value in reminder_popup.minsize())
+            == (REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
+            and tuple(int(value) for value in reminder_popup.maxsize())
+            == (REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
+        )
+        reminder_popup_examples_scrollable = reminder_examples_view.is_scrollable()
+        popup_yview_before = list(reminder_examples_view.canvas.yview())
+        reminder_examples_view.canvas.event_generate("<MouseWheel>", delta=-120)
+        app.update_idletasks()
+        app.update()
+        popup_yview_after = list(reminder_examples_view.canvas.yview())
+        reminder_popup_wheel_scroll = (
+            reminder_popup_examples_scrollable
+            and popup_yview_after[0] > popup_yview_before[0]
+        )
+        reminder_popup_only_examples_wheel = (
+            not bool(reminder_popup.bind("<MouseWheel>"))
+            and bool(reminder_examples_view.content.bind("<MouseWheel>"))
+            and bool(reminder_examples_view.bind("<MouseWheel>"))
+            and all(bool(label.bind("<MouseWheel>")) for label in app._word_reminder_example_labels)
+        )
+        reminder_examples_view.scroll_to_top()
+    else:
+        reminder_popup_size = [0, 0]
+        reminder_popup_resizable = False
+        reminder_popup_fixed_limits = False
+        popup_yview_before = []
+        popup_yview_after = []
+    app._dismiss_word_reminder()
+    app.change_font_scale(str(original_font_scale * 100))
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
     reveal_label = app.reveal_button.cget("text")
     phonetic_bottom = app.study_phonetic.winfo_rooty() + app.study_phonetic.winfo_height()
     reveal_top = app.reveal_button.winfo_rooty()
@@ -1309,7 +1386,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     )
     reveal_controls_hidden = app.study_controls.winfo_manager() == ""
     study_has_scrollbar = any(isinstance(widget, tk.Scrollbar) for widget in app.study_card.winfo_children())
-    original_font_scale = app.service.font_scale()
     app.change_font_scale("140")
     for _ in range(3):
         app.update_idletasks()
@@ -1499,6 +1575,12 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and max_scale_examples_fit
             and review_header_ready
             and reminder_filters_ready
+            and reminder_popup_ready
+            and reminder_popup_resizable
+            and reminder_popup_fixed_limits
+            and reminder_popup_examples_scrollable
+            and reminder_popup_wheel_scroll
+            and reminder_popup_only_examples_wheel
             and review_card_layout_ready
             and review_max_scale_layout_ready
         ),
@@ -1546,6 +1628,14 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "maxScaleExamplesFit": max_scale_examples_fit,
         "reviewHeaderReady": review_header_ready,
         "reminderFiltersReady": reminder_filters_ready,
+        "reminderPopupReady": reminder_popup_ready,
+        "reminderPopupSize": reminder_popup_size,
+        "reminderPopupResizable": reminder_popup_resizable,
+        "reminderPopupFixedLimits": reminder_popup_fixed_limits,
+        "reminderPopupExamplesScrollable": reminder_popup_examples_scrollable,
+        "reminderPopupWheelScroll": reminder_popup_wheel_scroll,
+        "reminderPopupOnlyExamplesWheel": reminder_popup_only_examples_wheel,
+        "reminderPopupYView": [popup_yview_before, popup_yview_after],
         "reviewCardLayoutReady": review_card_layout_ready,
         "reviewExampleBounds": review_example_bounds,
         "reviewExampleGaps": review_example_gaps,
