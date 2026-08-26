@@ -1,6 +1,90 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import tkinter as tk
+import tkinter.font as tkfont
+from typing import Callable
+
+from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken
+
+
+@dataclass(frozen=True)
+class _TextLine:
+    start: int
+    end: int
+    width: int
+
+
+def _wrapped_text_lines(text: str, max_width: int, measure: Callable[[str], int]) -> tuple[_TextLine, ...]:
+    """Approximate Tk label word wrapping while retaining source offsets."""
+    lines: list[_TextLine] = []
+    paragraph_start = 0
+    for paragraph in text.split("\n"):
+        paragraph_end = paragraph_start + len(paragraph)
+        if not paragraph:
+            lines.append(_TextLine(paragraph_start, paragraph_start, 0))
+        cursor = paragraph_start
+        while cursor < paragraph_end:
+            end = cursor
+            while end < paragraph_end and measure(text[cursor:end + 1]) <= max_width:
+                end += 1
+            if end == paragraph_end:
+                lines.append(_TextLine(cursor, end, measure(text[cursor:end])))
+                break
+            if end == cursor:
+                end += 1
+            whitespace = max(
+                (index for index in range(cursor + 1, end + 1) if text[index - 1].isspace()),
+                default=-1,
+            )
+            line_end = whitespace - 1 if whitespace >= 0 else end
+            while line_end > cursor and text[line_end - 1].isspace():
+                line_end -= 1
+            if line_end == cursor:
+                line_end = end
+            lines.append(_TextLine(cursor, line_end, measure(text[cursor:line_end])))
+            cursor = whitespace if whitespace >= 0 else end
+            while cursor < paragraph_end and text[cursor].isspace():
+                cursor += 1
+        paragraph_start = paragraph_end + 1
+    return tuple(lines)
+
+
+def _hit_test_lines(
+    tokens: tuple[WordToken, ...],
+    lines: tuple[_TextLine, ...],
+    measure: Callable[[str], int],
+    text: str,
+    x: int,
+    y: int,
+    block_left: int,
+    block_top: int,
+    block_width: int,
+    line_height: int,
+    justify: str,
+    source_offset: int = 0,
+) -> WordToken | None:
+    if line_height <= 0 or y < block_top:
+        return None
+    line_index = (y - block_top) // line_height
+    if line_index >= len(lines):
+        return None
+    line = lines[line_index]
+    if justify == "left":
+        line_left = block_left
+    elif justify == "right":
+        line_left = block_left + block_width - line.width
+    else:
+        line_left = block_left + (block_width - line.width) // 2
+    for token in tokens:
+        start = source_offset + token.start
+        end = source_offset + token.end
+        if line.start <= start and end <= line.end:
+            left = line_left + measure(text[line.start:start])
+            right = line_left + measure(text[line.start:end])
+            if left - 2 <= x <= right + 2:
+                return token
+    return None
 
 
 class Tooltip:
@@ -40,6 +124,178 @@ class Tooltip:
         if self.window is not None:
             self.window.destroy()
             self.window = None
+
+
+class WordBubbleManager:
+    """Presentation-only controller for transient recursive vocabulary bubbles."""
+
+    def __init__(self, root: tk.Misc, service):
+        self.root = root
+        self.service = service
+        self.stack = BubbleStack()
+        self._windows: list[tk.Toplevel] = []
+        self._bound_widgets: set[tk.Widget] = set()
+        root.bind_all("<Button-1>", self._on_global_click, add="+")
+
+    def bind_example(self, widget: tk.Label, english: str, context_example: str = "") -> None:
+        widget._word_bubble_english = english  # type: ignore[attr-defined]
+        widget._word_bubble_context = context_example  # type: ignore[attr-defined]
+        widget.configure(cursor="hand2")
+        if widget not in self._bound_widgets:
+            widget.bind("<Button-1>", self._on_example_click, add="+")
+            self._bound_widgets.add(widget)
+
+    def clear(self) -> None:
+        self.stack = self.stack.close_all()
+        self._destroy_from(0)
+
+    def _on_global_click(self, event) -> None:
+        widget = event.widget
+        if any(self._is_descendant(widget, window) for window in self._windows):
+            return
+        self.clear()
+
+    @staticmethod
+    def _is_descendant(widget: tk.Widget, parent: tk.Widget) -> bool:
+        current: tk.Widget | None = widget
+        while current is not None:
+            if current == parent:
+                return True
+            current = current.master
+        return False
+
+    def _on_example_click(self, event):
+        widget = event.widget
+        english = getattr(widget, "_word_bubble_english", "")
+        context = getattr(widget, "_word_bubble_context", english)
+        token = self._token_at(widget, english, event.x, event.y)
+        if token is None:
+            self.clear()
+            return "break"
+        self._open(-1, token, context, event.x_root, event.y_root)
+        return "break"
+
+    def _token_at(self, widget: tk.Label, text: str, x: int, y: int) -> WordToken | None:
+        tokens = self.service.example_tokens(text)
+        if not tokens:
+            return None
+        displayed_text = str(widget.cget("text"))
+        source_offset = displayed_text.find(text)
+        if source_offset < 0:
+            return None
+        font = widget.cget("font")
+        try:
+            measured = tkfont.Font(font=font)
+        except tk.TclError:
+            return None
+        width = widget.winfo_width()
+        height = widget.winfo_height()
+        padx = int(float(widget.cget("padx")))
+        pady = int(float(widget.cget("pady")))
+        wrap_length = int(float(widget.cget("wraplength")))
+        content_width = max(1, width - padx * 2)
+        max_width = min(content_width, wrap_length) if wrap_length > 0 else content_width
+        lines = _wrapped_text_lines(displayed_text, max_width, measured.measure)
+        block_width = max((line.width for line in lines), default=0)
+        line_height = measured.metrics("linespace")
+        block_height = line_height * len(lines)
+        anchor = str(widget.cget("anchor"))
+        block_left = padx if "w" in anchor else width - padx - block_width if "e" in anchor else (width - block_width) // 2
+        block_top = pady if "n" in anchor else height - pady - block_height if "s" in anchor else (height - block_height) // 2
+        return _hit_test_lines(
+            tokens,
+            lines,
+            measured.measure,
+            displayed_text,
+            x,
+            y,
+            block_left,
+            block_top,
+            block_width,
+            line_height,
+            str(widget.cget("justify")),
+            source_offset,
+        )
+
+    def _open(
+        self,
+        parent_depth: int,
+        token: WordToken,
+        context: str,
+        x_root: int,
+        y_root: int,
+    ) -> None:
+        definition = self.service.word_bubble(token.text, context)
+        previous = self.stack
+        if parent_depth < 0:
+            self.stack = self.stack.open_root(definition)
+            depth = 0
+        else:
+            self.stack = self.stack.open_child(parent_depth, definition)
+            depth = len(self.stack.frames) - 1
+        if self.stack == previous:
+            return
+        self._destroy_from(depth)
+        if not self.stack.frames:
+            return
+        self._create_popup(self.stack.frames[-1].definition, depth, x_root, y_root)
+
+    def _destroy_from(self, depth: int) -> None:
+        while len(self._windows) > depth:
+            window = self._windows.pop()
+            if window.winfo_exists():
+                window.destroy()
+
+    def _create_popup(self, definition: BubbleDefinition, depth: int, x_root: int, y_root: int) -> None:
+        popup = tk.Toplevel(self.root)
+        popup.overrideredirect(True)
+        popup.configure(bg="#B8C5CC")
+        popup.transient(self.root.winfo_toplevel())
+        shell = tk.Frame(popup, bg="#FFFFFF", highlightbackground="#B8C5CC", highlightthickness=1)
+        shell.pack(padx=1, pady=1)
+        shell.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        heading = tk.Label(shell, text=definition.word, bg="#FFFFFF", fg="#1B2733", font="LexiBodyBold", anchor="w")
+        heading.pack(fill=tk.X, padx=12, pady=(9, 1))
+        heading.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        part_of_speech = tk.Label(shell, text=definition.part_of_speech, bg="#FFFFFF", fg="#16866F", font="LexiSmall", anchor="w")
+        part_of_speech.pack(fill=tk.X, padx=12)
+        part_of_speech.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        meaning = tk.Label(shell, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBody", wraplength=320, justify="left", anchor="w")
+        meaning.pack(fill=tk.X, padx=12, pady=(2, 7))
+        meaning.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        for example in definition.examples[:3]:
+            label = tk.Label(shell, text=example, bg="#FFFFFF", fg="#1B2733", font="LexiSmall", wraplength=320, justify="left", anchor="w", cursor="hand2")
+            label.pack(fill=tk.X, padx=12, pady=(0, 4))
+            if definition.known:
+                self.bind_example(label, example, example)
+                label.unbind("<Button-1>")
+                label.bind("<Button-1>", lambda event, d=depth, item=example, target=label: self._on_bubble_example(event, d, item, target), add="+")
+            else:
+                label.configure(cursor="")
+                label.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        popup.update_idletasks()
+        width, height = popup.winfo_width(), popup.winfo_height()
+        above = y_root - height - 8
+        below = y_root + 22
+        screen_height = self.root.winfo_screenheight()
+        y = above if above >= 4 else min(below, screen_height - height - 4)
+        x = max(4, min(x_root - width // 2, self.root.winfo_screenwidth() - width - 8))
+        popup.geometry(f"+{x}+{max(4, y)}")
+        self._windows.append(popup)
+
+    def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
+        token = self._token_at(widget, example, event.x, event.y)
+        if token is not None:
+            x_root = widget.winfo_rootx() + event.x
+            y_root = widget.winfo_rooty() + event.y
+            self._open(parent_depth, token, example, x_root, y_root)
+        else:
+            self._close_after(parent_depth)
+        return "break"
+
+    def _close_after(self, depth: int) -> None:
+        self.stack = self.stack.close_after(depth)
+        self._destroy_from(depth + 1)
 
 
 def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:

@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 windows/build/
 windows/dist/
+windows/.smoke-data/
 android/.gradle/
 android/**/build/
 android/local.properties
@@ -14,4 +15,3 @@ android/local.properties
 *.keystore
 local.properties
 .cache/
-

@@ -56,6 +56,12 @@ class LearningServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.new_words, 0)
         self.assertIsNone(self.service.next_card(now_utc=1001))
 
+    def test_word_bubble_lookup_stays_in_application_service(self):
+        definition = self.service.word_bubble("focus", "Use focus here.")
+        self.assertTrue(definition.known)
+        self.assertEqual(definition.word_id, "focus")
+        self.assertEqual(self.service.word_bubble("missing", "Missing here.").meaning, "词库暂无中文释义")
+
     def test_font_scale_is_bounded(self):
         self.assertEqual(self.service.set_font_scale(2), 1.4)
         self.assertEqual(self.service.set_font_scale(0), 0.9)

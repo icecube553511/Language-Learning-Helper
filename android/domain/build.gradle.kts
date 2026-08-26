@@ -25,4 +25,8 @@ tasks.test {
         "dictation.export.golden.path",
         rootProject.file("../shared/contracts/dictation-export-golden-v1.json").absolutePath,
     )
+    systemProperty(
+        "word.bubble.golden.path",
+        rootProject.file("../shared/contracts/word-bubble-golden-v1.json").absolutePath,
+    )
 }

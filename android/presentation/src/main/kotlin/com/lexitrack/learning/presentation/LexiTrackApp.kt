@@ -2,7 +2,9 @@ package com.lexitrack.learning.presentation
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,7 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -61,9 +63,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,10 +80,26 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ExportedDictation
@@ -91,9 +113,17 @@ import com.lexitrack.learning.domain.ImportRowStatus
 import com.lexitrack.learning.domain.MarkMode
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.VocabularyEntry
+import com.lexitrack.learning.domain.BubbleDefinition
+import com.lexitrack.learning.domain.BubbleStack
+import com.lexitrack.learning.domain.tokenizeEnglish
 import java.time.format.DateTimeFormatter
 import kotlin.math.exp
 import kotlin.math.max
+
+private data class WordBubbleState(val data: BubbleDefinition, val anchor: IntRect)
+
+private val LocalOpenWordBubble = staticCompositionLocalOf<(String, String, Int, IntRect) -> Unit> { { _, _, _, _ -> } }
+private val LocalBubbleDepth = staticCompositionLocalOf { -1 }
 
 @Composable
 fun LexiTrackApp(
@@ -106,7 +136,48 @@ fun LexiTrackApp(
     var labelEditorOpen by remember { mutableStateOf(false) }
     var dictationPreviewOpen by remember { mutableStateOf(false) }
     var dictationMarkOpen by remember { mutableStateOf(false) }
+    val bubbles = remember { mutableStateListOf<WordBubbleState>() }
+    var bubbleStack by remember { mutableStateOf(BubbleStack()) }
+    val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
+        val definition = viewModel.lookupWordBubble(token, contextExample)
+        val next = if (depth < 0) {
+            BubbleStack().openRoot(definition)
+        } else {
+            bubbleStack.openChild(depth, definition)
+        }
+        if (next != bubbleStack) {
+            bubbleStack = next
+            val previousAnchors = bubbles.map { it.anchor }
+            bubbles.clear()
+            next.frames.forEachIndexed { index, frame ->
+                bubbles += WordBubbleState(
+                    frame.definition,
+                    if (index == next.frames.lastIndex) anchor else previousAnchors.getOrElse(index) { anchor },
+                )
+            }
+        }
+    }
+    LaunchedEffect(state.section, state.currentCard?.id, state.reviewCard?.id, state.wordReminderCard?.id) {
+        bubbleStack = BubbleStack()
+        bubbles.clear()
+    }
     LexiTrackTheme(state.fontScale) {
+        CompositionLocalProvider(LocalOpenWordBubble provides openBubble) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(bubbles) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.any { it.changedToUp() }) {
+                                    bubbles.clear()
+                                    bubbleStack = BubbleStack()
+                                }
+                            }
+                        }
+                    },
+            ) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = { AppHeader() },
@@ -272,11 +343,14 @@ fun LexiTrackApp(
                         Text(card.meaning, style = MaterialTheme.typography.titleMedium, color = Ink)
                         HorizontalDivider()
                         card.examples.take(3).forEachIndexed { index, example ->
-                            Text(
-                                "${index + 1}. ${example.english}\n${example.chinese}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Ink,
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                InteractiveSentence(
+                                    "${index + 1}. ${example.english}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Ink,
+                                )
+                                Text(example.chinese, style = MaterialTheme.typography.bodyMedium, color = Ink)
+                            }
                         }
                         if (card.mnemonic.isNotBlank()) {
                             Text("助记  ${card.mnemonic}", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
@@ -288,6 +362,159 @@ fun LexiTrackApp(
                 },
                 dismissButton = null,
             )
+        }
+        WordBubbleOverlay(
+            bubbles = bubbles,
+            onDismissAll = {
+                bubbles.clear()
+                bubbleStack = BubbleStack()
+            },
+            onCloseAfter = { depth ->
+                bubbleStack = bubbleStack.closeAfter(depth)
+                while (bubbles.size > depth + 1) bubbles.removeAt(bubbles.lastIndex)
+            },
+        )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InteractiveSentence(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.labelMedium,
+    color: Color = Ink,
+    textAlign: TextAlign? = null,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
+    val openBubble = LocalOpenWordBubble.current
+    val depth = LocalBubbleDepth.current
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var bounds by remember { mutableStateOf(IntRect.Zero) }
+    val annotated = remember(text, color) {
+        buildAnnotatedString {
+            var cursor = 0
+            tokenizeEnglish(text).forEach { token ->
+                append(text.substring(cursor, token.start))
+                pushStringAnnotation("word", token.text)
+                withStyle(SpanStyle(color = color)) { append(token.text) }
+                pop()
+                cursor = token.end
+            }
+            append(text.substring(cursor))
+        }
+    }
+    Text(
+        text = annotated,
+        modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                val rect = coordinates.boundsInWindow()
+                bounds = IntRect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt())
+            }
+            .pointerInput(annotated, bounds) {
+                detectTapGestures(
+                    onTap = tap@{ offset ->
+                        val textLayout = layout ?: return@tap
+                        val characterOffset = textLayout.getOffsetForPosition(offset)
+                        val hit = annotated.getStringAnnotations("word", characterOffset, characterOffset + 1).firstOrNull()
+                        if (hit != null && characterOffset < annotated.length && textLayout.getBoundingBox(characterOffset).contains(offset)) {
+                            val tokenBoxes = (hit.start until hit.end).map(textLayout::getBoundingBox)
+                            val tokenBounds = IntRect(
+                                left = bounds.left + tokenBoxes.minOf { it.left }.toInt(),
+                                top = bounds.top + tokenBoxes.minOf { it.top }.toInt(),
+                                right = bounds.left + tokenBoxes.maxOf { it.right }.toInt(),
+                                bottom = bounds.top + tokenBoxes.maxOf { it.bottom }.toInt(),
+                            )
+                            openBubble(hit.item, text, depth, tokenBounds)
+                        }
+                    },
+                )
+            },
+        style = style,
+        color = color,
+        textAlign = textAlign,
+        maxLines = maxLines,
+        overflow = overflow,
+        onTextLayout = { layout = it },
+    )
+}
+
+@Composable
+private fun WordBubbleOverlay(
+    bubbles: MutableList<WordBubbleState>,
+    onDismissAll: () -> Unit,
+    onCloseAfter: (Int) -> Unit,
+) {
+    bubbles.toList().forEachIndexed { index, bubble ->
+        val positionProvider: PopupPositionProvider = remember(bubble.anchor) {
+            object : PopupPositionProvider {
+                override fun calculatePosition(
+                    anchorBounds: IntRect,
+                    windowSize: IntSize,
+                    layoutDirection: LayoutDirection,
+                    popupContentSize: IntSize,
+                ): IntOffset {
+                    val centeredX = bubble.anchor.left + (bubble.anchor.width - popupContentSize.width) / 2
+                    val x = centeredX.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                    val below = bubble.anchor.bottom + 6
+                    val above = bubble.anchor.top - popupContentSize.height - 6
+                    val y = if (below + popupContentSize.height <= windowSize.height) below else above.coerceAtLeast(0)
+                    return IntOffset(x, y)
+                }
+            }
+        }
+        Popup(
+            popupPositionProvider = positionProvider,
+            onDismissRequest = onDismissAll,
+            properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = false),
+        ) {
+            // Root content uses -1; a bubble's depth is its zero-based stack index.
+            CompositionLocalProvider(LocalBubbleDepth provides index) {
+                Surface(
+                    modifier = Modifier
+                        .widthIn(min = 220.dp, max = 360.dp)
+                        .pointerInput(index) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    if (event.changes.any { it.changedToUp() }) onCloseAfter(index)
+                                }
+                            }
+                        },
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(8.dp),
+                    shadowElevation = 8.dp,
+                    border = CardDefaults.outlinedCardBorder(),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text(bubble.data.word, style = MaterialTheme.typography.titleLarge, color = Ink)
+                        if (bubble.data.phonetic.isNotBlank()) {
+                            Text(bubble.data.phonetic, style = MaterialTheme.typography.labelMedium, color = BrandTeal)
+                        }
+                        if (bubble.data.partOfSpeech.isNotBlank()) {
+                            Text(bubble.data.partOfSpeech, style = MaterialTheme.typography.labelMedium, color = BusinessAmber)
+                        }
+                        Text(bubble.data.meaning, style = MaterialTheme.typography.bodyMedium, color = Ink)
+                        bubble.data.examples.forEach { sentence ->
+                            if (bubble.data.known) {
+                                InteractiveSentence(
+                                    text = sentence,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MutedInk,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } else {
+                                Text(sentence, style = MaterialTheme.typography.labelMedium, color = MutedInk)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -690,7 +917,7 @@ private fun RevealedCardContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text(
+                    InteractiveSentence(
                         "${index + 1}. ${example.english}",
                         modifier = Modifier.fillMaxWidth(),
                         style = MaterialTheme.typography.labelMedium,

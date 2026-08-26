@@ -1,0 +1,14 @@
+{
+  "contractVersion": "word-bubble-v1",
+  "maxDepth": 9,
+  "tokenVectors": [
+    {"text": "Don't stop, students'!", "tokens": ["Don't", "stop", "students'"]},
+    {"text": "word2 and re-entry", "tokens": ["word", "and", "re", "entry"]},
+    {"text": "中文 only", "tokens": ["only"]}
+  ],
+  "stackVectors": {
+    "rootThenChildThenSibling": ["root", "sibling"],
+    "blankAtRoot": ["root"],
+    "outside": []
+  }
+}

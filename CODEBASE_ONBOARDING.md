@@ -44,6 +44,7 @@ Android app (composition root) -> presentation -> application -> domain
 - **Android 适配器**：`android/infrastructure/`；Compose UI 和 ViewModel 位于 `android/presentation/`。
 - **共享单一事实来源**：`shared/contracts/parity.json`、调度/复习/CSV 契约及 `shared/content/catalog.json`。
 - **默写导出契约**：`shared/contracts/dictation-export-v1.md` 与 `shared/contracts/dictation-export-golden-v1.json`；preview 与 DOCX/PDF 必须消费同一个平台无关 `Document` model。
+- **例句气泡契约**：`shared/contracts/word-bubble-v1.md` 与 `shared/contracts/word-bubble-golden-v1.json`；token、查词与九层栈由两端共同遵守。
 
 ## 目录结构
 
@@ -78,6 +79,7 @@ android/app/            Activity、SAF 与唯一 Android 组合根
 - 输入错误返回稳定错误码或用户可见错误消息，不静默覆盖已有词条和学习进度。
 - VocabularyEntry 的稳定 ID、membership、标签、例句最低要求必须与共享契约一致。
 - `dictation-export-v1` 的 Unicode code point 下划线、词性 token、完整词边界、例句覆盖和手选不足确认文案必须由两端共同测试覆盖。
+- `word-bubble-v1` 的 token 边界、未知词 fallback、九层上限和点击关闭行为必须由两端共同测试覆盖；气泡栈不进入学习数据。
 - Windows、Android 和共享契约必须在同一功能提交中同步；能力只有双端测试通过后才能标记 ready。
 - 跨端功能必须在同一提交中进入 CI，并通过 GitHub PR 留下审计记录。
 - 提交信息沿用短前缀风格，例如 feat、fix、test、build。

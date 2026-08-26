@@ -11,7 +11,7 @@ import tkinter.font as tkfont
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
-from presentation.widgets import MemoryChart, NavItem, ScrollableExamplePanel, draw_icon
+from presentation.widgets import MemoryChart, NavItem, ScrollableExamplePanel, WordBubbleManager, draw_icon
 
 
 BG = "#F3F6F7"
@@ -101,6 +101,7 @@ class LexiTrackApp(tk.Tk):
         self._word_reminder_next_at = 0.0
         self.answer_visible = False
         self.forecast_days = 7
+        self.word_bubbles = WordBubbleManager(self, self.service)
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()
@@ -764,6 +765,7 @@ class LexiTrackApp(tk.Tk):
                 english = self._elide_line(english, label.cget("font"), example_width)
                 chinese = self._elide_line(chinese, label.cget("font"), example_width)
             label.configure(text=f"{english}\n{chinese}", wraplength=example_width)
+            self.word_bubbles.bind_example(label, english, example.english)
 
     def _build_library_page(self):
         _, body = self._new_page("library", "词库", "CET-4、CET-6 与自定义词条")
@@ -1034,6 +1036,7 @@ class LexiTrackApp(tk.Tk):
         self.after_idle(self.search_entry.focus_set)
 
     def show_page(self, key: str):
+        self.word_bubbles.clear()
         if self.current_page:
             self.pages[self.current_page].pack_forget()
             self.nav_items[self.current_page].set_selected(False)
@@ -1067,6 +1070,7 @@ class LexiTrackApp(tk.Tk):
         self.dashboard_chart.set_data(self.service.forecast(7), self.service.retention_curve(7))
 
     def load_study_card(self, exclude_id: str = ""):
+        self.word_bubbles.clear()
         self.current_card = self.service.next_card(exclude_id=exclude_id)
         self.answer_visible = False
         self.study_examples_view.scroll_to_top()
@@ -1151,6 +1155,7 @@ class LexiTrackApp(tk.Tk):
         self._show_next_review_card()
 
     def _show_next_review_card(self):
+        self.word_bubbles.clear()
         self.review_answer_visible = False
         self.review_answer_panel.pack_forget()
         self.review_rating_frame.pack_forget()
@@ -1328,6 +1333,7 @@ class LexiTrackApp(tk.Tk):
             )
             label.pack(anchor="w", fill=tk.X, padx=(8, 4), pady=(0, 4))
             examples_view.bind_mousewheel(label)
+            self.word_bubbles.bind_example(label, f"{index}. {example.english}", example.english)
             self._word_reminder_example_labels.append(label)
         examples_view.scroll_to_top()
         if entry.mnemonic:

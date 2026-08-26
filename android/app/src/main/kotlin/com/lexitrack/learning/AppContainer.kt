@@ -12,6 +12,7 @@ import com.lexitrack.learning.application.InitializeAppUseCase
 import com.lexitrack.learning.application.RateWordUseCase
 import com.lexitrack.learning.application.RateReviewWordUseCase
 import com.lexitrack.learning.application.SearchVocabularyUseCase
+import com.lexitrack.learning.application.LookupVocabularyWordUseCase
 import com.lexitrack.learning.application.UpdateFontScaleUseCase
 import com.lexitrack.learning.application.UpdateReviewBatchSizeUseCase
 import com.lexitrack.learning.application.UpdateReminderSettingsUseCase
@@ -46,6 +47,7 @@ class AppContainer(context: Context) {
         startReviewSession = BuildReviewSessionUseCase(vocabulary, learntWords, settings),
         rateReviewWord = RateReviewWordUseCase(reviews, learntWords, time),
         search = SearchVocabularyUseCase(vocabulary),
+        lookupWord = LookupVocabularyWordUseCase(vocabulary),
         importVocabulary = ImportVocabularyUseCase(vocabulary),
         updateVocabularyLabels = UpdateVocabularyLabelsUseCase(vocabulary),
         updateFontScale = UpdateFontScaleUseCase(settings),

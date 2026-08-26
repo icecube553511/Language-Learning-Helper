@@ -8,6 +8,8 @@ import com.lexitrack.learning.domain.ReviewEvent
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.ScheduleState
 import com.lexitrack.learning.domain.VocabularyEntry
+import com.lexitrack.learning.domain.BubbleDefinition
+import com.lexitrack.learning.domain.resolveBubbleDefinition
 import com.lexitrack.learning.domain.initialWeightFor
 import com.lexitrack.learning.domain.updatedWeightForReview
 import java.io.ByteArrayInputStream
@@ -204,6 +206,13 @@ class SearchVocabularyUseCase(
     }
 }
 
+class LookupVocabularyWordUseCase(
+    private val vocabulary: VocabularyRepository,
+) {
+    operator fun invoke(token: String, contextExample: String = ""): BubbleDefinition =
+        resolveBubbleDefinition(vocabulary.words.value, token, contextExample)
+}
+
 class GetReminderCardUseCase(
     private val vocabulary: VocabularyRepository,
     private val reviews: ReviewRepository,
@@ -366,6 +375,7 @@ data class AppUseCases(
     val startReviewSession: BuildReviewSessionUseCase,
     val rateReviewWord: RateReviewWordUseCase,
     val search: SearchVocabularyUseCase,
+    val lookupWord: LookupVocabularyWordUseCase,
     val importVocabulary: ImportVocabularyUseCase,
     val updateVocabularyLabels: UpdateVocabularyLabelsUseCase,
     val updateFontScale: UpdateFontScaleUseCase,

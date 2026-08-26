@@ -17,6 +17,7 @@ import com.lexitrack.learning.domain.DictationMissingField
 import com.lexitrack.learning.domain.MarkMode
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.VocabularyEntry
+import com.lexitrack.learning.domain.BubbleDefinition
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
@@ -87,6 +88,9 @@ class MainViewModel(
     private var appInForeground = true
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    fun lookupWordBubble(token: String, contextExample: String = ""): BubbleDefinition =
+        useCases.lookupWord(token, contextExample)
 
     init {
         viewModelScope.launch {

@@ -23,6 +23,7 @@ from domain.dictation import (
     MarkMode,
     build_document,
 )
+from domain.word_bubbles import BubbleDefinition, resolve_bubble_definition, tokenize_english
 from application.ports import DictationExporter, ExportedDictation
 from domain.ports import LearningRepository, WordsLearntRepository
 from domain.scheduler import SECONDS_PER_DAY, retention_at, schedule_review
@@ -190,6 +191,14 @@ class LearningService:
 
     def available_program_tags(self) -> set[str]:
         return {"cet4", "cet6", "gk", "zk", "evaluated"}
+
+    def word_bubble(self, token: str, context_example: str = "") -> BubbleDefinition:
+        """Resolve an example token without exposing the repository to presentation."""
+        return resolve_bubble_definition(self.repository.all_entries(), token, context_example)
+
+    @staticmethod
+    def example_tokens(text: str):
+        return tokenize_english(text)
 
     def dictation_candidates(
         self,

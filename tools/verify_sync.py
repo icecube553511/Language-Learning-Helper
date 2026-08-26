@@ -107,6 +107,21 @@ def verify_dictation_contract() -> None:
         fail("Dictation evaluated preferences differ from the shared contract")
 
 
+def verify_word_bubble_contract() -> None:
+    contract_path = CONTRACTS / "word-bubble-v1.md"
+    golden_path = CONTRACTS / "word-bubble-golden-v1.json"
+    if not contract_path.is_file() or "word-bubble-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Word bubble contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Word bubble golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "word-bubble-v1" or payload.get("maxDepth") != 9:
+        fail("Word bubble contract version or max depth differs")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("wordBubbleVersion") != "word-bubble-v1":
+        fail("Parity manifest does not declare word-bubble-v1")
+
+
 def verify_catalog() -> None:
     catalog_path = CONTENT / "catalog.json"
     manifest_path = CONTENT / "catalog-manifest.json"
@@ -177,7 +192,7 @@ def verify_platform_markers() -> None:
         if not marker_path.exists():
             fail(f"Missing platform marker: {marker_path.relative_to(ROOT)}")
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "contentVersion"):
+        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "wordBubbleVersion", "contentVersion"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         for key in ("branding", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
@@ -191,6 +206,7 @@ def main() -> int:
     verify_scheduler()
     verify_weighted_review()
     verify_dictation_contract()
+    verify_word_bubble_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()
