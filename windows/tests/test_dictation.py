@@ -84,12 +84,19 @@ class DictationDomainTests(unittest.TestCase):
         self.assertTrue(pdf.bytes.startswith(b"%PDF"))
         self.assertIn(b"/MediaBox [ 0 0 595.2756 841.8898 ]", pdf.bytes)
 
-        docx = exporter.export(build_document([entry()], DictationOptions(formats={DictationFormat.DOCX})), DictationFormat.DOCX)
+        docx_options = DictationOptions(formats={DictationFormat.DOCX}, include_examples=True)
+        docx = exporter.export(build_document([entry()], docx_options), DictationFormat.DOCX)
         self.assertEqual(docx.mime_type, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with zipfile.ZipFile(__import__("io").BytesIO(docx.bytes)) as archive:
             xml = archive.read("word/document.xml")
             self.assertIn("conduct".encode(), xml)
+            self.assertIn(b"e.g. They", xml)
             self.assertIn(b"11906", archive.read("word/document.xml"))
+
+    def test_empty_document_is_rejected(self):
+        exporter = DictationDocumentExporter()
+        with self.assertRaises(ValueError):
+            exporter.export(build_document([], DictationOptions()), DictationFormat.PDF)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 from application.services import LearningService
+from domain.dictation import DictationDocument, DictationFormat, DictationOptions, DictationRow
 from infrastructure.catalog import CatalogLoader
 from infrastructure.csv_importer import CsvVocabularyImporter
 from infrastructure.dictation_exporter import DictationDocumentExporter
@@ -67,6 +68,21 @@ def build_app(data_dir: Path) -> LexiTrackApp:
     )
 
 
+def run_dictation_export_smoke() -> dict[str, bool]:
+    options = DictationOptions(formats=frozenset({DictationFormat.DOCX, DictationFormat.PDF}))
+    document = DictationDocument(
+        rows=(DictationRow("w ______", "n", "释义", ("A ______ example.",)),),
+        options=options,
+    )
+    exporter = DictationDocumentExporter()
+    docx = exporter.export(document, DictationFormat.DOCX)
+    pdf = exporter.export(document, DictationFormat.PDF)
+    return {
+        "dictationDocxReady": docx.bytes.startswith(b"PK"),
+        "dictationPdfReady": pdf.bytes.startswith(b"%PDF"),
+    }
+
+
 def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="LexiTrack 词程 Windows 客户端")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
@@ -80,8 +96,18 @@ def main(argv: list[str] | None = None) -> int:
     app = build_app(args.data_dir)
     if args.smoke_test:
         result = run_gui_smoke(app)
+        try:
+            result.update(run_dictation_export_smoke())
+        except Exception as error:
+            result.update({
+                "dictationDocxReady": False,
+                "dictationPdfReady": False,
+                "dictationExportError": f"{type(error).__name__}: {error}",
+            })
         print(json.dumps(result, ensure_ascii=False))
-        return 0 if result["ok"] and result["studyCardReady"] else 1
+        ready = result["ok"] and result["studyCardReady"]
+        ready = ready and result["dictationDocxReady"] and result["dictationPdfReady"]
+        return 0 if ready else 1
     app.mainloop()
     return 0
 

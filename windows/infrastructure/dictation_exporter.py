@@ -14,6 +14,8 @@ PDF_MIME = "application/pdf"
 
 class DictationDocumentExporter:
     def export(self, document: DictationDocument, output_format: DictationFormat | None = None) -> ExportedDictation:
+        if not document.rows:
+            raise ValueError("不能导出空默写文档")
         output_format = output_format or next(iter(document.options.formats))
         if output_format is DictationFormat.DOCX:
             return ExportedDictation(self._docx(document), "dictation.docx", DOCX_MIME)
@@ -36,7 +38,7 @@ class DictationDocumentExporter:
             self._set_docx_font(run, document.options.font_size_pt)
             for example in row.examples:
                 paragraph = doc.add_paragraph()
-                run = paragraph.add_run(f"    {example}")
+                run = paragraph.add_run(f"    e.g. {example}")
                 self._set_docx_font(run, document.options.font_size_pt)
         output = BytesIO()
         doc.save(output)
@@ -75,7 +77,7 @@ class DictationDocumentExporter:
             text = f"{index}. {row.word}  {row.part_of_speech}  {row.meaning}"
             story.append(Paragraph(self._escape_pdf(text), style))
             for example in row.examples:
-                story.append(Paragraph(self._escape_pdf(f"    {example}"), style))
+                story.append(Paragraph(self._escape_pdf(f"    e.g. {example}"), style))
             story.append(Spacer(1, document.options.font_size_pt * 0.5))
         doc.build(story)
         return output.getvalue()

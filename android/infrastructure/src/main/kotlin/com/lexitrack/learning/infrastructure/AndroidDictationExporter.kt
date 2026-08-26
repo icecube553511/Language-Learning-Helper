@@ -11,6 +11,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.math.max
 
+internal fun dictationPdfPageInfo(pageNumber: Int): PdfDocument.PageInfo =
+    PdfDocument.PageInfo.Builder(595, 842, pageNumber).create()
+
 class AndroidDictationExporter : DictationExporter {
     override fun export(document: DictationDocument, format: DictationFormat): ExportedDictation = when (format) {
         DictationFormat.PDF -> exportPdf(document)
@@ -18,6 +21,7 @@ class AndroidDictationExporter : DictationExporter {
     }
 
     private fun exportPdf(document: DictationDocument): ExportedDictation {
+        require(document.rows.isNotEmpty()) { "不能导出空默写文档" }
         val pdf = PdfDocument()
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = document.options.fontSizePt.toFloat() }
         val lineHeight = max(paint.textSize * 1.6f, 16f)
@@ -27,7 +31,7 @@ class AndroidDictationExporter : DictationExporter {
         var pageNumber = 0
         fun startPage() {
             pageNumber += 1
-            page = pdf.startPage(PdfDocument.PageInfo.Builder(595, 842, pageNumber).create())
+            page = pdf.startPage(dictationPdfPageInfo(pageNumber))
             canvas = page!!.canvas
             y = 36f
         }
@@ -54,16 +58,18 @@ class AndroidDictationExporter : DictationExporter {
             }
             if (text.isEmpty()) drawLine("")
         }
-        require(document.rows.isNotEmpty()) { "不能导出空默写文档" }
-        document.rows.forEachIndexed { index, row ->
-            line("${index + 1}. ${row.word}  ${row.partOfSpeech}  ${row.meaning}")
-            row.examples.forEach { example -> line("   $example") }
-            y += lineHeight * .35f
-        }
-        page?.let(pdf::finishPage)
         val output = ByteArrayOutputStream()
-        pdf.writeTo(output)
-        pdf.close()
+        try {
+            document.rows.forEachIndexed { index, row ->
+                line("${index + 1}. ${row.word}  ${row.partOfSpeech}  ${row.meaning}")
+                row.examples.forEach { example -> line("   e.g. $example") }
+                y += lineHeight * .35f
+            }
+            page?.let(pdf::finishPage)
+            pdf.writeTo(output)
+        } finally {
+            pdf.close()
+        }
         return ExportedDictation(output.toByteArray(), "dictation.pdf", "application/pdf")
     }
 
@@ -72,7 +78,7 @@ class AndroidDictationExporter : DictationExporter {
         val body = buildString {
             document.rows.forEachIndexed { index, row ->
                 paragraph("${index + 1}. ${row.word}  ${row.partOfSpeech}  ${row.meaning}", document.options.fontSizePt)
-                row.examples.forEach { paragraph("    $it", document.options.fontSizePt) }
+                row.examples.forEach { paragraph("    e.g. $it", document.options.fontSizePt) }
             }
         }
         val xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>$body<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\" w:orient=\"portrait\"/><w:pgMar w:top=\"720\" w:right=\"720\" w:bottom=\"720\" w:left=\"720\"/></w:sectPr></w:body></w:document>"
