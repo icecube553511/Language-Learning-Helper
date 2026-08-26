@@ -110,6 +110,80 @@ class NavItem(tk.Frame):
         draw_icon(self.icon, self.icon_name, foreground)
 
 
+class ScrollableExamplePanel(tk.Frame):
+    VIEWPORT_WIDTH = 640
+    VIEWPORT_HEIGHT = 140
+
+    def __init__(self, parent, background: str, border: str):
+        super().__init__(
+            parent,
+            bg=background,
+            width=self.VIEWPORT_WIDTH,
+            height=self.VIEWPORT_HEIGHT,
+            highlightbackground=border,
+            highlightthickness=1,
+        )
+        self.pack_propagate(False)
+        self.canvas = tk.Canvas(
+            self,
+            bg=background,
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=12,
+        )
+        self.scrollbar = tk.Scrollbar(
+            self,
+            orient=tk.VERTICAL,
+            command=self.canvas.yview,
+            width=12,
+            bd=0,
+            relief=tk.FLAT,
+            troughcolor="#EEF2F4",
+            bg="#B7C2CA",
+            activebackground="#8D9AA5",
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.content = tk.Frame(self.canvas, bg=background)
+        self._content_window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", self._sync_scroll_region, add="+")
+        self.canvas.bind("<Configure>", self._sync_content_width, add="+")
+        self.bind_mousewheel(self, self.canvas, self.content, self.scrollbar)
+
+    def _sync_scroll_region(self, _event=None):
+        bounds = self.canvas.bbox("all")
+        if bounds is not None:
+            self.canvas.configure(scrollregion=bounds)
+
+    def _sync_content_width(self, event):
+        self.canvas.itemconfigure(self._content_window, width=event.width)
+
+    def bind_mousewheel(self, *widgets: tk.Widget) -> None:
+        for widget in widgets:
+            widget.bind("<MouseWheel>", self._on_mousewheel, add="+")
+
+    def _on_mousewheel(self, event):
+        if event.delta:
+            units = max(1, abs(event.delta) // 120)
+            direction = -1 if event.delta > 0 else 1
+            self.canvas.yview_scroll(direction * units, "units")
+        return "break"
+
+    def available_text_width(self) -> int:
+        canvas_width = self.canvas.winfo_width()
+        if canvas_width <= 1:
+            canvas_width = self.VIEWPORT_WIDTH - int(self.scrollbar.cget("width"))
+        return max(360, canvas_width - 24)
+
+    def scroll_to_top(self) -> None:
+        self.canvas.yview_moveto(0.0)
+
+    def is_scrollable(self) -> bool:
+        bounds = self.canvas.bbox("all")
+        return bool(bounds and bounds[3] - bounds[1] > self.canvas.winfo_height())
+
+
 class MemoryChart(tk.Canvas):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, bg="#FFFFFF", bd=0, highlightthickness=0, height=260, **kwargs)

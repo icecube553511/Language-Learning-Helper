@@ -9,7 +9,7 @@ import tkinter.font as tkfont
 
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
-from presentation.widgets import MemoryChart, NavItem, draw_icon
+from presentation.widgets import MemoryChart, NavItem, ScrollableExamplePanel, draw_icon
 
 
 BG = "#F3F6F7"
@@ -287,8 +287,9 @@ class LexiTrackApp(tk.Tk):
             height=1,
         )
         self.study_meaning.pack()
-        examples_area = tk.Frame(self.answer_panel, bg=SURFACE)
-        examples_area.pack(fill=tk.BOTH, expand=True, padx=32, pady=(6, 2))
+        self.study_examples_view = ScrollableExamplePanel(self.answer_panel, SURFACE, BORDER)
+        self.study_examples_view.pack(pady=(6, 2))
+        examples_area = self.study_examples_view.content
         self.study_examples_area = examples_area
         examples_area.grid_columnconfigure(0, weight=1)
         self.example_labels: list[tk.Label] = []
@@ -308,6 +309,7 @@ class LexiTrackApp(tk.Tk):
                 pady=0,
             )
             label.pack(fill=tk.BOTH, expand=True)
+            self.study_examples_view.bind_mousewheel(row, label)
             self.example_labels.append(label)
         self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
 
@@ -376,7 +378,13 @@ class LexiTrackApp(tk.Tk):
         wrap_width = max(360, event.width - 80)
         self.study_meaning.configure(wraplength=wrap_width)
         self.study_mnemonic.configure(wraplength=wrap_width)
-        self._apply_answer_text(self.current_card, self.study_meaning, self.example_labels, wrap_width)
+        self._apply_answer_text(
+            self.current_card,
+            self.study_meaning,
+            self.example_labels,
+            wrap_width,
+            self.study_examples_view.available_text_width(),
+        )
 
     def _resize_review_answer(self, event):
         wrap_width = max(360, event.width - 80)
@@ -404,6 +412,7 @@ class LexiTrackApp(tk.Tk):
         meaning_label: tk.Label,
         example_labels: list[tk.Label],
         width: int,
+        example_width: int | None = None,
     ) -> None:
         if card is None:
             return
@@ -411,11 +420,12 @@ class LexiTrackApp(tk.Tk):
         if int(meaning_label.cget("height")) == 1:
             meaning = self._elide_line(meaning, meaning_label.cget("font"), width)
         meaning_label.configure(text=meaning)
+        example_width = example_width or width
         for index, label in enumerate(example_labels):
             example = card.examples[index]
-            english = self._elide_line(f"{index + 1}. {example.english}", label.cget("font"), width)
-            chinese = self._elide_line(example.chinese, label.cget("font"), width)
-            label.configure(text=f"{english}\n{chinese}", wraplength=width)
+            english = self._elide_line(f"{index + 1}. {example.english}", label.cget("font"), example_width)
+            chinese = self._elide_line(example.chinese, label.cget("font"), example_width)
+            label.configure(text=f"{english}\n{chinese}", wraplength=example_width)
 
     def _build_library_page(self):
         _, body = self._new_page("library", "词库", "CET-4、CET-6 与自定义词条")
@@ -704,6 +714,7 @@ class LexiTrackApp(tk.Tk):
     def load_study_card(self, exclude_id: str = ""):
         self.current_card = self.service.next_card(exclude_id=exclude_id)
         self.answer_visible = False
+        self.study_examples_view.scroll_to_top()
         self.answer_panel.pack_forget()
         self.rating_frame.pack_forget()
         self.study_controls.pack(fill=tk.X, pady=(4, 2))
@@ -729,7 +740,14 @@ class LexiTrackApp(tk.Tk):
             return
         entry = self.current_card
         self.answer_visible = True
-        self._apply_answer_text(entry, self.study_meaning, self.example_labels, max(360, self.answer_panel.winfo_width() - 80))
+        self._apply_answer_text(
+            entry,
+            self.study_meaning,
+            self.example_labels,
+            max(360, self.answer_panel.winfo_width() - 80),
+            self.study_examples_view.available_text_width(),
+        )
+        self.study_examples_view.scroll_to_top()
         if entry.mnemonic:
             self.study_mnemonic.configure(text=f"助记  {entry.mnemonic}")
             self.study_mnemonic.pack(pady=(8, 0))
@@ -1097,7 +1115,9 @@ class LexiTrackApp(tk.Tk):
             self.study_meaning,
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
+            self.study_examples_view.available_text_width(),
         )
+        self.study_examples_view.scroll_to_top()
         review_card = self.review_queue[0] if self.review_queue else None
         self._apply_answer_text(
             review_card,
@@ -1201,6 +1221,27 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     answer_left = app.answer_panel.winfo_rootx()
     answer_width = app.answer_panel.winfo_width()
     answer_center = answer_left + answer_width / 2
+    example_viewport = app.study_examples_view
+    example_viewport_top = example_viewport.winfo_rooty()
+    example_viewport_bottom = example_viewport_top + example_viewport.winfo_height()
+    example_viewport_center = example_viewport.winfo_rootx() + example_viewport.winfo_width() / 2
+    example_content_center = app.study_examples_area.winfo_rootx() + app.study_examples_area.winfo_width() / 2
+    study_example_viewport_ready = (
+        example_viewport.winfo_manager() == "pack"
+        and example_viewport.winfo_width() == ScrollableExamplePanel.VIEWPORT_WIDTH
+        and example_viewport.winfo_height() == ScrollableExamplePanel.VIEWPORT_HEIGHT
+        and int(example_viewport.cget("width")) == ScrollableExamplePanel.VIEWPORT_WIDTH
+        and int(example_viewport.cget("height")) == ScrollableExamplePanel.VIEWPORT_HEIGHT
+        and not bool(example_viewport.pack_propagate())
+        and int(example_viewport.cget("highlightthickness")) == 1
+        and abs(example_viewport_center - answer_center) <= 3
+    )
+    study_example_scrollbar_ready = (
+        example_viewport.scrollbar.winfo_manager() == "pack"
+        and bool(example_viewport.scrollbar.winfo_ismapped())
+        and example_viewport.scrollbar.winfo_height() >= example_viewport.winfo_height() - 2
+        and example_viewport.canvas.winfo_manager() == "pack"
+    )
     example_bounds, example_gaps, examples_compact = example_stack_metrics(
         app.example_labels,
         app.study_examples_area,
@@ -1211,8 +1252,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and label.cget("bg") == SURFACE
             and label.cget("justify") == "center"
             and label.cget("anchor") == "center"
-            and abs(label.winfo_rootx() + label.winfo_width() / 2 - answer_center) <= 3
-            and label.winfo_width() >= answer_width * 0.65
+            and abs(label.winfo_rootx() + label.winfo_width() / 2 - example_content_center) <= 3
+            and label.winfo_width() >= app.study_examples_area.winfo_width() * 0.95
             for label in app.example_labels
         )
         and all(
@@ -1241,9 +1282,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and rating_bottom <= card_bottom + 2
         and rating_bottom <= window_bottom + 2
     )
-    examples_visible = app.current_card is None or all(
-        top >= answer_top - 2 and bottom <= answer_bottom + 2 and bottom <= window_bottom + 2
-        for top, bottom in example_bounds
+    examples_visible = app.current_card is None or (
+        example_viewport_top >= answer_top - 2
+        and example_viewport_bottom <= answer_bottom + 2
+        and example_viewport_bottom <= rating_top + 2
+        and example_viewport_bottom <= window_bottom + 2
     )
     example_font = tkfont.nametofont("LexiExample")
     expected_example_font_size = min(14, max(11, round(FontManager.BASE_SIZES["LexiExample"] * app.service.font_scale())))
@@ -1270,19 +1313,37 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     max_scale_answer_top = app.answer_panel.winfo_rooty()
     max_scale_answer_bottom = app.answer_panel.winfo_rooty() + app.answer_panel.winfo_height()
     max_scale_window_bottom = app.winfo_rooty() + app.winfo_height()
-    max_scale_examples_top = app.study_examples_area.winfo_rooty()
-    max_scale_examples_bottom = max_scale_examples_top + app.study_examples_area.winfo_height()
+    max_scale_examples_top = example_viewport.winfo_rooty()
+    max_scale_examples_bottom = max_scale_examples_top + example_viewport.winfo_height()
     max_scale_example_font = tkfont.nametofont("LexiExample")
-    max_scale_examples_visible = all(
-        label.winfo_height() >= 24
-        for label in app.example_labels
+    max_scale_example_viewport_size = [example_viewport.winfo_width(), example_viewport.winfo_height()]
+    max_scale_example_scrollable = example_viewport.is_scrollable()
+    max_scale_yview_before = list(example_viewport.canvas.yview())
+    example_viewport.canvas.event_generate("<MouseWheel>", delta=-120)
+    app.update_idletasks()
+    app.update()
+    max_scale_yview_after = list(example_viewport.canvas.yview())
+    max_scale_wheel_scroll = (
+        max_scale_example_scrollable
+        and max_scale_yview_after[0] > max_scale_yview_before[0]
+    )
+    example_viewport.scroll_to_top()
+    max_scale_examples_visible = (
+        max_scale_example_viewport_size
+        == [ScrollableExamplePanel.VIEWPORT_WIDTH, ScrollableExamplePanel.VIEWPORT_HEIGHT]
+        and all(label.winfo_height() >= 24 for label in app.example_labels)
     )
     max_scale_example_bounds, max_scale_example_gaps, max_scale_examples_compact = example_stack_metrics(
         app.example_labels,
         app.study_examples_area,
     )
     max_scale_example_bottoms = [bottom for _top, bottom in max_scale_example_bounds]
-    max_scale_examples_fit = all(bottom <= max_scale_answer_bottom + 2 for bottom in max_scale_example_bottoms)
+    max_scale_examples_fit = (
+        max_scale_examples_top >= max_scale_answer_top - 2
+        and max_scale_examples_bottom <= max_scale_answer_bottom + 2
+        and max_scale_examples_bottom <= max_scale_rating_top + 2
+        and max_scale_examples_bottom <= max_scale_window_bottom + 2
+    )
     max_scale_button_fit = all(
         button.winfo_width() >= max_scale_font.measure(label) + 24
         and button.winfo_height() >= max_scale_font.metrics("linespace") + 16
@@ -1293,6 +1354,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and max_scale_rating_bottom <= max_scale_window_bottom + 2
         and max_scale_examples_visible
         and max_scale_examples_compact
+        and max_scale_example_scrollable
+        and max_scale_wheel_scroll
         and int(max_scale_example_font.cget("size")) == 14
     )
     app.change_font_scale(str(original_font_scale * 100))
@@ -1421,6 +1484,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and examples_visible
             and examples_compact
             and examples_centered_stack
+            and study_example_viewport_ready
+            and study_example_scrollbar_ready
             and rating_buttons_visible
             and max_scale_button_fit
             and max_scale_layout_fit
@@ -1436,8 +1501,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "fontScale": app.service.font_scale(),
         "viewport": [app.winfo_width(), app.winfo_height()],
         "revealLabel": reveal_label,
-        "studyScrollDisabled": not study_has_scrollbar,
+        "studyPageScrollDisabled": not study_has_scrollbar,
         "answerBounds": [answer_top, answer_bottom],
+        "studyExampleViewportReady": study_example_viewport_ready,
+        "studyExampleViewportSize": [example_viewport.winfo_width(), example_viewport.winfo_height()],
+        "studyExampleScrollbarReady": study_example_scrollbar_ready,
         "exampleBounds": example_bounds,
         "exampleGaps": example_gaps,
         "examplesVisible": examples_visible,
@@ -1461,6 +1529,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "maxScaleExamplesBottom": max_scale_examples_bottom,
         "maxScaleExamplesVisible": max_scale_examples_visible,
         "maxScaleExamplesGeometry": [max_scale_examples_top, max_scale_answer_bottom, max_scale_example_font.metrics("linespace")],
+        "maxScaleExampleViewportSize": max_scale_example_viewport_size,
+        "maxScaleExampleScrollable": max_scale_example_scrollable,
+        "maxScaleWheelScroll": max_scale_wheel_scroll,
+        "maxScaleExampleYView": [max_scale_yview_before, max_scale_yview_after],
         "maxScaleExampleBottoms": max_scale_example_bottoms,
         "maxScaleExampleGaps": max_scale_example_gaps,
         "maxScaleExamplesCompact": max_scale_examples_compact,
