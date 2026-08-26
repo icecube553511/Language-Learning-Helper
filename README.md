@@ -72,3 +72,5 @@ phonetic,level,tags,mnemonic
 ## 数据来源
 
 释义与四六级标签来自 MIT 许可的 ECDICT。参考项目“单词记忆1”的 Tatoeba、WordNet、Brown Corpus 与 Project Gutenberg 例句会在满足许可和质量门禁时复用。具体署名随内容清单与 `THIRD_PARTY_NOTICES.md` 一同发布。
+
+内置例句的中文翻译统一为简体中文。重新生成词库前需安装 `tools/requirements-content.txt`，生成器和双端同步校验会使用同一套 `t2s` 规则阻止繁体译文回流。

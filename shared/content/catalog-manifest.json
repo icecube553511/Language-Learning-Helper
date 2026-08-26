@@ -1,7 +1,7 @@
 {
   "name": "LexiTrack CET-4/CET-6 catalog",
-  "contentVersion": "cet-2026.08-v1",
-  "generatedOn": "2026-08-25",
+  "contentVersion": "cet-2026.08-v2",
+  "generatedOn": "2026-08-26",
   "wordCount": 7116,
   "membershipCounts": {
     "CET4": 5361,
@@ -26,5 +26,5 @@
       "usage": "existing bilingual corpus examples retained only when both languages are non-empty"
     }
   ],
-  "qualityRule": "Every entry has a Chinese meaning and at least three unique English examples with Chinese translations."
+  "qualityRule": "Every entry has a Chinese meaning and at least three unique English examples with Simplified Chinese translations."
 }

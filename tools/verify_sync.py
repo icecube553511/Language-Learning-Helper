@@ -6,10 +6,13 @@ import re
 import sys
 from pathlib import Path
 
+from opencc import OpenCC
+
 
 ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS = ROOT / "shared" / "contracts"
 CONTENT = ROOT / "shared" / "content"
+TO_SIMPLIFIED = OpenCC("t2s")
 
 
 def fail(message: str) -> None:
@@ -114,6 +117,10 @@ def verify_catalog() -> None:
             chinese = str(example.get("zh", "")).strip()
             if not english or not chinese or not re.search(r"[\u3400-\u9fff]", chinese):
                 fail(f"Incomplete bilingual example: {entry_id}")
+            if TO_SIMPLIFIED.convert(chinese) != chinese:
+                fail(f"Example translation is not Simplified Chinese: {entry_id}")
+            if "\u200b" in chinese:
+                fail(f"Example translation contains a zero-width space: {entry_id}")
             if english.casefold() in seen_examples:
                 fail(f"Duplicate English example: {entry_id}")
             seen_examples.add(english.casefold())

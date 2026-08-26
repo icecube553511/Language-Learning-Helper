@@ -9,6 +9,8 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
+from opencc import OpenCC
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ECDICT = PROJECT_ROOT / ".cache" / "ecdict.csv"
@@ -16,7 +18,8 @@ DEFAULT_REFERENCE = PROJECT_ROOT.parent / "单词记忆1" / "data" / "cet4_words
 OUTPUT_DIR = PROJECT_ROOT / "shared" / "content"
 OUTPUT_CATALOG = OUTPUT_DIR / "catalog.json"
 OUTPUT_MANIFEST = OUTPUT_DIR / "catalog-manifest.json"
-CONTENT_VERSION = "cet-2026.08-v1"
+CONTENT_VERSION = "cet-2026.08-v2"
+TO_SIMPLIFIED = OpenCC("t2s")
 
 
 def clean_text(value: object) -> str:
@@ -58,7 +61,7 @@ def complete_examples(word: str, raw_examples: object) -> tuple[list[dict[str, s
             if not isinstance(raw, dict):
                 continue
             english = clean_text(raw.get("en"))
-            chinese = clean_text(raw.get("zh"))
+            chinese = TO_SIMPLIFIED.convert(clean_text(raw.get("zh"))).replace("\u200b", "")
             key = english.casefold()
             if not english or not chinese or key in seen:
                 continue
@@ -173,7 +176,7 @@ def build_catalog(ecdict_path: Path, reference_path: Path) -> tuple[list[dict], 
                 "usage": "existing bilingual corpus examples retained only when both languages are non-empty",
             },
         ],
-        "qualityRule": "Every entry has a Chinese meaning and at least three unique English examples with Chinese translations.",
+        "qualityRule": "Every entry has a Chinese meaning and at least three unique English examples with Simplified Chinese translations.",
     }
     return catalog, manifest
 
