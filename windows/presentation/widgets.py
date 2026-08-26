@@ -266,13 +266,9 @@ class WordBubbleManager:
         for example in definition.examples[:3]:
             label = tk.Label(shell, text=example, bg="#FFFFFF", fg="#1B2733", font="LexiSmall", wraplength=320, justify="left", anchor="w", cursor="hand2")
             label.pack(fill=tk.X, padx=12, pady=(0, 4))
-            if definition.known:
-                self.bind_example(label, example, example)
-                label.unbind("<Button-1>")
-                label.bind("<Button-1>", lambda event, d=depth, item=example, target=label: self._on_bubble_example(event, d, item, target), add="+")
-            else:
-                label.configure(cursor="")
-                label.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+            self.bind_example(label, example, example)
+            label.unbind("<Button-1>")
+            label.bind("<Button-1>", lambda event, d=depth, item=example, target=label: self._on_bubble_example(event, d, item, target), add="+")
         popup.update_idletasks()
         width, height = popup.winfo_width(), popup.winfo_height()
         above = y_root - height - 8

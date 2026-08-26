@@ -53,7 +53,7 @@ class WordBubbleTests(unittest.TestCase):
         self.assertEqual(definition.part_of_speech, "v / n")
         self.assertEqual(definition.meaning, "集中 焦点")
 
-    def test_unknown_words_still_have_non_recursive_definition(self):
+    def test_unknown_words_retain_source_example_for_recursive_presentation(self):
         definition = resolve_bubble_definition([], "unknown", "Unknown appears here.")
         self.assertFalse(definition.known)
         self.assertEqual(definition.meaning, "词库暂无中文释义")

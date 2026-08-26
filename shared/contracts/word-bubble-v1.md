@@ -15,9 +15,9 @@ English example rendered by the Windows and Android clients.
   `conj.`, `interj.`, `abbr.`, `aux.`, `art.`, `num.`, `vt.`, or `vi.` tokens
   in the meaning. The Chinese meaning is the same meaning with those tokens
   removed and whitespace folded.
-- An unknown token still opens a non-recursive bubble with the stable text
-  “词库暂无中文释义”. Its source sentence may be shown as context, but it has
-  no child lookup data.
+- An unknown token still opens a bubble with the stable text
+  “词库暂无中文释义”. Its source sentence may be shown as context, and English
+  tokens in that context remain recursively interactive under the same rules.
 
 ## Stack behavior
 

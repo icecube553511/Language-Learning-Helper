@@ -501,16 +501,12 @@ private fun WordBubbleOverlay(
                         }
                         Text(bubble.data.meaning, style = MaterialTheme.typography.bodyMedium, color = Ink)
                         bubble.data.examples.forEach { sentence ->
-                            if (bubble.data.known) {
-                                InteractiveSentence(
-                                    text = sentence,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MutedInk,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            } else {
-                                Text(sentence, style = MaterialTheme.typography.labelMedium, color = MutedInk)
-                            }
+                            InteractiveSentence(
+                                text = sentence,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MutedInk,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
                         }
                     }
                 }

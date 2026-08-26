@@ -41,7 +41,7 @@ class WordBubblesTest {
         assertEquals("集中 焦点", definition.meaning)
     }
 
-    @Test fun `unknown words have non recursive definition`() {
+    @Test fun `unknown words retain source example for recursive presentation`() {
         val definition = resolveBubbleDefinition(emptyList(), "unknown", "Unknown appears here.")
         assertFalse(definition.known)
         assertEquals("词库暂无中文释义", definition.meaning)
