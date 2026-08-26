@@ -384,6 +384,7 @@ class LexiTrackApp(tk.Tk):
             self.example_labels,
             wrap_width,
             self.study_examples_view.available_text_width(),
+            preserve_examples=True,
         )
 
     def _resize_review_answer(self, event):
@@ -413,6 +414,7 @@ class LexiTrackApp(tk.Tk):
         example_labels: list[tk.Label],
         width: int,
         example_width: int | None = None,
+        preserve_examples: bool = False,
     ) -> None:
         if card is None:
             return
@@ -423,8 +425,11 @@ class LexiTrackApp(tk.Tk):
         example_width = example_width or width
         for index, label in enumerate(example_labels):
             example = card.examples[index]
-            english = self._elide_line(f"{index + 1}. {example.english}", label.cget("font"), example_width)
-            chinese = self._elide_line(example.chinese, label.cget("font"), example_width)
+            english = f"{index + 1}. {example.english}"
+            chinese = example.chinese
+            if not preserve_examples:
+                english = self._elide_line(english, label.cget("font"), example_width)
+                chinese = self._elide_line(chinese, label.cget("font"), example_width)
             label.configure(text=f"{english}\n{chinese}", wraplength=example_width)
 
     def _build_library_page(self):
@@ -746,6 +751,7 @@ class LexiTrackApp(tk.Tk):
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
             self.study_examples_view.available_text_width(),
+            preserve_examples=True,
         )
         self.study_examples_view.scroll_to_top()
         if entry.mnemonic:
@@ -1116,6 +1122,7 @@ class LexiTrackApp(tk.Tk):
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
             self.study_examples_view.available_text_width(),
+            preserve_examples=True,
         )
         self.study_examples_view.scroll_to_top()
         review_card = self.review_queue[0] if self.review_queue else None
