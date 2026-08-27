@@ -87,6 +87,34 @@ def _hit_test_lines(
     return None
 
 
+def _text_block_origin(
+    anchor: str,
+    width: int,
+    height: int,
+    padx: int,
+    pady: int,
+    block_width: int,
+    block_height: int,
+) -> tuple[int, int]:
+    horizontal = anchor if anchor in {"w", "e"} else anchor[-1:] if len(anchor) == 2 else ""
+    vertical = anchor if anchor in {"n", "s"} else anchor[:1] if len(anchor) == 2 else ""
+    block_left = (
+        padx
+        if horizontal == "w"
+        else width - padx - block_width
+        if horizontal == "e"
+        else (width - block_width) // 2
+    )
+    block_top = (
+        pady
+        if vertical == "n"
+        else height - pady - block_height
+        if vertical == "s"
+        else (height - block_height) // 2
+    )
+    return block_left, block_top
+
+
 class Tooltip:
     def __init__(self, widget: tk.Widget, text: str):
         self.widget = widget
@@ -200,8 +228,15 @@ class WordBubbleManager:
         line_height = measured.metrics("linespace")
         block_height = line_height * len(lines)
         anchor = str(widget.cget("anchor"))
-        block_left = padx if "w" in anchor else width - padx - block_width if "e" in anchor else (width - block_width) // 2
-        block_top = pady if "n" in anchor else height - pady - block_height if "s" in anchor else (height - block_height) // 2
+        block_left, block_top = _text_block_origin(
+            anchor,
+            width,
+            height,
+            padx,
+            pady,
+            block_width,
+            block_height,
+        )
         return _hit_test_lines(
             tokens,
             lines,

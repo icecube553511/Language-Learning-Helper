@@ -34,6 +34,16 @@ class WordBubblesTest {
         )
     }
 
+    @Test fun `token offsets identify the rendered words`() {
+        val text = "1. Keep focus here."
+        val tokens = tokenizeEnglish(text)
+
+        assertEquals(listOf("Keep", "focus", "here"), tokens.map { it.text })
+        assertTrue(tokens.all { text.substring(it.start, it.end) == it.text })
+        assertEquals(listOf(3, 8, 14), tokens.map { it.start })
+        assertEquals(listOf(7, 13, 18), tokens.map { it.end })
+    }
+
     @Test fun `lookup extracts pos and chinese`() {
         val definition = resolveBubbleDefinition(listOf(entry("Focus", "v. 集中 n. 焦点")), "focus")
         assertTrue(definition.known)

@@ -10,7 +10,7 @@ sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.models import ExampleSentence, VocabularyEntry
 from domain.word_bubbles import BubbleStack, resolve_bubble_definition, tokenize_english
-from presentation.widgets import _hit_test_lines, _wrapped_text_lines
+from presentation.widgets import _hit_test_lines, _text_block_origin, _wrapped_text_lines
 
 
 def entry(word: str, meaning: str = "n. 词语") -> VocabularyEntry:
@@ -83,6 +83,14 @@ class WordBubbleTests(unittest.TestCase):
         self.assertEqual(_hit_test_lines(tokens, lines, measure, text, 25, 25, 0, 0, 70, 20, "left").text, "three")
         self.assertIsNone(_hit_test_lines(tokens, lines, measure, text, 35, 5, 0, 0, 70, 20, "left"))
         self.assertIsNone(_hit_test_lines(tokens, lines, measure, text, 15, 45, 0, 0, 70, 20, "left"))
+
+    def test_text_block_origin_uses_exact_tk_anchor_values(self):
+        dimensions = (600, 100, 4, 6, 200, 40)
+        self.assertEqual(_text_block_origin("center", *dimensions), (200, 30))
+        self.assertEqual(_text_block_origin("nw", *dimensions), (4, 6))
+        self.assertEqual(_text_block_origin("se", *dimensions), (396, 54))
+        self.assertEqual(_text_block_origin("w", *dimensions), (4, 30))
+        self.assertEqual(_text_block_origin("n", *dimensions), (200, 6))
 
 
 if __name__ == "__main__":
