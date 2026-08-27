@@ -1,6 +1,6 @@
 {
   "contractVersion": "word-bubble-v1",
-  "maxDepth": 9,
+  "maxDepth": 20,
   "tokenVectors": [
     {"text": "Don't stop, students'!", "tokens": ["Don't", "stop", "students'"]},
     {"text": "word2 and re-entry", "tokens": ["word", "and", "re", "entry"]},

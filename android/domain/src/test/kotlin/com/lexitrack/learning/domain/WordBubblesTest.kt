@@ -67,14 +67,14 @@ class WordBubblesTest {
         assertTrue(sibling.closeAll().frames.isEmpty())
     }
 
-    @Test fun `stack never exceeds nine known layers`() {
+    @Test fun `stack never exceeds twenty known layers`() {
         var stack = BubbleStack()
-        repeat(12) { index ->
+        repeat(25) { index ->
             val word = "word$index"
             val definition = resolveBubbleDefinition(listOf(entry(word)), word)
             stack = if (stack.frames.isEmpty()) stack.openRoot(definition) else stack.openChild(stack.frames.lastIndex, definition)
         }
-        assertEquals(9, stack.frames.size)
+        assertEquals(MAX_BUBBLE_DEPTH, stack.frames.size)
     }
 
     @Test fun `tokenizer and depth match shared golden`() {

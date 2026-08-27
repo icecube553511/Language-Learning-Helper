@@ -5,7 +5,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from typing import Callable
 
-from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken, tokenize_english
+from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken, normalize_token, tokenize_english
 
 
 @dataclass(frozen=True)
@@ -193,9 +193,10 @@ class WordClickableText(tk.Text):
         self._tag_tokens: list[str] = []
         self.bind("<Button-1>", self._on_click, add="+")
 
-    def set_sentence(self, text: str, context: str | None = None) -> None:
+    def set_sentence(self, text: str, context: str | None = None, highlight_word: str | None = None) -> None:
         if context is not None:
             self._context = context
+        highlight = normalize_token(highlight_word) if highlight_word else None
         self.configure(state="normal")
         self.delete("1.0", tk.END)
         self._tag_tokens = []
@@ -204,11 +205,18 @@ class WordClickableText(tk.Text):
             self.insert(tk.END, text[cursor:token.start])
             tag = f"word{len(self._tag_tokens)}"
             self._tag_tokens.append(token.text)
-            self.insert(tk.END, token.text, (tag,))
+            token_tags = [tag]
+            if highlight is not None and normalize_token(token.text) == highlight:
+                token_tags.append("hl")
+            self.insert(tk.END, token.text, tuple(token_tags))
             cursor = token.end
         self.insert(tk.END, text[cursor:])
         self.tag_configure("align", justify=self._justify)
         self.tag_add("align", "1.0", "end-1c")
+        if highlight is not None:
+            bold_font = tkfont.Font(font=self.cget("font"))
+            bold_font.configure(weight="bold")
+            self.tag_configure("hl", foreground="#16866F", font=bold_font)
         self.update_idletasks()
         counted = self.count("1.0", "end", "displaylines")
         lines = counted[0] if counted else 1
@@ -380,7 +388,7 @@ class WordBubbleManager:
         self._create_popup(self.stack.frames[-1].definition, depth, x_root, y_root)
 
     def _destroy_from(self, depth: int) -> None:
-        while len(self._windows) > depth:
+        while self._windows and len(self._windows) > depth:
             window = self._windows.pop()
             if window.winfo_exists():
                 window.destroy()
@@ -393,12 +401,30 @@ class WordBubbleManager:
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
         popup.transient(self.root.winfo_toplevel())
-        popup.minsize(460, 320)
-        popup.geometry("580x460")
+        popup.minsize(480, 380)
+        popup.geometry("580x560")
+        popup.resizable(False, False)
 
         header = tk.Frame(popup, bg="#17212B")
         header.pack(fill=tk.X)
-        tk.Label(header, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(anchor="w", padx=24, pady=(16, 2))
+        title_row = tk.Frame(header, bg="#17212B")
+        title_row.pack(fill=tk.X)
+        tk.Label(title_row, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(side=tk.LEFT, padx=24, pady=(16, 2))
+        close_x = tk.Button(
+            title_row,
+            text="✕",
+            command=lambda d=depth: self._close_window(d),
+            bg="#17212B",
+            fg="#FFFFFF",
+            activebackground="#17212B",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            bd=0,
+            font="LexiBody",
+            padx=12,
+            pady=0,
+        )
+        close_x.pack(side=tk.RIGHT, padx=14, pady=(8, 0))
         tk.Label(header, text="点击例句中的英文单词可继续查看", bg="#17212B", fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=24, pady=(0, 14))
 
         body = tk.Frame(popup, bg="#FFFFFF")
@@ -437,7 +463,7 @@ class WordBubbleManager:
                 pady=2,
                 cursor="hand2",
             )
-            sentence.set_sentence(english)
+            sentence.set_sentence(english, highlight_word=definition.word)
             sentence.pack(fill=tk.X)
             if chinese:
                 translation = tk.Label(body, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=520, justify="left", anchor="w")
@@ -471,7 +497,7 @@ class WordBubbleManager:
         y = above if above >= 4 else min(below, screen_height - height - 4)
         x = max(4, min(x_root - width // 2, self.root.winfo_screenwidth() - width - 8))
         popup.geometry(f"+{x}+{max(4, y)}")
-        popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_after(d))
+        popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_window(d))
         self._windows.append(popup)
 
     def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
@@ -487,6 +513,12 @@ class WordBubbleManager:
     def _close_after(self, depth: int) -> None:
         self.stack = self.stack.close_after(depth)
         self._destroy_from(depth + 1)
+
+    def _close_window(self, depth: int) -> None:
+        """Close the window at ``depth`` and its descendants, keep ancestors."""
+        keep = depth - 1
+        self.stack = self.stack.close_after(keep)
+        self._destroy_from(keep)
 
 
 def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:
@@ -684,3 +716,100 @@ class MemoryChart(tk.Canvas):
                 self.create_line(*points, fill="#3973C6", width=3, smooth=True)
         self.create_text(left, 9, text=f"每日到期数  最大 {maximum}", anchor="w", fill="#65727E", font="LexiChart")
         self.create_text(right, 9, text="蓝线：平均保持率", anchor="e", fill="#3973C6", font="LexiChart")
+
+
+class DictationLoadingOverlay(tk.Frame):
+    """Full-page overlay with an animated arc spinner for the dictation entry.
+
+    Transient presentation state only: created on entering the dictation page and
+    destroyed once the loading animation concludes. Default colours mirror the
+    LexiTrack light palette so the overlay reads as part of the app.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        message: str = "正在准备默写词条…",
+        background: str = "#F3F6F7",
+        surface: str = "#FFFFFF",
+        accent: str = "#16866F",
+        text: str = "#1B2733",
+        muted: str = "#65727E",
+        border: str = "#DDE3E8",
+        size: int = 56,
+    ):
+        super().__init__(parent, bg=background)
+        self._size = size
+        self._bg = background
+        self._surface = surface
+        self._accent = accent
+        self._muted = muted
+        self._border = border
+        self._after_id: str | None = None
+        self._angle = 0
+
+        card = tk.Frame(self, bg=surface, highlightbackground=border, highlightthickness=1)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        inner = tk.Frame(card, bg=surface)
+        inner.pack(padx=44, pady=30)
+        self._spinner = tk.Canvas(
+            inner,
+            width=size,
+            height=size,
+            bg=surface,
+            bd=0,
+            highlightthickness=0,
+        )
+        self._spinner.pack()
+        self._label = tk.Label(
+            inner,
+            text=message,
+            bg=surface,
+            fg=muted,
+            font="LexiBody",
+        )
+        self._label.pack(pady=(14, 0))
+        self._draw(0)
+
+    def start(self) -> None:
+        if self._after_id is None:
+            self._after_id = self.after(80, self._tick)
+
+    def stop(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+
+    def _tick(self) -> None:
+        self._after_id = None
+        self._angle = (self._angle + 24) % 360
+        self._draw(self._angle)
+        self._after_id = self.after(80, self._tick)
+
+    def _draw(self, angle: int) -> None:
+        self._spinner.delete("all")
+        size = self._size
+        bbox = (2, 2, size - 2, size - 2)
+        self._spinner.create_arc(
+            *bbox,
+            start=0,
+            extent=359.9,
+            style=tk.ARC,
+            outline=self._border,
+            width=5,
+        )
+        self._spinner.create_arc(
+            *bbox,
+            start=angle,
+            extent=120,
+            style=tk.ARC,
+            outline=self._accent,
+            width=5,
+        )
+
+    def destroy(self) -> None:
+        self.stop()
+        super().destroy()

@@ -2,7 +2,7 @@ package com.lexitrack.learning.domain
 
 import kotlin.math.min
 
-const val MAX_BUBBLE_DEPTH = 9
+const val MAX_BUBBLE_DEPTH = 20
 
 data class WordToken(val text: String, val start: Int, val end: Int) {
     val wordId: String get() = normalizeWordId(text)

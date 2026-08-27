@@ -21,7 +21,7 @@ English example rendered by the Windows and Android clients.
 
 ## Stack behavior
 
-- The maximum stack depth is **9**. A depth-9 bubble cannot create another
+- The maximum stack depth is **20**. A depth-20 bubble cannot create another
   child.
 - Opening a token from the base replaces the current stack with one root.
 - Opening a token from bubble depth `d` keeps bubbles `0..d`, removes all

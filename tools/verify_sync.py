@@ -133,7 +133,7 @@ def verify_word_bubble_contract() -> None:
     if not golden_path.is_file():
         fail("Word bubble golden file is missing")
     payload = json.loads(golden_path.read_text(encoding="utf-8"))
-    if payload.get("contractVersion") != "word-bubble-v1" or payload.get("maxDepth") != 9:
+    if payload.get("contractVersion") != "word-bubble-v1" or payload.get("maxDepth") != 20:
         fail("Word bubble contract version or max depth differs")
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     if parity.get("wordBubbleVersion") != "word-bubble-v1":

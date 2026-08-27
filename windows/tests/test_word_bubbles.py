@@ -9,7 +9,7 @@ WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.models import ExampleSentence, VocabularyEntry
-from domain.word_bubbles import BubbleStack, resolve_bubble_definition, tokenize_english
+from domain.word_bubbles import MAX_BUBBLE_DEPTH, BubbleStack, resolve_bubble_definition, tokenize_english
 from presentation.widgets import _hit_test_lines, _text_block_origin, _wrapped_text_lines
 
 
@@ -30,7 +30,7 @@ class WordBubbleTests(unittest.TestCase):
 
     def test_tokenizer_and_depth_match_shared_golden(self):
         golden = json.loads((WINDOWS_DIR.parent / "shared/contracts/word-bubble-golden-v1.json").read_text(encoding="utf-8"))
-        self.assertEqual(golden["maxDepth"], 9)
+        self.assertEqual(golden["maxDepth"], MAX_BUBBLE_DEPTH)
         for vector in golden["tokenVectors"]:
             with self.subTest(text=vector["text"]):
                 self.assertEqual([token.text for token in tokenize_english(vector["text"])], vector["tokens"])
@@ -67,12 +67,12 @@ class WordBubbleTests(unittest.TestCase):
         self.assertEqual([frame.definition.word for frame in sibling.close_after(0).frames], ["root"])
         self.assertEqual(len(sibling.close_all().frames), 0)
 
-    def test_stack_never_exceeds_nine_known_layers(self):
+    def test_stack_never_exceeds_twenty_known_layers(self):
         stack = BubbleStack()
-        for index in range(12):
+        for index in range(25):
             word = f"word{index}"
             stack = stack.open_root(resolve_bubble_definition([entry(word)], word)) if not stack.frames else stack.open_child(len(stack.frames) - 1, resolve_bubble_definition([entry(word)], word))
-        self.assertEqual(len(stack.frames), 9)
+        self.assertEqual(len(stack.frames), MAX_BUBBLE_DEPTH)
 
     def test_wrapped_hit_test_selects_only_the_clicked_word_and_line(self):
         text = "One two three\n中文"

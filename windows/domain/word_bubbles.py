@@ -9,7 +9,7 @@ from .dictation import parse_meaning
 from .models import VocabularyEntry, normalize_word_id
 
 
-MAX_BUBBLE_DEPTH = 9
+MAX_BUBBLE_DEPTH = 20
 _TOKEN_PATTERN = re.compile(r"[A-Za-z]+(?:['\u2019][A-Za-z]+|['\u2019])?")
 
 
