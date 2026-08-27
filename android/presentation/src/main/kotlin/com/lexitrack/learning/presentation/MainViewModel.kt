@@ -52,6 +52,7 @@ data class MainUiState(
     val dictationDocument: DictationDocument? = null,
     val dictationExports: List<ExportedDictation> = emptyList(),
     val dictationPreparing: Boolean = false,
+    val dictationLoading: Boolean = false,
     val dictationMarkMode: MarkMode = MarkMode.ASK,
     val reviewSessionSize: Int = 0,
     val reviewSessionStarted: Boolean = false,
@@ -86,6 +87,7 @@ class MainViewModel(
     private var previousReminderWordId = ""
     private var pendingReminderWordId: String? = null
     private var appInForeground = true
+    private var dictationLoadingJob: Job? = null
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -124,6 +126,16 @@ class MainViewModel(
     fun selectSection(section: MainSection) {
         _uiState.value = _uiState.value.copy(section = section)
         if (section == MainSection.STUDY) ensureCurrentCard()
+        if (section == MainSection.DICTATION) startDictationLoading()
+    }
+
+    private fun startDictationLoading() {
+        dictationLoadingJob?.cancel()
+        _uiState.value = _uiState.value.copy(dictationLoading = true)
+        dictationLoadingJob = viewModelScope.launch {
+            delay(dictationLoadingDelayMs())
+            _uiState.value = _uiState.value.copy(dictationLoading = false)
+        }
     }
 
     fun revealAnswer() {

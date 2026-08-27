@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import random
 import sys
 import tempfile
 import unittest
@@ -97,6 +98,19 @@ class DictationDomainTests(unittest.TestCase):
         exporter = DictationDocumentExporter()
         with self.assertRaises(ValueError):
             exporter.export(build_document([], DictationOptions()), DictationFormat.PDF)
+
+
+class DictationLoadingTests(unittest.TestCase):
+    def test_delay_is_random_one_to_two_seconds_in_100ms_steps(self):
+        from presentation.app import dictation_loading_delay_ms
+
+        rng = random.Random(20260828)
+        seen = {dictation_loading_delay_ms(rng) for _ in range(500)}
+        for value in seen:
+            self.assertGreaterEqual(value, 1000)
+            self.assertLessEqual(value, 2000)
+            self.assertEqual(value % 100, 0)
+        self.assertGreater(len(seen), 1)
 
 
 if __name__ == "__main__":

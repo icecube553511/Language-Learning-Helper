@@ -254,14 +254,20 @@ fun LexiTrackApp(
                         onRate = viewModel::rateReviewCurrent,
                         onLevelsChange = viewModel::setReviewLevels,
                     )
-                    MainSection.DICTATION -> DictationScreen(
-                        state = state,
-                        onToggleSelection = viewModel::toggleDictationSelection,
-                        onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
-                            viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
-                            dictationPreviewOpen = true
-                        },
-                    )
+                    MainSection.DICTATION -> {
+                        if (state.dictationLoading) {
+                            DictationLoadingOverlay()
+                        } else {
+                            DictationScreen(
+                                state = state,
+                                onToggleSelection = viewModel::toggleDictationSelection,
+                                onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
+                                    viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
+                                    dictationPreviewOpen = true
+                                },
+                            )
+                        }
+                    }
                     MainSection.LIBRARY -> LibraryScreen(
                         state = state,
                         onQueryChange = viewModel::updateSearch,
@@ -1022,6 +1028,39 @@ private fun RatingButton(label: String, color: Color, modifier: Modifier, onClic
         contentPadding = PaddingValues(horizontal = 5.dp, vertical = 10.dp),
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+    }
+}
+
+@Composable
+private fun DictationLoadingOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 40.dp, vertical = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(48.dp),
+                    color = BrandTeal,
+                    strokeWidth = 4.dp,
+                )
+                Text(
+                    "正在准备默写词条…",
+                    color = MutedInk,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
     }
 }
 

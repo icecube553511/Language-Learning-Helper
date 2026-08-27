@@ -6,6 +6,7 @@ import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
 import com.lexitrack.learning.domain.DictationRow
 import com.lexitrack.learning.domain.VocabularyEntry
+import kotlin.random.Random
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -75,6 +76,19 @@ class DictationPresentationTest {
             ),
             dictationPreviewLines(document),
         )
+    }
+
+    @Test
+    fun `dictation loading delay is a random one to two seconds in 100 ms steps`() {
+        val seen = mutableSetOf<Long>()
+        val random = Random(20260828)
+        repeat(500) {
+            seen += dictationLoadingDelayMs(random)
+        }
+
+        assertTrue(seen.all { it in 1000L..2000L })
+        assertTrue(seen.all { it % 100L == 0L })
+        assertTrue(seen.size > 1)
     }
 
     private fun entry(tags: Set<String>) = VocabularyEntry(

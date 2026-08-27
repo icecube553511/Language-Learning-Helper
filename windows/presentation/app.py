@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
+import random
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -12,6 +13,7 @@ from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
 from presentation.widgets import (
+    DictationLoadingOverlay,
     MemoryChart,
     NavItem,
     ScrollableExamplePanel,
@@ -92,6 +94,12 @@ def visible_dictation_selection(
     return selected_ids & {entry.word_id for entry in entries}
 
 
+def dictation_loading_delay_ms(rand: random.Random | None = None) -> int:
+    """Random 1-2 second delay in 100 ms steps for the dictation entry animation."""
+    rng = rand or random.SystemRandom()
+    return rng.randint(10, 20) * 100
+
+
 class FontManager:
     BASE_SIZES = {
         "LexiChart": 9,
@@ -166,6 +174,8 @@ class LexiTrackApp(tk.Tk):
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()
+        self._dictation_loading: DictationLoadingOverlay | None = None
+        self._dictation_loading_after_id: str | None = None
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
@@ -496,6 +506,7 @@ class LexiTrackApp(tk.Tk):
 
     def _build_dictation_page(self):
         _, body = self._new_page("dictation", "默写", "选择词库内容，生成可打印的 A4 默写页")
+        self.dictation_body = body
         controls = self._card(body)
         controls.pack(fill=tk.X, pady=(0, 12))
         inner = tk.Frame(controls, bg=SURFACE)
@@ -1431,6 +1442,8 @@ class LexiTrackApp(tk.Tk):
 
     def show_page(self, key: str):
         self.word_bubbles.clear()
+        if key != "dictation":
+            self._cancel_dictation_loading()
         if self.current_page:
             self.pages[self.current_page].pack_forget()
             self.nav_items[self.current_page].set_selected(False)
@@ -1444,13 +1457,48 @@ class LexiTrackApp(tk.Tk):
         elif key == "review":
             self.refresh_review_page()
         elif key == "dictation":
-            self._refresh_dictation_candidates()
+            self._begin_dictation_loading()
         elif key == "library":
             self.refresh_library()
         elif key == "analytics":
             self.refresh_analytics()
         elif key == "reminder":
             self._refresh_word_reminder_status()
+
+    def _begin_dictation_loading(self) -> None:
+        self._cancel_dictation_loading()
+        overlay = DictationLoadingOverlay(self.dictation_body)
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        self._dictation_loading = overlay
+        overlay.start()
+        delay_ms = dictation_loading_delay_ms()
+        self._dictation_loading_after_id = self.after(delay_ms, self._complete_dictation_loading)
+
+    def _complete_dictation_loading(self) -> None:
+        self._cancel_dictation_loading_timer()
+        overlay = self._dictation_loading
+        if overlay is None:
+            return
+        self._refresh_dictation_candidates()
+        self._dictation_loading = None
+        overlay.stop()
+        overlay.destroy()
+
+    def _cancel_dictation_loading(self) -> None:
+        self._cancel_dictation_loading_timer()
+        overlay = self._dictation_loading
+        if overlay is not None:
+            self._dictation_loading = None
+            overlay.stop()
+            overlay.destroy()
+
+    def _cancel_dictation_loading_timer(self) -> None:
+        if self._dictation_loading_after_id is not None:
+            try:
+                self.after_cancel(self._dictation_loading_after_id)
+            except tk.TclError:
+                pass
+            self._dictation_loading_after_id = None
 
     def refresh_dashboard(self):
         snapshot = self.service.dashboard()
@@ -2003,6 +2051,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     original_font_scale = app.service.font_scale()
     for page in ("dashboard", "study", "review", "dictation", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
+        app.update()
+        app._complete_dictation_loading()
         app.update()
         visited.append(page)
         if page == "dictation":

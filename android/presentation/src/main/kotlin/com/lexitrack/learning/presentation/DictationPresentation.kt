@@ -3,6 +3,7 @@ package com.lexitrack.learning.presentation
 import com.lexitrack.learning.application.TAG_EVALUATED
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.VocabularyEntry
+import kotlin.random.Random
 
 internal data class DictationSelectionRow(
     val id: String,
@@ -35,3 +36,7 @@ internal fun dictationPreviewLines(document: DictationDocument): List<String> =
             add("")
         }
     }
+
+/** Random 1-2 second delay in 100 ms steps for the dictation entry animation. */
+internal fun dictationLoadingDelayMs(random: Random = Random.Default): Long =
+    random.nextInt(10, 21) * 100L
