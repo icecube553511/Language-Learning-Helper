@@ -738,7 +738,7 @@ class LexiTrackApp(tk.Tk):
         card = self.review_queue[0] if self.review_queue else None
         self._apply_answer_text(card, self.review_meaning, self.review_example_labels, wrap_width)
 
-    def _elide_line(self, text: str, font_name: str, width: int) -> str:
+    def _elide_line(self, text: str, font_name: str, width: int, whole_words: bool = False) -> str:
         font = tkfont.nametofont(font_name)
         if font.measure(text) <= width:
             return text
@@ -750,6 +750,10 @@ class LexiTrackApp(tk.Tk):
                 low = middle
             else:
                 high = middle - 1
+        if whole_words and low < len(text):
+            space = text.rfind(" ", 0, low)
+            if space > 0:
+                low = space
         return text[:low].rstrip() + suffix
 
     def _apply_answer_text(
@@ -773,7 +777,7 @@ class LexiTrackApp(tk.Tk):
             english = f"{index + 1}. {example.english}"
             chinese = example.chinese
             if not preserve_examples:
-                english = self._elide_line(english, label.cget("font"), example_width)
+                english = self._elide_line(english, label.cget("font"), example_width, whole_words=True)
                 chinese = self._elide_line(chinese, label.cget("font"), example_width)
             label.configure(text=f"{english}\n{chinese}", wraplength=example_width)
             self.word_bubbles.bind_example(label, english, example.english)
@@ -1830,6 +1834,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     review_example_bounds: list[list[int]] = []
     review_example_gaps: list[int] = []
     review_examples_compact = False
+    review_examples_clickable = False
     review_card_layout_ready = False
     review_max_scale_example_bounds: list[list[int]] = []
     review_max_scale_example_gaps: list[int] = []
@@ -1847,6 +1852,15 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         review_example_bounds, review_example_gaps, review_examples_compact = example_stack_metrics(
             app.review_example_labels,
             app.review_examples_area,
+        )
+        review_examples_clickable = (
+            app.review_queue
+            and all(
+                bound in str(label.cget("text"))
+                and bool(app.service.example_tokens(bound))
+                for label in app.review_example_labels
+                for bound in (getattr(label, "_word_bubble_english", ""),)
+            )
         )
         review_rating_top = app.review_rating_frame.winfo_rooty()
         review_rating_bottom = review_rating_top + app.review_rating_frame.winfo_height()
@@ -1957,6 +1971,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and reminder_popup_scroll_contract_ready
             and reminder_popup_only_examples_wheel
             and review_card_layout_ready
+            and review_examples_clickable
             and review_max_scale_layout_ready
         ),
         "pages": visited,
@@ -2012,6 +2027,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "reminderPopupOnlyExamplesWheel": reminder_popup_only_examples_wheel,
         "reminderPopupYView": [popup_yview_before, popup_yview_after],
         "reviewCardLayoutReady": review_card_layout_ready,
+        "reviewExamplesClickable": review_examples_clickable,
         "reviewExampleBounds": review_example_bounds,
         "reviewExampleGaps": review_example_gaps,
         "reviewExamplesCompact": review_examples_compact,
