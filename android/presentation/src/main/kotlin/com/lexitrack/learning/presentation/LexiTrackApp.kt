@@ -24,6 +24,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -79,6 +80,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
@@ -122,8 +125,33 @@ import kotlin.math.max
 
 private data class WordBubbleState(val data: BubbleDefinition, val anchor: IntRect)
 
+const val DICTATION_DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+const val DICTATION_PDF_MIME_TYPE = "application/pdf"
+
+data class DictationSaveSpec(val fileName: String, val mimeType: String)
+
+fun dictationSaveSpec(output: ExportedDictation): DictationSaveSpec {
+    val mimeType = output.mimeType.substringBefore(';').trim().lowercase()
+    val extension = when (mimeType) {
+        DICTATION_DOCX_MIME_TYPE -> "docx"
+        DICTATION_PDF_MIME_TYPE -> "pdf"
+        else -> error("不支持的默写文档格式：${output.mimeType}")
+    }
+    val stem = output.fileName.substringBeforeLast('.').ifBlank { "dictation" }
+    return DictationSaveSpec("$stem.$extension", mimeType)
+}
+
+private val DictationWordColumnWidth = 116.dp
+private val DictationMeaningColumnWidth = 210.dp
+private val DictationTagsColumnWidth = 156.dp
+private val DictationStatusColumnWidth = 84.dp
+private val DictationSelectionColumnWidth = 72.dp
+private val DictationTableWidth = DictationWordColumnWidth + DictationMeaningColumnWidth +
+    DictationTagsColumnWidth + DictationStatusColumnWidth + DictationSelectionColumnWidth
+
 private val LocalOpenWordBubble = staticCompositionLocalOf<(String, String, Int, IntRect) -> Unit> { { _, _, _, _ -> } }
 private val LocalBubbleDepth = staticCompositionLocalOf { -1 }
+private val LocalDismissWordBubbles = staticCompositionLocalOf<() -> Unit> { {} }
 
 @Composable
 fun LexiTrackApp(
@@ -162,15 +190,21 @@ fun LexiTrackApp(
         bubbles.clear()
     }
     LexiTrackTheme(state.fontScale) {
-        CompositionLocalProvider(LocalOpenWordBubble provides openBubble) {
+        CompositionLocalProvider(
+            LocalOpenWordBubble provides openBubble,
+            LocalDismissWordBubbles provides {
+                bubbles.clear()
+                bubbleStack = BubbleStack()
+            },
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(bubbles) {
+                    .pointerInput(Unit) {
                         awaitPointerEventScope {
                             while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                if (event.changes.any { it.changedToUp() }) {
+                                val event = awaitPointerEvent(PointerEventPass.Final)
+                                if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
                                     bubbles.clear()
                                     bubbleStack = BubbleStack()
                                 }
@@ -391,6 +425,7 @@ private fun InteractiveSentence(
 ) {
     val openBubble = LocalOpenWordBubble.current
     val depth = LocalBubbleDepth.current
+    val dismissBubbles = LocalDismissWordBubbles.current
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var bounds by remember { mutableStateOf(IntRect.Zero) }
     val annotated = remember(text, color) {
@@ -416,7 +451,10 @@ private fun InteractiveSentence(
             .pointerInput(annotated, bounds) {
                 detectTapGestures(
                     onTap = tap@{ offset ->
-                        val textLayout = layout ?: return@tap
+                        val textLayout = layout ?: run {
+                            dismissBubbles()
+                            return@tap
+                        }
                         val characterOffset = textLayout.getOffsetForPosition(offset)
                         val hit = annotated.getStringAnnotations("word", characterOffset, characterOffset + 1).firstOrNull()
                         if (hit != null && characterOffset < annotated.length && textLayout.getBoundingBox(characterOffset).contains(offset)) {
@@ -428,6 +466,8 @@ private fun InteractiveSentence(
                                 bottom = bounds.top + tokenBoxes.maxOf { it.bottom }.toInt(),
                             )
                             openBubble(hit.item, text, depth, tokenBounds)
+                        } else {
+                            dismissBubbles()
                         }
                     },
                 )
@@ -471,15 +511,20 @@ private fun WordBubbleOverlay(
             properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = false),
         ) {
             // Root content uses -1; a bubble's depth is its zero-based stack index.
-            CompositionLocalProvider(LocalBubbleDepth provides index) {
+            CompositionLocalProvider(
+                LocalBubbleDepth provides index,
+                LocalDismissWordBubbles provides { onCloseAfter(index) },
+            ) {
                 Surface(
                     modifier = Modifier
                         .widthIn(min = 220.dp, max = 360.dp)
                         .pointerInput(index) {
                             awaitPointerEventScope {
                                 while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                                    if (event.changes.any { it.changedToUp() }) onCloseAfter(index)
+                                    val event = awaitPointerEvent(PointerEventPass.Final)
+                                    if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
+                                        onCloseAfter(index)
+                                    }
                                 }
                             }
                         },
@@ -1079,37 +1124,11 @@ private fun DictationScreen(
                         color = MutedInk,
                     )
                     if (manual) {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 330.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            items(candidateEntries, key = { it.id }) { entry ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Checkbox(
-                                        checked = entry.id in state.dictationSelectedIds,
-                                        onCheckedChange = { onToggleSelection(entry.id) },
-                                    )
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(entry.word, style = MaterialTheme.typography.bodyLarge, color = Ink)
-                                        Text(
-                                            entry.meaning,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MutedInk,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                    Text(
-                                        entry.levels.sorted().joinToString(" / "),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = BrandTeal,
-                                    )
-                                }
-                            }
-                        }
+                        DictationSelectionTable(
+                            entries = candidateEntries,
+                            selectedIds = state.dictationSelectedIds,
+                            onToggleSelection = onToggleSelection,
+                        )
                     }
                     if (candidateEntries.isEmpty()) {
                         Text("当前筛选没有可用词条。", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
@@ -1150,6 +1169,113 @@ private fun DictationScreen(
             shape = RoundedCornerShape(8.dp),
         )
     }
+}
+
+@Composable
+private fun DictationSelectionTable(
+    entries: List<VocabularyEntry>,
+    selectedIds: Set<String>,
+    onToggleSelection: (String) -> Unit,
+) {
+    val rows = remember(entries) { entries.map(VocabularyEntry::toDictationSelectionRow) }
+    val tableScrollState = rememberScrollState()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(tableScrollState),
+    ) {
+        Column(modifier = Modifier.width(DictationTableWidth)) {
+            DictationSelectionTableHeader()
+            HorizontalDivider()
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 330.dp)) {
+                items(rows, key = { it.id }) { row ->
+                    DictationSelectionTableRow(
+                        row = row,
+                        selected = row.id in selectedIds,
+                        onToggleSelection = { onToggleSelection(row.id) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictationSelectionTableHeader() {
+    Row(
+        modifier = Modifier
+            .width(DictationTableWidth)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DictationTableText("单词", DictationWordColumnWidth, FontWeight.SemiBold)
+        DictationTableText("中文释义", DictationMeaningColumnWidth, FontWeight.SemiBold)
+        DictationTableText("标签", DictationTagsColumnWidth, FontWeight.SemiBold)
+        DictationTableText("考察状态", DictationStatusColumnWidth, FontWeight.SemiBold, TextAlign.Center)
+        DictationTableText("选择", DictationSelectionColumnWidth, FontWeight.SemiBold, TextAlign.Center)
+    }
+}
+
+@Composable
+private fun DictationSelectionTableRow(
+    row: DictationSelectionRow,
+    selected: Boolean,
+    onToggleSelection: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .width(DictationTableWidth)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DictationTableText(row.word, DictationWordColumnWidth, FontWeight.Medium)
+        DictationTableText(row.meaning, DictationMeaningColumnWidth)
+        DictationTableText(row.tagsText, DictationTagsColumnWidth, color = BrandTeal)
+        DictationTableText(
+            row.evaluationStatus,
+            DictationStatusColumnWidth,
+            color = if (row.isEvaluated) Color.Black else BusinessRed,
+            textAlign = TextAlign.Center,
+        )
+        Box(modifier = Modifier.width(DictationSelectionColumnWidth), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .size(60.dp)
+                    .toggleable(
+                        value = selected,
+                        role = Role.Checkbox,
+                        onValueChange = { onToggleSelection() },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = null,
+                    modifier = Modifier.size(48.dp).scale(1.25f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictationTableText(
+    text: String,
+    width: androidx.compose.ui.unit.Dp,
+    fontWeight: FontWeight? = null,
+    textAlign: TextAlign = TextAlign.Start,
+    color: Color = Ink,
+) {
+    Text(
+        text = text,
+        modifier = Modifier.width(width).padding(horizontal = 8.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = color,
+        fontWeight = fontWeight,
+        textAlign = textAlign,
+    )
 }
 
 @Composable
@@ -1305,13 +1431,7 @@ private fun DictationPreviewDialog(
     onDismiss: () -> Unit,
     onExport: () -> Unit,
 ) {
-    val lines = document.rows.flatMapIndexed { index, row ->
-        buildList {
-            add("${index + 1}. ${row.word}    ${row.partOfSpeech}    ${row.meaning}")
-            row.examples.forEach { add("    e.g. $it") }
-            add("")
-        }
-    }
+    val lines = remember(document) { dictationPreviewLines(document) }
     val linesPerPage = (842f / (document.options.fontSizePt * 1.9f)).toInt().coerceIn(12, 42)
     val pages = lines.chunked(linesPerPage).ifEmpty { listOf(emptyList()) }
     AlertDialog(
@@ -1338,8 +1458,6 @@ private fun DictationPreviewDialog(
                                     line,
                                     color = Color(0xFF18252F),
                                     fontSize = (document.options.fontSizePt * 0.75f).sp,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                             Spacer(Modifier.weight(1f))
@@ -1351,7 +1469,7 @@ private fun DictationPreviewDialog(
         },
         confirmButton = {
             TextButton(onClick = onExport, enabled = !preparing && exports.isNotEmpty()) {
-                Text(if (preparing) "正在准备文件" else "导出 ${exports.size} 个文件")
+                Text(if (preparing) "正在准备文件" else "下载文档")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("返回修改") } },

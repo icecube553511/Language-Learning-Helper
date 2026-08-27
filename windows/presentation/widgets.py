@@ -5,7 +5,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from typing import Callable
 
-from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken
+from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken, tokenize_english
 
 
 @dataclass(frozen=True)
@@ -154,6 +154,66 @@ class Tooltip:
             self.window = None
 
 
+class WordClickableText(tk.Text):
+    """Read-only sentence where every English token is an exact clickable tag.
+
+    Unlike a ``Label`` (whose per-word bounds must be approximated), ``tk.Text``
+    lays out text itself, so the clicked character maps directly to the token
+    that is actually rendered there.
+    """
+
+    def __init__(
+        self,
+        master,
+        on_token,
+        context: str = "",
+        *,
+        wrap: str = "word",
+        **kwargs,
+    ) -> None:
+        self._justify = kwargs.pop("justify", "left")
+        kwargs.setdefault("relief", tk.FLAT)
+        kwargs.setdefault("borderwidth", 0)
+        kwargs.setdefault("highlightthickness", 0)
+        super().__init__(master, wrap=wrap, **kwargs)
+        self._on_token = on_token
+        self._context = context
+        self._tag_tokens: list[str] = []
+        self.bind("<Button-1>", self._on_click, add="+")
+
+    def set_sentence(self, text: str, context: str | None = None) -> None:
+        if context is not None:
+            self._context = context
+        self.configure(state="normal")
+        self.delete("1.0", tk.END)
+        self._tag_tokens = []
+        cursor = 0
+        for token in tokenize_english(text):
+            self.insert(tk.END, text[cursor:token.start])
+            tag = f"word{len(self._tag_tokens)}"
+            self._tag_tokens.append(token.text)
+            self.insert(tk.END, token.text, (tag,))
+            cursor = token.end
+        self.insert(tk.END, text[cursor:])
+        self.tag_configure("align", justify=self._justify)
+        self.tag_add("align", "1.0", "end-1c")
+        self.update_idletasks()
+        counted = self.count("1.0", "end", "displaylines")
+        lines = counted[0] if counted else 1
+        self.configure(height=max(1, int(lines)))
+        self.configure(state="disabled")
+
+    def _on_click(self, event):
+        for tag in self.tag_names(f"@{event.x},{event.y}"):
+            if tag.startswith("word") and tag[4:].isdigit():
+                idx = int(tag[4:])
+                if 0 <= idx < len(self._tag_tokens):
+                    self._on_token(self._tag_tokens[idx], self._context, event.x_root, event.y_root)
+                    return "break"
+        self._on_token(None, self._context, event.x_root, event.y_root)
+        return "break"
+
+
 class WordBubbleManager:
     """Presentation-only controller for transient recursive vocabulary bubbles."""
 
@@ -172,6 +232,24 @@ class WordBubbleManager:
         if widget not in self._bound_widgets:
             widget.bind("<Button-1>", self._on_example_click, add="+")
             self._bound_widgets.add(widget)
+
+    def open_from_token(
+        self,
+        parent_depth: int,
+        token_text: str | None,
+        context_example: str,
+        x_root: int,
+        y_root: int,
+    ) -> None:
+        """Open a bubble from a concrete token, or clear on a blank click."""
+        if token_text is None:
+            if parent_depth >= 0:
+                self._close_after(parent_depth)
+            else:
+                self.clear()
+            return
+        token = WordToken(token_text, 0, len(token_text))
+        self._open(parent_depth, token, context_example, x_root, y_root)
 
     def clear(self) -> None:
         self.stack = self.stack.close_all()
@@ -299,11 +377,23 @@ class WordBubbleManager:
         meaning.pack(fill=tk.X, padx=12, pady=(2, 7))
         meaning.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
         for example in definition.examples[:3]:
-            label = tk.Label(shell, text=example, bg="#FFFFFF", fg="#1B2733", font="LexiSmall", wraplength=320, justify="left", anchor="w", cursor="hand2")
-            label.pack(fill=tk.X, padx=12, pady=(0, 4))
-            self.bind_example(label, example, example)
-            label.unbind("<Button-1>")
-            label.bind("<Button-1>", lambda event, d=depth, item=example, target=label: self._on_bubble_example(event, d, item, target), add="+")
+            sentence = WordClickableText(
+                shell,
+                on_token=lambda token, ctx, x_root, y_root, d=depth: self.open_from_token(
+                    d, token, ctx, x_root, y_root,
+                ),
+                context=example,
+                bg="#FFFFFF",
+                fg="#1B2733",
+                font="LexiSmall",
+                justify="left",
+                wrap="word",
+                padx=12,
+                pady=(0, 4),
+                cursor="hand2",
+            )
+            sentence.set_sentence(example)
+            sentence.pack(fill=tk.X)
         popup.update_idletasks()
         width, height = popup.winfo_width(), popup.winfo_height()
         above = y_root - height - 8

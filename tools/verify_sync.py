@@ -105,6 +105,24 @@ def verify_dictation_contract() -> None:
     evaluated = payload.get("evaluated", {})
     if evaluated.get("defaultPreference") != "ASK" or evaluated.get("preferences") != ["ASK", "ALWAYS", "NEVER"]:
         fail("Dictation evaluated preferences differ from the shared contract")
+    selection_ui = payload.get("manualSelectionUi", {})
+    if selection_ui.get("columns") != ["word", "meaning", "tags", "evaluationStatus", "selected"]:
+        fail("Dictation manual-selection columns differ from the shared contract")
+    if selection_ui.get("headings") != ["单词", "中文释义", "标签", "考察状态", "选择"]:
+        fail("Dictation manual-selection headings differ from the shared contract")
+    if (
+        selection_ui.get("evaluatedTag") != "evaluated"
+        or selection_ui.get("evaluatedText") != "已考察"
+        or selection_ui.get("evaluatedColor") != "black"
+        or selection_ui.get("unevaluatedText") != "未考察"
+        or selection_ui.get("unevaluatedColor") != "red"
+        or selection_ui.get("emptyTagsText") != "-"
+        or selection_ui.get("selectionControl") != "checkbox"
+        or selection_ui.get("horizontalOverflow") != "scroll"
+        or selection_ui.get("downloadAction") != "下载文档"
+        or selection_ui.get("downloadPathSelection") != "user-selected"
+    ):
+        fail("Dictation manual-selection behavior differs from the shared contract")
 
 
 def verify_word_bubble_contract() -> None:

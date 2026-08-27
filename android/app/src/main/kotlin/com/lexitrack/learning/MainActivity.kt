@@ -17,6 +17,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lexitrack.learning.presentation.LexiTrackApp
 import com.lexitrack.learning.presentation.MainViewModel
 import com.lexitrack.learning.presentation.MainViewModelFactory
+import com.lexitrack.learning.presentation.DICTATION_DOCX_MIME_TYPE
+import com.lexitrack.learning.presentation.DICTATION_PDF_MIME_TYPE
+import com.lexitrack.learning.presentation.dictationSaveSpec
 import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.infrastructure.AndroidReminderScheduler
 import com.lexitrack.learning.infrastructure.ReminderReceiver
@@ -32,7 +35,8 @@ class MainActivity : ComponentActivity() {
     private var pendingReminderWordId: String? = null
     private var reminderEnabled = false
     private var reminderIntervalMinutes = 30.0f
-    private var dictationSaveLauncher: ActivityResultLauncher<String>? = null
+    private var dictationDocxSaveLauncher: ActivityResultLauncher<String>? = null
+    private var dictationPdfSaveLauncher: ActivityResultLauncher<String>? = null
     private val dictationSaveQueue = ArrayDeque<ExportedDictation>()
     private var dictationSavedCount = 0
     private var dictationSaveCompletion: ((Int) -> Unit)? = null
@@ -85,10 +89,14 @@ class MainActivity : ComponentActivity() {
                         }
                 }
             }
-            val saveDictationLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.CreateDocument("*/*"),
+            val saveDocxLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument(DICTATION_DOCX_MIME_TYPE),
             ) { uri -> handleDictationSaveResult(uri) }
-            dictationSaveLauncher = saveDictationLauncher
+            val savePdfLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument(DICTATION_PDF_MIME_TYPE),
+            ) { uri -> handleDictationSaveResult(uri) }
+            dictationDocxSaveLauncher = saveDocxLauncher
+            dictationPdfSaveLauncher = savePdfLauncher
             LexiTrackApp(
                 viewModel = viewModel,
                 onReminderSettingsRequested = { enabled, interval ->
@@ -127,13 +135,23 @@ class MainActivity : ComponentActivity() {
             completion?.invoke(dictationSavedCount)
             return
         }
-        val launcher = dictationSaveLauncher
+        val saveSpec = runCatching { dictationSaveSpec(output) }.getOrNull()
+        if (saveSpec == null) {
+            dictationSaveQueue.removeFirst()
+            launchNextDictationSave()
+            return
+        }
+        val launcher = when (saveSpec.mimeType) {
+            DICTATION_DOCX_MIME_TYPE -> dictationDocxSaveLauncher
+            DICTATION_PDF_MIME_TYPE -> dictationPdfSaveLauncher
+            else -> null
+        }
         if (launcher == null) {
             dictationSaveQueue.clear()
             launchNextDictationSave()
             return
         }
-        launcher.launch(output.fileName)
+        launcher.launch(saveSpec.fileName)
     }
 
     private fun handleDictationSaveResult(uri: android.net.Uri?) {

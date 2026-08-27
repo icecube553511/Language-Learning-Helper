@@ -6,6 +6,7 @@
 
 - 页面固定为 A4 portrait，宽 `210 mm`、高 `297 mm`，不得输出 landscape。
 - DOCX 与 PDF 是可独立多选的输出格式；至少选择一种格式才能导出。
+- 预览确认后提供“下载文档”动作；每个选中的格式都必须通过平台文件选择器由用户自选保存路径，不能静默写入固定目录。
 - worksheet 正文字号默认 `12 pt`（小四），允许 `8..24 pt`，含边界，持久化为整数 point。标题、页眉和页脚可使用实现定义的字号，但题目字段不得小于所选 worksheet 字号。
 - `Document` 至少包含 `pageSize=A4`、`orientation=portrait`、`fontSizePt`、非空 `formats`、有序 `entries`，以及每个 entry 已解析的显示字段。格式 writer 只负责渲染。
 
@@ -68,6 +69,21 @@ n,v,vt,vi,adj,adv,prep,pron,conj,interj,aux,num,art,abbr,a
 ```
 
 按钮文案固定为 `确定选择` 和 `返回选择`。选择 `返回选择` 时不得写文件或更新 tags。
+
+### 手选词条表格
+
+Windows 与 Android 的手选词条 UI 必须按以下固定顺序展示列：`word`、
+`meaning`、`tags`、`evaluationStatus`、`selected`，对应文案为“单词”、
+“中文释义”、“标签”、“考察状态”、“选择”。
+
+- `meaning` 显示词条的完整中文释义。表格可视宽度不足时必须允许横向滚动，
+  不得通过永久截断隐藏其余列或释义内容。
+- `tags` 显示词条有效 tags 的稳定、小写、字典序列表，以 ` / ` 分隔；
+  `evaluated` 不在该列重复展示。没有其他 tag 时显示 `-`。
+- 有效 tags 包含 `evaluated` 时，`evaluationStatus` 显示“已考察”并使用黑色；
+  否则显示“未考察”并使用红色。
+- `selected` 必须使用逐行复选框，勾选状态与手选 ID 集合双向同步。
+- 表头与每一行必须保持相同列宽，纵向浏览不得破坏横向对齐。
 
 ## evaluated 与 tags
 

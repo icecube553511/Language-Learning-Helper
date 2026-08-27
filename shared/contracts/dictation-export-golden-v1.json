@@ -204,5 +204,19 @@
       { "action": "DO_NOT_MARK", "dontAskAgain": true, "persistedPreference": "NEVER", "markCurrentExport": false }
     ]
   },
+  "manualSelectionUi": {
+    "columns": ["word", "meaning", "tags", "evaluationStatus", "selected"],
+    "headings": ["单词", "中文释义", "标签", "考察状态", "选择"],
+    "evaluatedTag": "evaluated",
+    "evaluatedText": "已考察",
+    "evaluatedColor": "black",
+    "unevaluatedText": "未考察",
+    "unevaluatedColor": "red",
+    "emptyTagsText": "-",
+    "selectionControl": "checkbox",
+    "horizontalOverflow": "scroll",
+    "downloadAction": "下载文档",
+    "downloadPathSelection": "user-selected"
+  },
   "allowedTags": ["cet4", "cet6", "gk", "zk", "evaluated"]
 }

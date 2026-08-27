@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import time
 import tkinter as tk
@@ -11,7 +11,14 @@ import tkinter.font as tkfont
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
-from presentation.widgets import MemoryChart, NavItem, ScrollableExamplePanel, WordBubbleManager, draw_icon
+from presentation.widgets import (
+    MemoryChart,
+    NavItem,
+    ScrollableExamplePanel,
+    WordBubbleManager,
+    WordClickableText,
+    draw_icon,
+)
 
 
 BG = "#F3F6F7"
@@ -29,6 +36,10 @@ REMINDER_POPUP_WIDTH = 680
 REMINDER_POPUP_HEIGHT = 760
 REMINDER_EXAMPLES_WIDTH = 624
 REMINDER_EXAMPLES_HEIGHT = 220
+DICTATION_MEANING_COLUMN_WIDTH = 260
+DICTATION_SELECTION_COLUMN_WIDTH = 76
+DICTATION_CHECKBOX_FONT = ("Microsoft YaHei UI", 16)
+DICTATION_CHECKBOX_PAD_Y = 4
 
 
 def scroll_contract_ready(
@@ -40,6 +51,45 @@ def scroll_contract_ready(
     if is_scrollable:
         return did_scroll
     return before == [0.0, 1.0] and after == [0.0, 1.0]
+
+
+@dataclass(frozen=True)
+class DictationCandidateDisplay:
+    word: str
+    meaning: str
+    tags: str
+    evaluation_status: str
+    evaluation_color: str
+
+
+def dictation_candidate_display(entry: VocabularyEntry) -> DictationCandidateDisplay:
+    normalized_tags = sorted({tag.strip().casefold() for tag in entry.tags if tag.strip()})
+    evaluated = "evaluated" in normalized_tags
+    visible_tags = [tag for tag in normalized_tags if tag != "evaluated"]
+    return DictationCandidateDisplay(
+        word=entry.word,
+        meaning=" ".join(entry.meaning.splitlines()),
+        tags=" / ".join(visible_tags) or "-",
+        evaluation_status="已考察" if evaluated else "未考察",
+        evaluation_color="#000000" if evaluated else RED,
+    )
+
+
+def dictation_preview_blocks(document) -> list[str]:
+    blocks: list[str] = []
+    for index, row in enumerate(document.rows, 1):
+        fields = "    ".join((row.word, row.part_of_speech, row.meaning)).rstrip()
+        lines = [f"{index}. {fields}"]
+        lines.extend(f"    e.g. {example}" for example in row.examples)
+        blocks.append("\n".join(lines))
+    return blocks
+
+
+def visible_dictation_selection(
+    selected_ids: set[str],
+    entries: list[VocabularyEntry],
+) -> set[str]:
+    return selected_ids & {entry.word_id for entry in entries}
 
 
 class FontManager:
@@ -317,25 +367,42 @@ class LexiTrackApp(tk.Tk):
         examples_area = self.study_examples_view.content
         self.study_examples_area = examples_area
         examples_area.grid_columnconfigure(0, weight=1)
+        self.example_texts: list[WordClickableText] = []
         self.example_labels: list[tk.Label] = []
+        self.example_rows: list[tk.Frame] = []
         for index in range(3):
             row = tk.Frame(examples_area, bg=SURFACE)
             row.grid(row=index, column=0, sticky="ew", pady=2)
+            english = WordClickableText(
+                row,
+                on_token=lambda token, ctx, x_root, y_root: self.word_bubbles.open_from_token(
+                    -1, token, ctx, x_root, y_root,
+                ),
+                bg=SURFACE,
+                fg=TEXT,
+                font="LexiExample",
+                justify="center",
+                wrap="word",
+                padx=4,
+                pady=0,
+            )
+            english.pack(fill=tk.BOTH, expand=True)
             label = tk.Label(
                 row,
                 text="",
                 bg=SURFACE,
                 fg=TEXT,
                 font="LexiExample",
-                wraplength=680,
                 justify="center",
                 anchor="center",
                 padx=4,
                 pady=0,
             )
             label.pack(fill=tk.BOTH, expand=True)
-            self.study_examples_view.bind_mousewheel(row, label)
+            self.study_examples_view.bind_mousewheel(row, english, label)
+            self.example_texts.append(english)
             self.example_labels.append(label)
+            self.example_rows.append(row)
         self.study_mnemonic = tk.Label(self.answer_panel, text="", bg="#FFF1E2", fg="#8A531F", font="LexiSmall", wraplength=760, padx=12, pady=7)
 
     def _build_review_page(self):
@@ -390,13 +457,41 @@ class LexiTrackApp(tk.Tk):
         examples_area.pack(fill=tk.BOTH, expand=True, padx=32, pady=(6, 2))
         self.review_examples_area = examples_area
         examples_area.grid_columnconfigure(0, weight=1)
+        self.review_example_texts: list[WordClickableText] = []
         self.review_example_labels: list[tk.Label] = []
+        self.review_example_rows: list[tk.Frame] = []
         for index in range(3):
             row = tk.Frame(examples_area, bg=SURFACE)
             row.grid(row=index, column=0, sticky="ew", pady=2)
-            label = tk.Label(row, text="", bg=SURFACE, fg=TEXT, font="LexiExample", wraplength=680, justify="center", anchor="center", padx=4, pady=0)
+            english = WordClickableText(
+                row,
+                on_token=lambda token, ctx, x_root, y_root: self.word_bubbles.open_from_token(
+                    -1, token, ctx, x_root, y_root,
+                ),
+                bg=SURFACE,
+                fg=TEXT,
+                font="LexiExample",
+                justify="center",
+                wrap="word",
+                padx=4,
+                pady=0,
+            )
+            english.pack(fill=tk.BOTH, expand=True)
+            label = tk.Label(
+                row,
+                text="",
+                bg=SURFACE,
+                fg=TEXT,
+                font="LexiExample",
+                justify="center",
+                anchor="center",
+                padx=4,
+                pady=0,
+            )
             label.pack(fill=tk.BOTH, expand=True)
+            self.review_example_texts.append(english)
             self.review_example_labels.append(label)
+            self.review_example_rows.append(row)
         self.refresh_review_page()
 
     def _build_dictation_page(self):
@@ -491,7 +586,10 @@ class LexiTrackApp(tk.Tk):
 
         actions = tk.Frame(inner, bg=SURFACE)
         actions.pack(fill=tk.X)
-        self._primary_button(actions, "预览 A4 页面", self.preview_dictation, width=14).pack(side=tk.LEFT)
+        self.dictation_preview_download_button = self._primary_button(
+            actions, "预览并下载文档", self.preview_dictation, width=16,
+        )
+        self.dictation_preview_download_button.pack(side=tk.LEFT)
         self.dictation_status = tk.Label(actions, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
         self.dictation_status.pack(side=tk.LEFT, padx=14)
 
@@ -502,45 +600,266 @@ class LexiTrackApp(tk.Tk):
         self.dictation_selection_count.pack(anchor="w", padx=16, pady=(0, 8))
         table = tk.Frame(selection, bg=SURFACE)
         table.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        self.dictation_tree = ttk.Treeview(table, columns=("word", "meaning", "tags"), show="headings", selectmode="extended")
-        for key, title, width in (("word", "单词", 180), ("meaning", "中文释义", 480), ("tags", "标签", 220)):
-            self.dictation_tree.heading(key, text=title)
-            self.dictation_tree.column(key, width=width, anchor="w", stretch=key == "meaning")
-        self.dictation_tree.bind("<<TreeviewSelect>>", self._on_dictation_tree_select)
-        scrollbar = ttk.Scrollbar(table, orient=tk.VERTICAL, command=self.dictation_tree.yview)
-        self.dictation_tree.configure(yscrollcommand=scrollbar.set)
-        self.dictation_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.dictation_tree_item_ids: dict[str, str] = {}
-        self._refresh_dictation_candidates()
+        table.grid_rowconfigure(1, weight=1)
+        table.grid_columnconfigure(0, weight=1)
+        self.dictation_table_header = tk.Canvas(
+            table, height=40, bg="#E9EEF1", bd=0, highlightthickness=0,
+            xscrollincrement=24,
+        )
+        self.dictation_table_header.grid(row=0, column=0, sticky="ew")
+        self.dictation_table_canvas = tk.Canvas(
+            table, height=56, bg=SURFACE, bd=0, highlightthickness=0,
+            xscrollincrement=24, yscrollincrement=34,
+        )
+        self.dictation_table_canvas.grid(row=1, column=0, sticky="nsew")
+        vertical_scrollbar = ttk.Scrollbar(
+            table, orient=tk.VERTICAL, command=self._scroll_dictation_vertically,
+        )
+        vertical_scrollbar.grid(row=1, column=1, sticky="ns")
+        self.dictation_horizontal_scrollbar = ttk.Scrollbar(
+            table, orient=tk.HORIZONTAL, command=self._scroll_dictation_horizontally,
+        )
+        self.dictation_horizontal_scrollbar.grid(row=2, column=0, sticky="ew")
+        self.dictation_table_canvas.configure(
+            yscrollcommand=vertical_scrollbar.set,
+            xscrollcommand=self.dictation_horizontal_scrollbar.set,
+        )
+        self.dictation_table_canvas.bind("<MouseWheel>", self._on_dictation_table_mousewheel, add="+")
+        self.dictation_table_canvas.bind("<Shift-MouseWheel>", self._on_dictation_table_mousewheel, add="+")
+        self.dictation_table_canvas.bind(
+            "<Configure>", lambda _event: self._schedule_visible_dictation_checkboxes(), add="+",
+        )
+        self.dictation_candidates: list[VocabularyEntry] = []
+        self.dictation_selection_vars: dict[str, tk.BooleanVar] = {}
+        self.dictation_selection_checkboxes: dict[str, tk.Checkbutton] = {}
+        self.dictation_row_backgrounds: dict[str, int] = {}
+        self._dictation_checkbox_refresh_id: str | None = None
+        self._dictation_table_row_height = 56
+        self._dictation_table_row_tops: list[int] = []
+        self._dictation_table_row_heights: list[int] = []
+        self._dictation_table_column_lefts: list[int] = []
+        self._dictation_table_column_widths: list[int] = []
 
     def _dictation_levels(self) -> set[str]:
         selected = {level for level, variable in self.dictation_level_vars.items() if variable.get()}
         return selected or set(self.dictation_level_vars)
 
     def _refresh_dictation_candidates(self):
-        if not hasattr(self, "dictation_tree"):
+        if not hasattr(self, "dictation_table_canvas"):
             return
-        entries = self.service.dictation_pool(
+        self.dictation_candidates = self.service.dictation_pool(
             self._dictation_levels(),
             self.dictation_include_evaluated_var.get(),
+        )[:2000]
+        self.dictation_selected_ids = visible_dictation_selection(
+            self.dictation_selected_ids,
+            self.dictation_candidates,
         )
-        self.dictation_tree.delete(*self.dictation_tree.get_children())
-        self.dictation_tree_item_ids.clear()
-        for entry in entries[:2000]:
-            item_id = self.dictation_tree.insert(
-                "", tk.END,
-                values=(entry.word, entry.meaning.replace("\n", " ")[:100], " / ".join(sorted(entry.tags))),
-            )
-            self.dictation_tree_item_ids[item_id] = entry.word_id
-        self._on_dictation_tree_select()
+        self._render_dictation_candidates()
+        self._update_dictation_selection_count()
 
-    def _on_dictation_tree_select(self, _event=None):
-        selected = self.dictation_tree.selection()
-        self.dictation_selected_ids = {
-            self.dictation_tree_item_ids[item_id]
-            for item_id in selected if item_id in self.dictation_tree_item_ids
-        }
+    def _render_dictation_candidates(self):
+        if not hasattr(self, "dictation_table_canvas"):
+            return
+        for checkbox in self.dictation_selection_checkboxes.values():
+            checkbox.destroy()
+        self.dictation_selection_vars.clear()
+        self.dictation_selection_checkboxes.clear()
+        self.dictation_row_backgrounds.clear()
+        self.dictation_table_header.delete("all")
+        self.dictation_table_canvas.delete("all")
+
+        displays = [dictation_candidate_display(entry) for entry in self.dictation_candidates]
+        body_font = self.font_manager.fonts["LexiSmall"]
+        heading_font = self.font_manager.fonts["LexiBodyBold"]
+
+        def measured_width(values: list[str], minimum: int) -> int:
+            return max([minimum, *(body_font.measure(value) + 24 for value in values)])
+
+        column_specs = (
+            ("单词", measured_width([item.word for item in displays], 170)),
+            ("中文释义", DICTATION_MEANING_COLUMN_WIDTH),
+            ("标签", measured_width([item.tags for item in displays], 200)),
+            ("考察状态", 120),
+            ("选择", DICTATION_SELECTION_COLUMN_WIDTH),
+        )
+        self._dictation_table_column_widths = [width for _, width in column_specs]
+        column_lefts: list[int] = []
+        total_width = 0
+        for title, width in column_specs:
+            column_lefts.append(total_width)
+            self.dictation_table_header.create_rectangle(
+                total_width, 0, total_width + width, 40,
+                fill="#E9EEF1", outline=BORDER,
+            )
+            self.dictation_table_header.create_text(
+                total_width + 10, 20, text=title, anchor="w", fill=TEXT, font=heading_font,
+            )
+            total_width += width
+        self._dictation_table_column_lefts = column_lefts
+
+        meaning_width = DICTATION_MEANING_COLUMN_WIDTH - 20
+
+        def wrapped_line_count(value: str) -> int:
+            count = 0
+            for paragraph in value.splitlines() or [""]:
+                current = ""
+                paragraph_lines = 1
+                for character in paragraph:
+                    candidate = current + character
+                    if current and body_font.measure(candidate) > meaning_width:
+                        paragraph_lines += 1
+                        current = character
+                    else:
+                        current = candidate
+                count += paragraph_lines
+            return max(1, count)
+
+        row_heights = [
+            max(56, body_font.metrics("linespace") * wrapped_line_count(item.meaning) + 14)
+            for item in displays
+        ]
+        row_tops: list[int] = []
+        cursor = 0
+        for height in row_heights:
+            row_tops.append(cursor)
+            cursor += height
+        self._dictation_table_row_height = max(row_heights, default=56)
+        self._dictation_table_row_tops = row_tops
+        self._dictation_table_row_heights = row_heights
+        for index, (entry, display) in enumerate(zip(self.dictation_candidates, displays)):
+            top = row_tops[index]
+            row_height = row_heights[index]
+            background = "#F8FAFB" if index % 2 else SURFACE
+            if entry.word_id in self.dictation_selected_ids:
+                background = "#E2F1EC"
+            rectangle = self.dictation_table_canvas.create_rectangle(
+                0, top, total_width, top + row_height,
+                fill=background, outline=BORDER,
+            )
+            self.dictation_row_backgrounds[entry.word_id] = rectangle
+            values = (display.word, display.meaning, display.tags, display.evaluation_status)
+            colors = (TEXT, TEXT, TEXT, display.evaluation_color)
+            for column, (value, color) in enumerate(zip(values, colors)):
+                text_options = {"fill": color, "font": body_font}
+                if column == 1:
+                    text_options.update(width=meaning_width, justify="left")
+                self.dictation_table_canvas.create_text(
+                    column_lefts[column] + 10,
+                    top + row_height / 2,
+                    text=value,
+                    anchor="w",
+                    **text_options,
+                )
+
+        body_height = sum(row_heights)
+        for left in column_lefts[1:]:
+            self.dictation_table_canvas.create_line(left, 0, left, body_height, fill=BORDER)
+        self.dictation_table_header.configure(scrollregion=(0, 0, total_width, 40))
+        self.dictation_table_canvas.configure(scrollregion=(0, 0, total_width, body_height))
+        self._scroll_dictation_horizontally("moveto", 0)
+        self.dictation_table_canvas.yview_moveto(0)
+        self._refresh_visible_dictation_checkboxes()
+
+    def _scroll_dictation_horizontally(self, *args):
+        self.dictation_table_header.xview(*args)
+        self.dictation_table_canvas.xview(*args)
+
+    def _scroll_dictation_vertically(self, *args):
+        self.dictation_table_canvas.yview(*args)
+        self._schedule_visible_dictation_checkboxes()
+
+    def _schedule_visible_dictation_checkboxes(self):
+        if self._dictation_checkbox_refresh_id is not None:
+            self.after_cancel(self._dictation_checkbox_refresh_id)
+        self._dictation_checkbox_refresh_id = self.after_idle(self._refresh_visible_dictation_checkboxes)
+
+    def _refresh_visible_dictation_checkboxes(self):
+        self._dictation_checkbox_refresh_id = None
+        for checkbox in self.dictation_selection_checkboxes.values():
+            checkbox.destroy()
+        self.dictation_table_canvas.delete("dictation_checkbox")
+        self.dictation_selection_vars.clear()
+        self.dictation_selection_checkboxes.clear()
+        if not self.dictation_candidates or not self._dictation_table_column_lefts:
+            return
+
+        viewport_top = max(0.0, self.dictation_table_canvas.canvasy(0))
+        viewport_height = max(1, self.dictation_table_canvas.winfo_height())
+        viewport_bottom = viewport_top + viewport_height
+        manual = self.dictation_mode_var.get() == "manual"
+        selection_center = (
+            self._dictation_table_column_lefts[4]
+            + self._dictation_table_column_widths[4] / 2
+        )
+        for index, row_top in enumerate(self._dictation_table_row_tops):
+            row_height = self._dictation_table_row_heights[index]
+            if row_top + row_height < viewport_top - row_height or row_top > viewport_bottom + row_height:
+                continue
+            entry = self.dictation_candidates[index]
+            selected = entry.word_id in self.dictation_selected_ids
+            background = "#E2F1EC" if selected else ("#F8FAFB" if index % 2 else SURFACE)
+            variable = tk.BooleanVar(value=selected)
+            checkbox = tk.Checkbutton(
+                self.dictation_table_canvas,
+                variable=variable,
+                command=lambda word_id=entry.word_id, value=variable: self._set_dictation_selected(word_id, value.get()),
+                bg=background,
+                activebackground=background,
+                selectcolor=SURFACE,
+                state=tk.NORMAL if manual else tk.DISABLED,
+                font=DICTATION_CHECKBOX_FONT,
+                padx=0,
+                pady=DICTATION_CHECKBOX_PAD_Y,
+                bd=0,
+                highlightthickness=0,
+                indicatoron=True,
+            )
+            checkbox.bind("<MouseWheel>", self._on_dictation_table_mousewheel, add="+")
+            checkbox.bind("<Shift-MouseWheel>", self._on_dictation_table_mousewheel, add="+")
+            self.dictation_table_canvas.create_window(
+                selection_center,
+                row_top + row_height / 2,
+                window=checkbox,
+                anchor="center",
+                tags=("dictation_checkbox",),
+            )
+            self.dictation_selection_vars[entry.word_id] = variable
+            self.dictation_selection_checkboxes[entry.word_id] = checkbox
+
+    def _on_dictation_table_mousewheel(self, event):
+        if not event.delta:
+            return "break"
+        units = max(1, abs(event.delta) // 120)
+        direction = -1 if event.delta > 0 else 1
+        if event.state & 0x0001:
+            self.dictation_table_header.xview_scroll(direction * units, "units")
+            self.dictation_table_canvas.xview_scroll(direction * units, "units")
+        else:
+            self.dictation_table_canvas.yview_scroll(direction * units, "units")
+            self._schedule_visible_dictation_checkboxes()
+        return "break"
+
+    def _set_dictation_selected(self, word_id: str, selected: bool):
+        if selected:
+            self.dictation_selected_ids.add(word_id)
+        else:
+            self.dictation_selected_ids.discard(word_id)
+        background = "#E2F1EC" if selected else (
+            "#F8FAFB" if next(
+                (index for index, entry in enumerate(self.dictation_candidates) if entry.word_id == word_id),
+                0,
+            ) % 2 else SURFACE
+        )
+        rectangle = self.dictation_row_backgrounds.get(word_id)
+        if rectangle is not None:
+            self.dictation_table_canvas.itemconfigure(rectangle, fill=background)
+        checkbox = self.dictation_selection_checkboxes.get(word_id)
+        if checkbox is not None:
+            checkbox.configure(bg=background, activebackground=background)
+        self._update_dictation_selection_count()
+
+    def _update_dictation_selection_count(self):
         if self.dictation_mode_var.get() == "manual":
             self.dictation_selection_count.configure(text=f"已选择 {len(self.dictation_selected_ids)} 个词条")
         else:
@@ -638,34 +957,87 @@ class LexiTrackApp(tk.Tk):
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         page_width, page_height, gap = 520, 736, 22
-        lines_per_page = 42
-        lines: list[str] = []
-        for index, row in enumerate(document.rows, 1):
-            lines.append(f"{index}. {row.word}    {row.part_of_speech}    {row.meaning}")
-            lines.extend(f"    e.g. {example}" for example in row.examples)
-            lines.append("")
-        page_count = max(1, (len(lines) + lines_per_page - 1) // lines_per_page)
+        page_left = 35
+        content_left = page_left + 26
+        content_width = page_width - 52
+        content_top_padding = 30
+        content_bottom_padding = 34
+        preview_font = tkfont.Font(
+            root=preview,
+            family="Microsoft YaHei UI",
+            size=max(8, round(document.options.font_size_pt * page_width / 595)),
+        )
+        preview._dictation_preview_font = preview_font
+
+        page_count = 0
+        cursor_y = 0
+
+        def add_page() -> None:
+            nonlocal page_count, cursor_y
+            page_count += 1
+            page_top = gap + (page_count - 1) * (page_height + gap)
+            canvas.create_rectangle(
+                page_left, page_top, page_left + page_width, page_top + page_height,
+                fill="#FFFFFF", outline="#C8D0D3",
+            )
+            cursor_y = page_top + content_top_padding
+
+        add_page()
+        for block in dictation_preview_blocks(document):
+            page_top = gap + (page_count - 1) * (page_height + gap)
+            text_item = canvas.create_text(
+                content_left,
+                cursor_y,
+                anchor="nw",
+                width=content_width,
+                text=block,
+                fill=TEXT,
+                font=preview_font,
+            )
+            bounds = canvas.bbox(text_item)
+            if bounds and bounds[3] > page_top + page_height - content_bottom_padding and cursor_y > page_top + content_top_padding:
+                canvas.delete(text_item)
+                add_page()
+                text_item = canvas.create_text(
+                    content_left,
+                    cursor_y,
+                    anchor="nw",
+                    width=content_width,
+                    text=block,
+                    fill=TEXT,
+                    font=preview_font,
+                )
+                bounds = canvas.bbox(text_item)
+            cursor_y = (bounds[3] if bounds else cursor_y + preview_font.metrics("linespace")) + 10
+
         total_height = page_count * (page_height + gap) + gap
         canvas.configure(scrollregion=(0, 0, page_width + 80, total_height))
         for page_index in range(page_count):
-            x, y = 35, gap + page_index * (page_height + gap)
-            canvas.create_rectangle(x, y, x + page_width, y + page_height, fill="#FFFFFF", outline="#C8D0D3")
-            page_lines = lines[page_index * lines_per_page:(page_index + 1) * lines_per_page]
-            canvas.create_text(x + 26, y + 26, anchor="nw", width=page_width - 52, text="\n".join(page_lines), fill=TEXT, font=("Microsoft YaHei UI", 10), spacing=4)
-            canvas.create_text(x + page_width - 24, y + page_height - 18, anchor="e", text=f"{page_index + 1} / {page_count}", fill=MUTED, font=("Microsoft YaHei UI", 8))
+            page_top = gap + page_index * (page_height + gap)
+            canvas.create_text(
+                page_left + page_width - 24,
+                page_top + page_height - 18,
+                anchor="e",
+                text=f"{page_index + 1} / {page_count}",
+                fill=MUTED,
+                font=("Microsoft YaHei UI", 8),
+            )
         actions = tk.Frame(preview, bg=BG)
         actions.pack(fill=tk.X, padx=20, pady=14)
-        self._primary_button(actions, "导出并保存", lambda: (preview.destroy(), self.export_dictation()), width=14).pack(side=tk.RIGHT)
+        download_button = self._primary_button(
+            actions, "下载文档", lambda: (preview.destroy(), self.download_dictation()), width=12,
+        )
+        download_button.pack(side=tk.RIGHT)
         self._outline_button(actions, "返回修改", preview.destroy, width=10).pack(side=tk.RIGHT, padx=8)
 
-    def export_dictation(self):
+    def download_dictation(self):
         document = self.dictation_document
         if document is None:
             return
         try:
             outputs = self.service.export_dictation(document)
         except Exception as exc:
-            messagebox.showerror("导出失败", str(exc), parent=self)
+            messagebox.showerror("下载失败", str(exc), parent=self)
             return
         successful: list[Path] = []
         for output in outputs:
@@ -674,6 +1046,7 @@ class LexiTrackApp(tk.Tk):
                 initialfile=output.file_name,
                 defaultextension=Path(output.file_name).suffix,
                 filetypes=[("Word 文档", "*.docx")] if output.file_name.endswith(".docx") else [("PDF 文件", "*.pdf")],
+                parent=self,
             )
             if not path:
                 continue
@@ -684,7 +1057,11 @@ class LexiTrackApp(tk.Tk):
                 messagebox.showerror("保存失败", str(exc), parent=self)
         if successful:
             self._apply_dictation_mark()
-            messagebox.showinfo("导出完成", f"已保存 {len(successful)} 个文件。", parent=self)
+            messagebox.showinfo("下载完成", f"已保存 {len(successful)} 个文件。", parent=self)
+
+    def export_dictation(self):
+        """Keep the old internal entry point compatible with the download flow."""
+        self.download_dictation()
 
     def _apply_dictation_mark(self):
         ids = {row_id for row_id in self._dictation_document_word_ids()}
@@ -726,6 +1103,7 @@ class LexiTrackApp(tk.Tk):
         self._apply_answer_text(
             self.current_card,
             self.study_meaning,
+            self.example_texts,
             self.example_labels,
             wrap_width,
             self.study_examples_view.available_text_width(),
@@ -736,7 +1114,7 @@ class LexiTrackApp(tk.Tk):
         wrap_width = max(360, event.width - 80)
         self.review_meaning.configure(wraplength=wrap_width)
         card = self.review_queue[0] if self.review_queue else None
-        self._apply_answer_text(card, self.review_meaning, self.review_example_labels, wrap_width)
+        self._apply_answer_text(card, self.review_meaning, self.review_example_texts, self.review_example_labels, wrap_width)
 
     def _elide_line(self, text: str, font_name: str, width: int, whole_words: bool = False) -> str:
         font = tkfont.nametofont(font_name)
@@ -760,6 +1138,7 @@ class LexiTrackApp(tk.Tk):
         self,
         card: VocabularyEntry | None,
         meaning_label: tk.Label,
+        example_texts: list,
         example_labels: list[tk.Label],
         width: int,
         example_width: int | None = None,
@@ -772,15 +1151,15 @@ class LexiTrackApp(tk.Tk):
             meaning = self._elide_line(meaning, meaning_label.cget("font"), width)
         meaning_label.configure(text=meaning)
         example_width = example_width or width
-        for index, label in enumerate(example_labels):
+        for index, (text_widget, label) in enumerate(zip(example_texts, example_labels)):
             example = card.examples[index]
             english = f"{index + 1}. {example.english}"
             chinese = example.chinese
             if not preserve_examples:
                 english = self._elide_line(english, label.cget("font"), example_width, whole_words=True)
                 chinese = self._elide_line(chinese, label.cget("font"), example_width)
-            label.configure(text=f"{english}\n{chinese}", wraplength=example_width)
-            self.word_bubbles.bind_example(label, english, example.english)
+            text_widget.set_sentence(english, example.english)
+            label.configure(text=chinese, wraplength=example_width)
 
     def _build_library_page(self):
         _, body = self._new_page("library", "词库", "CET-4、CET-6 与自定义词条")
@@ -1117,6 +1496,7 @@ class LexiTrackApp(tk.Tk):
         self._apply_answer_text(
             entry,
             self.study_meaning,
+            self.example_texts,
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
             self.study_examples_view.available_text_width(),
@@ -1195,7 +1575,7 @@ class LexiTrackApp(tk.Tk):
             return
         card = self.review_queue[0]
         self.review_answer_visible = True
-        self._apply_answer_text(card, self.review_meaning, self.review_example_labels, max(360, self.review_answer_panel.winfo_width() - 80))
+        self._apply_answer_text(card, self.review_meaning, self.review_example_texts, self.review_example_labels, max(360, self.review_answer_panel.winfo_width() - 80))
         self.review_controls.pack_forget()
         self.review_rating_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(2, 4))
         self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
@@ -1337,19 +1717,33 @@ class LexiTrackApp(tk.Tk):
         self._word_reminder_examples_view = examples_view
         self._word_reminder_example_labels: list[tk.Label] = []
         for index, example in enumerate(entry.examples[:3], start=1):
-            label = tk.Label(
+            english = WordClickableText(
                 examples_view.content,
-                text=f"{index}. {example.english}\n   {example.chinese}",
+                on_token=lambda token, ctx, x_root, y_root: self.word_bubbles.open_from_token(
+                    -1, token, ctx, x_root, y_root,
+                ),
                 bg=SURFACE,
                 fg=TEXT,
                 font="LexiExample",
-                wraplength=examples_view.available_text_width(),
                 justify="left",
+                wrap="word",
+                padx=8,
+                pady=4,
             )
-            label.pack(anchor="w", fill=tk.X, padx=(8, 4), pady=(0, 4))
-            examples_view.bind_mousewheel(label)
-            self.word_bubbles.bind_example(label, f"{index}. {example.english}", example.english)
-            self._word_reminder_example_labels.append(label)
+            english.set_sentence(f"{index}. {example.english}", example.english)
+            english.pack(anchor="w", fill=tk.X, padx=(8, 4), pady=(0, 2))
+            chinese = tk.Label(
+                examples_view.content,
+                text=f"   {example.chinese}",
+                bg=SURFACE,
+                fg=TEXT,
+                font="LexiExample",
+                justify="left",
+                anchor="w",
+            )
+            chinese.pack(anchor="w", fill=tk.X, padx=(8, 4), pady=(0, 4))
+            examples_view.bind_mousewheel(english, chinese)
+            self._word_reminder_example_labels.append(english)
         examples_view.scroll_to_top()
         if entry.mnemonic:
             tk.Label(
@@ -1517,6 +1911,7 @@ class LexiTrackApp(tk.Tk):
         self._apply_answer_text(
             self.current_card,
             self.study_meaning,
+            self.example_texts,
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
             self.study_examples_view.available_text_width(),
@@ -1527,6 +1922,7 @@ class LexiTrackApp(tk.Tk):
         self._apply_answer_text(
             review_card,
             self.review_meaning,
+            self.review_example_texts,
             self.review_example_labels,
             max(360, self.review_answer_panel.winfo_width() - 80),
         )
@@ -1539,6 +1935,8 @@ class LexiTrackApp(tk.Tk):
         self.service.set_font_scale(scale)
         self.scale_text.configure(text=f"{round(scale * 100):d}%")
         ttk.Style(self).configure("Treeview", rowheight=max(32, round(34 * scale)))
+        if self.current_page == "dictation":
+            self._render_dictation_candidates()
 
     def change_review_batch_size(self, raw_value: str):
         learnt_count = self.service.learnt_word_count()
@@ -1592,6 +1990,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         pass
     app.update()
     visited = []
+    dictation_table_ready = False
+    dictation_horizontal_scrollbar_ready = False
+    dictation_horizontal_scroll_sync = False
+    dictation_checkbox_ready = False
+    dictation_download_entry_ready = False
     reminder_filters_ready = False
     reminder_popup_ready = False
     reminder_popup_examples_scrollable = False
@@ -1602,6 +2005,42 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         app.show_page(page)
         app.update()
         visited.append(page)
+        if page == "dictation":
+            app.dictation_mode_var.set("manual")
+            app._refresh_visible_dictation_checkboxes()
+            app.update_idletasks()
+            app.update()
+            dictation_table_ready = (
+                app._dictation_table_column_widths[1] == DICTATION_MEANING_COLUMN_WIDTH
+                and app._dictation_table_column_widths[3:] == [120, DICTATION_SELECTION_COLUMN_WIDTH]
+                and len(app._dictation_table_column_lefts) == 5
+            )
+            dictation_horizontal_scrollbar_ready = (
+                app.dictation_horizontal_scrollbar.winfo_manager() == "grid"
+                and app.dictation_table_canvas.xview()[1] < 1.0
+            )
+            before_header = list(app.dictation_table_header.xview())
+            before_body = list(app.dictation_table_canvas.xview())
+            app._scroll_dictation_horizontally("scroll", 1, "units")
+            after_header = list(app.dictation_table_header.xview())
+            after_body = list(app.dictation_table_canvas.xview())
+            dictation_horizontal_scroll_sync = (
+                after_header[0] > before_header[0]
+                and after_body[0] > before_body[0]
+            )
+            app._scroll_dictation_horizontally("moveto", 0)
+            visible_checkboxes = list(app.dictation_selection_checkboxes.values())
+            dictation_checkbox_ready = not app.dictation_candidates or bool(visible_checkboxes) and all(
+                int(checkbox.cget("indicatoron")) == 1
+                and int(checkbox.cget("pady")) == DICTATION_CHECKBOX_PAD_Y
+                and "16" in str(checkbox.cget("font"))
+                and checkbox.cget("state") == tk.NORMAL
+                for checkbox in visible_checkboxes
+            )
+            dictation_download_entry_ready = (
+                callable(getattr(app, "download_dictation", None))
+                and app.dictation_preview_download_button.cget("text") == "预览并下载文档"
+            )
         if page == "reminder":
             reminder_filters_ready = (
                 set(app.reminder_filter_vars) == {"CET4", "CET6", "CUSTOM"}
@@ -1707,18 +2146,16 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and example_viewport.canvas.winfo_manager() == "pack"
     )
     example_bounds, example_gaps, examples_compact = example_stack_metrics(
-        app.example_labels,
+        app.example_rows,
         app.study_examples_area,
     )
     examples_centered_stack = app.current_card is None or (
         all(
-            label.winfo_manager() == "pack"
-            and label.cget("bg") == SURFACE
-            and label.cget("justify") == "center"
-            and label.cget("anchor") == "center"
-            and abs(label.winfo_rootx() + label.winfo_width() / 2 - example_content_center) <= 3
-            and label.winfo_width() >= app.study_examples_area.winfo_width() * 0.95
-            for label in app.example_labels
+            row.winfo_manager() == "grid"
+            and row.cget("bg") == SURFACE
+            and abs(row.winfo_rootx() + row.winfo_width() / 2 - example_content_center) <= 3
+            and row.winfo_width() >= app.study_examples_area.winfo_width() * 0.95
+            for row in app.example_rows
         )
         and all(
             example_bounds[index][1] <= example_bounds[index + 1][0] + 2
@@ -1797,7 +2234,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and all(label.winfo_height() >= 24 for label in app.example_labels)
     )
     max_scale_example_bounds, max_scale_example_gaps, max_scale_examples_compact = example_stack_metrics(
-        app.example_labels,
+        app.example_rows,
         app.study_examples_area,
     )
     max_scale_example_bottoms = [bottom for _top, bottom in max_scale_example_bounds]
@@ -1850,17 +2287,13 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         review_answer_bottom = review_answer_top + app.review_answer_panel.winfo_height()
         review_answer_center = app.review_answer_panel.winfo_rootx() + app.review_answer_panel.winfo_width() / 2
         review_example_bounds, review_example_gaps, review_examples_compact = example_stack_metrics(
-            app.review_example_labels,
+            app.review_example_rows,
             app.review_examples_area,
         )
         review_examples_clickable = (
             app.review_queue
-            and all(
-                bound in str(label.cget("text"))
-                and bool(app.service.example_tokens(bound))
-                for label in app.review_example_labels
-                for bound in (getattr(label, "_word_bubble_english", ""),)
-            )
+            and len(app.review_example_texts) == 3
+            and all(len(text._tag_tokens) > 0 for text in app.review_example_texts)
         )
         review_rating_top = app.review_rating_frame.winfo_rooty()
         review_rating_bottom = review_rating_top + app.review_rating_frame.winfo_height()
@@ -1868,12 +2301,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         review_font = tkfont.nametofont("LexiBodyBold")
         review_examples_centered_stack = (
             all(
-                label.winfo_manager() == "pack"
-                and label.cget("bg") == SURFACE
-                and label.cget("justify") == "center"
-                and label.cget("anchor") == "center"
-                and abs(label.winfo_rootx() + label.winfo_width() / 2 - review_answer_center) <= 3
-                for label in app.review_example_labels
+                row.winfo_manager() == "grid"
+                and row.cget("bg") == SURFACE
+                and abs(row.winfo_rootx() + row.winfo_width() / 2 - review_answer_center) <= 3
+                for row in app.review_example_rows
             )
             and all(
                 review_example_bounds[index][1] <= review_example_bounds[index + 1][0] + 2
@@ -1909,19 +2340,18 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         review_max_scale_rating_bottom = review_max_scale_rating_top + app.review_rating_frame.winfo_height()
         review_max_scale_card_bottom = app.review_card.winfo_rooty() + app.review_card.winfo_height()
         review_max_scale_example_bounds, review_max_scale_example_gaps, review_max_scale_examples_compact = example_stack_metrics(
-            app.review_example_labels,
+            app.review_example_rows,
             app.review_examples_area,
         )
         review_max_scale_font = tkfont.nametofont("LexiBodyBold")
         review_max_scale_example_font = tkfont.nametofont("LexiExample")
         review_max_scale_layout_ready = (
             all(
-                label.winfo_manager() == "pack"
-                and label.cget("bg") == SURFACE
-                and label.cget("justify") == "center"
-                and abs(label.winfo_rootx() + label.winfo_width() / 2 - review_max_scale_answer_center) <= 3
-                and label.winfo_height() >= 24
-                for label in app.review_example_labels
+                row.winfo_manager() == "grid"
+                and row.cget("bg") == SURFACE
+                and abs(row.winfo_rootx() + row.winfo_width() / 2 - review_max_scale_answer_center) <= 3
+                and row.winfo_height() >= 24
+                for row in app.review_example_rows
             )
             and all(
                 review_max_scale_example_bounds[index][1] <= review_max_scale_example_bounds[index + 1][0] + 2
@@ -1973,8 +2403,18 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and review_card_layout_ready
             and review_examples_clickable
             and review_max_scale_layout_ready
+            and dictation_table_ready
+            and dictation_horizontal_scrollbar_ready
+            and dictation_horizontal_scroll_sync
+            and dictation_checkbox_ready
+            and dictation_download_entry_ready
         ),
         "pages": visited,
+        "dictationTableReady": dictation_table_ready,
+        "dictationHorizontalScrollbarReady": dictation_horizontal_scrollbar_ready,
+        "dictationHorizontalScrollSync": dictation_horizontal_scroll_sync,
+        "dictationCheckboxReady": dictation_checkbox_ready,
+        "dictationDownloadEntryReady": dictation_download_entry_ready,
         "catalogCount": app.catalog_count,
         "studyCardReady": app.current_card is None or len(app.current_card.examples) >= 3,
         "fontScale": app.service.font_scale(),

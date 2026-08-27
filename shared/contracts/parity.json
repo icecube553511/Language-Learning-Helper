@@ -29,6 +29,8 @@
     "batchVocabularyLabels": "ready",
     "androidBackgroundLearningReminders": "ready",
     "dictationExport": "ready",
+    "dictationDownload": "ready",
+    "dictationManualSelectionTable": "ready",
     "programTagOverrides": "ready",
     "wordBubbleInteraction": "ready"
   },
