@@ -389,7 +389,7 @@ class WordBubbleManager:
                 justify="left",
                 wrap="word",
                 padx=12,
-                pady=(0, 4),
+                pady=4,
                 cursor="hand2",
             )
             sentence.set_sentence(example)
