@@ -154,12 +154,24 @@ class Tooltip:
             self.window = None
 
 
-class WordClickableText(tk.Text):
-    """Read-only sentence where every English token is an exact clickable tag.
+@dataclass(frozen=True)
+class WordRegion:
+    """Screen geometry of one rendered word, in local widget coordinates."""
 
-    Unlike a ``Label`` (whose per-word bounds must be approximated), ``tk.Text``
-    lays out text itself, so the clicked character maps directly to the token
-    that is actually rendered there.
+    text: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class WordClickableText(tk.Text):
+    """Read-only sentence exposing each rendered word as an exact hit region.
+
+    After ``set_sentence`` lays the text out, ``word_regions`` returns the
+    on-page rectangle of every English token. ``hit_test`` uses those
+    rectangles so a click always lands on the word actually rendered there,
+    regardless of wrapping or font scaling.
     """
 
     def __init__(
@@ -203,14 +215,28 @@ class WordClickableText(tk.Text):
         self.configure(height=max(1, int(lines)))
         self.configure(state="disabled")
 
+    def word_regions(self) -> tuple[WordRegion, ...]:
+        """Return the bounding box of every rendered English word."""
+        regions: list[WordRegion] = []
+        for index, token in enumerate(self._tag_tokens):
+            first = self.bbox(f"word{index}.first")
+            last = self.bbox(f"word{index}.last")
+            if first and last:
+                left, top = first[0], first[1]
+                right, bottom = last[0] + last[2], last[1] + last[3]
+                regions.append(WordRegion(token, left, top, right - left, bottom - top))
+        return tuple(regions)
+
+    def hit_test(self, x: int, y: int) -> str | None:
+        """Return the token whose rendered rectangle contains (x, y)."""
+        for region in self.word_regions():
+            if region.x <= x <= region.x + region.width and region.y <= y <= region.y + region.height:
+                return region.text
+        return None
+
     def _on_click(self, event):
-        for tag in self.tag_names(f"@{event.x},{event.y}"):
-            if tag.startswith("word") and tag[4:].isdigit():
-                idx = int(tag[4:])
-                if 0 <= idx < len(self._tag_tokens):
-                    self._on_token(self._tag_tokens[idx], self._context, event.x_root, event.y_root)
-                    return "break"
-        self._on_token(None, self._context, event.x_root, event.y_root)
+        token = self.hit_test(event.x, event.y)
+        self._on_token(token, self._context, event.x_root, event.y_root)
         return "break"
 
 
@@ -367,22 +393,33 @@ class WordBubbleManager:
         shell = tk.Frame(popup, bg="#FFFFFF", highlightbackground="#B8C5CC", highlightthickness=1)
         shell.pack(padx=1, pady=1)
         shell.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
-        heading = tk.Label(shell, text=definition.word, bg="#FFFFFF", fg="#1B2733", font="LexiBodyBold", anchor="w")
-        heading.pack(fill=tk.X, padx=12, pady=(9, 1))
+
+        # Mirror the study card: word, phonetic, part of speech, meaning, examples.
+        heading = tk.Label(shell, text=definition.word, bg="#FFFFFF", fg="#1B2733", font="LexiWord", anchor="w")
+        heading.pack(fill=tk.X, padx=12, pady=(8, 0))
         heading.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        if definition.phonetic:
+            phonetic = tk.Label(shell, text=definition.phonetic, bg="#FFFFFF", fg="#65727E", font="LexiBody", anchor="w")
+            phonetic.pack(fill=tk.X, padx=12)
+            phonetic.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
         part_of_speech = tk.Label(shell, text=definition.part_of_speech, bg="#FFFFFF", fg="#16866F", font="LexiSmall", anchor="w")
         part_of_speech.pack(fill=tk.X, padx=12)
         part_of_speech.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
         meaning = tk.Label(shell, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBody", wraplength=320, justify="left", anchor="w")
-        meaning.pack(fill=tk.X, padx=12, pady=(2, 7))
+        meaning.pack(fill=tk.X, padx=12, pady=(1, 3))
         meaning.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
-        for example in definition.examples[:3]:
+
+        divider = tk.Frame(shell, bg="#E4EAED", height=1)
+        divider.pack(fill=tk.X, padx=12, pady=(2, 4))
+
+        example_pairs = definition.example_pairs or tuple((example, "") for example in definition.examples[:3])
+        for english, chinese in example_pairs[:3]:
             sentence = WordClickableText(
                 shell,
                 on_token=lambda token, ctx, x_root, y_root, d=depth: self.open_from_token(
                     d, token, ctx, x_root, y_root,
                 ),
-                context=example,
+                context=english,
                 bg="#FFFFFF",
                 fg="#1B2733",
                 font="LexiSmall",
@@ -392,8 +429,12 @@ class WordBubbleManager:
                 pady=4,
                 cursor="hand2",
             )
-            sentence.set_sentence(example)
+            sentence.set_sentence(english)
             sentence.pack(fill=tk.X)
+            if chinese:
+                translation = tk.Label(shell, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=320, justify="left", anchor="w")
+                translation.pack(fill=tk.X, padx=12, pady=(0, 3))
+                translation.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
         popup.update_idletasks()
         width, height = popup.winfo_width(), popup.winfo_height()
         above = y_root - height - 8

@@ -21,6 +21,7 @@ data class BubbleDefinition(
     val partOfSpeech: String,
     val meaning: String,
     val examples: List<String>,
+    val examplePairs: List<Pair<String, String>> = emptyList(),
     val known: Boolean = true,
 )
 
@@ -39,6 +40,7 @@ fun resolveBubbleDefinition(
             partOfSpeech = "未收录",
             meaning = "词库暂无中文释义",
             examples = if (context.isEmpty()) emptyList() else listOf(context),
+            examplePairs = if (context.isEmpty()) emptyList() else listOf(context to ""),
             known = false,
         )
     }
@@ -50,6 +52,7 @@ fun resolveBubbleDefinition(
         partOfSpeech = parsed.partOfSpeech.ifBlank { "未标注" },
         meaning = parsed.chineseMeaning.ifBlank { entry.meaning },
         examples = entry.examples.take(3).map { it.english },
+        examplePairs = entry.examples.take(3).map { it.english to it.chinese },
     )
 }
 

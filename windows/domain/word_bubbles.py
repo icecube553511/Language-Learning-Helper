@@ -36,6 +36,8 @@ class BubbleDefinition:
     meaning: str
     examples: tuple[str, ...]
     known: bool = True
+    phonetic: str = ""
+    example_pairs: tuple[tuple[str, str], ...] = ()
 
 
 def resolve_bubble_definition(
@@ -54,6 +56,7 @@ def resolve_bubble_definition(
             meaning="词库暂无中文释义",
             examples=(context,) if context else (),
             known=False,
+            example_pairs=((context, ""),) if context else (),
         )
     part_of_speech, chinese_meaning = parse_meaning(entry.meaning)
     return BubbleDefinition(
@@ -63,6 +66,8 @@ def resolve_bubble_definition(
         meaning=chinese_meaning or entry.meaning,
         examples=tuple(example.english for example in entry.examples[:3]),
         known=True,
+        phonetic=entry.phonetic,
+        example_pairs=tuple((example.english, example.chinese) for example in entry.examples[:3]),
     )
 
 

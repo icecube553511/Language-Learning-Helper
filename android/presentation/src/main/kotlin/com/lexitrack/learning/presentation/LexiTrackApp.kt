@@ -545,13 +545,24 @@ private fun WordBubbleOverlay(
                             Text(bubble.data.partOfSpeech, style = MaterialTheme.typography.labelMedium, color = BusinessAmber)
                         }
                         Text(bubble.data.meaning, style = MaterialTheme.typography.bodyMedium, color = Ink)
-                        bubble.data.examples.forEach { sentence ->
+                        val examplePairs = bubble.data.examplePairs.ifEmpty {
+                            bubble.data.examples.map { it to "" }
+                        }
+                        examplePairs.forEach { (english, chinese) ->
                             InteractiveSentence(
-                                text = sentence,
+                                text = english,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MutedInk,
                                 modifier = Modifier.fillMaxWidth(),
                             )
+                            if (chinese.isNotBlank()) {
+                                Text(
+                                    text = chinese,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Ink,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                         }
                     }
                 }
