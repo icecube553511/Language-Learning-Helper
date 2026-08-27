@@ -386,36 +386,42 @@ class WordBubbleManager:
                 window.destroy()
 
     def _create_popup(self, definition: BubbleDefinition, depth: int, x_root: int, y_root: int) -> None:
+        # A proper, titled window (not an overrideredirect bubble) so it can be
+        # moved/closed and stays above the main window; styled like the
+        # word-learning reminder card.
         popup = tk.Toplevel(self.root)
-        popup.overrideredirect(True)
-        popup.configure(bg="#B8C5CC")
+        popup.title("LexiTrack 词程 · 单词释义")
+        popup.configure(bg="#F7F9FA")
         popup.transient(self.root.winfo_toplevel())
-        shell = tk.Frame(popup, bg="#FFFFFF", highlightbackground="#B8C5CC", highlightthickness=1)
-        shell.pack(padx=1, pady=1)
-        shell.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
 
-        # Mirror the study card: word, phonetic, part of speech, meaning, examples.
-        heading = tk.Label(shell, text=definition.word, bg="#FFFFFF", fg="#1B2733", font="LexiWord", anchor="w")
-        heading.pack(fill=tk.X, padx=12, pady=(8, 0))
+        header = tk.Frame(popup, bg="#17212B")
+        header.pack(fill=tk.X)
+        tk.Label(header, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(anchor="w", padx=24, pady=(16, 2))
+        tk.Label(header, text="点击例句中的英文单词可继续查看", bg="#17212B", fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=24, pady=(0, 14))
+
+        body = tk.Frame(popup, bg="#FFFFFF")
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=14)
+        body.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+
+        heading = tk.Label(body, text=definition.word, bg="#FFFFFF", fg="#1B2733", font="LexiWord", anchor="w")
+        heading.pack(fill=tk.X, anchor="w")
         heading.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
         if definition.phonetic:
-            phonetic = tk.Label(shell, text=definition.phonetic, bg="#FFFFFF", fg="#65727E", font="LexiBody", anchor="w")
-            phonetic.pack(fill=tk.X, padx=12)
+            phonetic = tk.Label(body, text=definition.phonetic, bg="#FFFFFF", fg="#65727E", font="LexiBody", anchor="w")
+            phonetic.pack(fill=tk.X, anchor="w", pady=(0, 2))
             phonetic.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
-        part_of_speech = tk.Label(shell, text=definition.part_of_speech, bg="#FFFFFF", fg="#16866F", font="LexiSmall", anchor="w")
-        part_of_speech.pack(fill=tk.X, padx=12)
+        part_of_speech = tk.Label(body, text=definition.part_of_speech, bg="#FFFFFF", fg="#16866F", font="LexiSmall", anchor="w")
+        part_of_speech.pack(fill=tk.X, anchor="w")
         part_of_speech.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
-        meaning = tk.Label(shell, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBody", wraplength=320, justify="left", anchor="w")
-        meaning.pack(fill=tk.X, padx=12, pady=(1, 3))
+        meaning = tk.Label(body, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBodyBold", wraplength=520, justify="left", anchor="w")
+        meaning.pack(fill=tk.X, anchor="w", pady=(4, 10))
         meaning.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
-
-        divider = tk.Frame(shell, bg="#E4EAED", height=1)
-        divider.pack(fill=tk.X, padx=12, pady=(2, 4))
+        tk.Label(body, text="双语例句", bg="#FFFFFF", fg="#65727E", font="LexiSmall", anchor="w").pack(anchor="w", pady=(0, 2))
 
         example_pairs = definition.example_pairs or tuple((example, "") for example in definition.examples[:3])
         for english, chinese in example_pairs[:3]:
             sentence = WordClickableText(
-                shell,
+                body,
                 on_token=lambda token, ctx, x_root, y_root, d=depth: self.open_from_token(
                     d, token, ctx, x_root, y_root,
                 ),
@@ -425,16 +431,36 @@ class WordBubbleManager:
                 font="LexiSmall",
                 justify="left",
                 wrap="word",
-                padx=12,
-                pady=4,
+                padx=0,
+                pady=2,
                 cursor="hand2",
             )
             sentence.set_sentence(english)
             sentence.pack(fill=tk.X)
             if chinese:
-                translation = tk.Label(shell, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=320, justify="left", anchor="w")
-                translation.pack(fill=tk.X, padx=12, pady=(0, 3))
+                translation = tk.Label(body, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=520, justify="left", anchor="w")
+                translation.pack(fill=tk.X, anchor="w", pady=(0, 3))
                 translation.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+
+        actions = tk.Frame(popup, bg="#F7F9FA")
+        actions.pack(fill=tk.X, side=tk.BOTTOM)
+        actions_inner = tk.Frame(actions, bg="#F7F9FA")
+        actions_inner.pack(fill=tk.X, padx=24, pady=14)
+        close = tk.Button(
+            actions_inner,
+            text="知道了",
+            command=lambda d=depth: self._close_after(d),
+            bg="#16866F",
+            fg="#FFFFFF",
+            activebackground="#12705C",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            bd=0,
+            font="LexiBody",
+            padx=18,
+            pady=7,
+        )
+        close.pack(side=tk.RIGHT)
         popup.update_idletasks()
         width, height = popup.winfo_width(), popup.winfo_height()
         above = y_root - height - 8
@@ -443,6 +469,7 @@ class WordBubbleManager:
         y = above if above >= 4 else min(below, screen_height - height - 4)
         x = max(4, min(x_root - width // 2, self.root.winfo_screenwidth() - width - 8))
         popup.geometry(f"+{x}+{max(4, y)}")
+        popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_after(d))
         self._windows.append(popup)
 
     def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
