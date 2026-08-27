@@ -393,6 +393,8 @@ class WordBubbleManager:
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
         popup.transient(self.root.winfo_toplevel())
+        popup.minsize(460, 320)
+        popup.geometry("580x460")
 
         header = tk.Frame(popup, bg="#17212B")
         header.pack(fill=tk.X)
