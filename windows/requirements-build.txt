@@ -1,1 +1,2 @@
 pyinstaller==6.21.0
+-r requirements-export.txt

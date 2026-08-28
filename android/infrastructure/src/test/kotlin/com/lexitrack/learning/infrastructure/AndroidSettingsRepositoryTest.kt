@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.lexitrack.learning.application.DEFAULT_REVIEW_BATCH_SIZE
 import com.lexitrack.learning.application.STUDY_ORDER_RANDOM
+import com.lexitrack.learning.domain.MarkMode
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -83,6 +84,14 @@ class AndroidSettingsRepositoryTest {
         assertEquals(setOf("CET4", "CET6"), loaded.studyLevels)
         assertEquals(setOf("CET6"), loaded.reviewLevels)
         assertEquals(setOf("CET4", "CUSTOM"), loaded.reminderLevels)
+    }
+
+    @Test
+    fun markModeDefaultsToAskAndPersists() = runBlocking {
+        val repository = AndroidSettingsRepository(context)
+        assertEquals(MarkMode.ASK, repository.settings.value.markMode)
+        repository.setMarkMode(MarkMode.NEVER)
+        assertEquals(MarkMode.NEVER, AndroidSettingsRepository(context).settings.value.markMode)
     }
 
     private fun clearPreferences() {

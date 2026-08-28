@@ -9,6 +9,7 @@ import com.lexitrack.learning.application.MIN_REMINDER_INTERVAL_MINUTES
 import com.lexitrack.learning.application.STUDY_ORDER_RANDOM
 import com.lexitrack.learning.application.SUPPORTED_VOCABULARY_LEVELS
 import com.lexitrack.learning.application.UserSettings
+import com.lexitrack.learning.domain.MarkMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -72,6 +73,11 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         _settings.value = _settings.value.copy(reminderIntervalMinutes = safeMinutes)
     }
 
+    override suspend fun setMarkMode(mode: MarkMode) {
+        preferences.edit().putString(KEY_MARK_MODE, mode.name).apply()
+        _settings.value = _settings.value.copy(markMode = mode)
+    }
+
     private fun loadSettings() = UserSettings(
         fontScale = preferences.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.9f, 1.4f),
         reviewBatchSize = preferences
@@ -89,6 +95,8 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         reminderIntervalMinutes = preferences
             .getFloat(KEY_REMINDER_INTERVAL_MINUTES, DEFAULT_REMINDER_INTERVAL_MINUTES)
             .coerceIn(MIN_REMINDER_INTERVAL_MINUTES, MAX_REMINDER_INTERVAL_MINUTES),
+        markMode = runCatching { MarkMode.valueOf(preferences.getString(KEY_MARK_MODE, MarkMode.ASK.name) ?: MarkMode.ASK.name) }
+            .getOrDefault(MarkMode.ASK),
     )
 
     private companion object {
@@ -101,5 +109,6 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         const val KEY_REMINDER_LEVELS = "reminder_levels"
         const val KEY_REMINDER_ENABLED = "reminder_enabled"
         const val KEY_REMINDER_INTERVAL_MINUTES = "reminder_interval_minutes"
+        const val KEY_MARK_MODE = "dictation_mark_mode"
     }
 }

@@ -2,7 +2,9 @@ package com.lexitrack.learning.presentation
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,15 +19,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
@@ -58,9 +64,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,30 +80,138 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lexitrack.learning.application.DashboardSnapshot
+import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.application.ForecastDay
+import com.lexitrack.learning.domain.DictationDocument
+import com.lexitrack.learning.domain.DictationDocumentOptions
+import com.lexitrack.learning.domain.DictationFormat
+import com.lexitrack.learning.domain.DictationMissingField
 import com.lexitrack.learning.domain.ImportReport
 import com.lexitrack.learning.domain.ImportRowStatus
+import com.lexitrack.learning.domain.MarkMode
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.VocabularyEntry
+import com.lexitrack.learning.domain.BubbleDefinition
+import com.lexitrack.learning.domain.BubbleStack
+import com.lexitrack.learning.domain.tokenizeEnglish
 import java.time.format.DateTimeFormatter
 import kotlin.math.exp
 import kotlin.math.max
+
+private data class WordBubbleState(val data: BubbleDefinition, val anchor: IntRect)
+
+const val DICTATION_DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+const val DICTATION_PDF_MIME_TYPE = "application/pdf"
+
+data class DictationSaveSpec(val fileName: String, val mimeType: String)
+
+fun dictationSaveSpec(output: ExportedDictation): DictationSaveSpec {
+    val mimeType = output.mimeType.substringBefore(';').trim().lowercase()
+    val extension = when (mimeType) {
+        DICTATION_DOCX_MIME_TYPE -> "docx"
+        DICTATION_PDF_MIME_TYPE -> "pdf"
+        else -> error("不支持的默写文档格式：${output.mimeType}")
+    }
+    val stem = output.fileName.substringBeforeLast('.').ifBlank { "dictation" }
+    return DictationSaveSpec("$stem.$extension", mimeType)
+}
+
+private val DictationWordColumnWidth = 116.dp
+private val DictationMeaningColumnWidth = 210.dp
+private val DictationTagsColumnWidth = 156.dp
+private val DictationStatusColumnWidth = 84.dp
+private val DictationSelectionColumnWidth = 72.dp
+private val DictationTableWidth = DictationWordColumnWidth + DictationMeaningColumnWidth +
+    DictationTagsColumnWidth + DictationStatusColumnWidth + DictationSelectionColumnWidth
+
+private val LocalOpenWordBubble = staticCompositionLocalOf<(String, String, Int, IntRect) -> Unit> { { _, _, _, _ -> } }
+private val LocalBubbleDepth = staticCompositionLocalOf { -1 }
+private val LocalDismissWordBubbles = staticCompositionLocalOf<() -> Unit> { {} }
 
 @Composable
 fun LexiTrackApp(
     viewModel: MainViewModel,
     onChooseCsv: () -> Unit,
     onReminderSettingsRequested: (Boolean, Float) -> Unit = { _, _ -> },
+    onSaveDictation: (List<ExportedDictation>, (Int) -> Unit) -> Unit = { _, _ -> },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var labelEditorOpen by remember { mutableStateOf(false) }
+    var dictationPreviewOpen by remember { mutableStateOf(false) }
+    var dictationMarkOpen by remember { mutableStateOf(false) }
+    val bubbles = remember { mutableStateListOf<WordBubbleState>() }
+    var bubbleStack by remember { mutableStateOf(BubbleStack()) }
+    val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
+        val definition = viewModel.lookupWordBubble(token, contextExample)
+        val next = if (depth < 0) {
+            BubbleStack().openRoot(definition)
+        } else {
+            bubbleStack.openChild(depth, definition)
+        }
+        if (next != bubbleStack) {
+            bubbleStack = next
+            val previousAnchors = bubbles.map { it.anchor }
+            bubbles.clear()
+            next.frames.forEachIndexed { index, frame ->
+                bubbles += WordBubbleState(
+                    frame.definition,
+                    if (index == next.frames.lastIndex) anchor else previousAnchors.getOrElse(index) { anchor },
+                )
+            }
+        }
+    }
+    LaunchedEffect(state.section, state.currentCard?.id, state.reviewCard?.id, state.wordReminderCard?.id) {
+        bubbleStack = BubbleStack()
+        bubbles.clear()
+    }
     LexiTrackTheme(state.fontScale) {
+        CompositionLocalProvider(
+            LocalOpenWordBubble provides openBubble,
+            LocalDismissWordBubbles provides {
+                bubbles.clear()
+                bubbleStack = BubbleStack()
+            },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Final)
+                                if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
+                                    bubbles.clear()
+                                    bubbleStack = BubbleStack()
+                                }
+                            }
+                        }
+                    },
+            ) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = { AppHeader() },
@@ -136,6 +254,14 @@ fun LexiTrackApp(
                         onRate = viewModel::rateReviewCurrent,
                         onLevelsChange = viewModel::setReviewLevels,
                     )
+                    MainSection.DICTATION -> DictationScreen(
+                        state = state,
+                        onToggleSelection = viewModel::toggleDictationSelection,
+                        onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
+                            viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
+                            dictationPreviewOpen = true
+                        },
+                    )
                     MainSection.LIBRARY -> LibraryScreen(
                         state = state,
                         onQueryChange = viewModel::updateSearch,
@@ -162,6 +288,8 @@ fun LexiTrackApp(
                         },
                         onReminderLevelsChange = viewModel::setReminderLevels,
                         onPreviewReminder = viewModel::previewWordReminder,
+                        markMode = state.dictationMarkMode,
+                        onMarkModeChange = viewModel::setMarkMode,
                     )
                 }
             }
@@ -174,9 +302,42 @@ fun LexiTrackApp(
             VocabularyLabelDialog(
                 selectionCount = state.selectedVocabularyIds.size,
                 onDismiss = { labelEditorOpen = false },
-                onSave = { levels, tags ->
-                    viewModel.updateSelectedVocabularyLabels(levels, tags)
+                onSave = { add, remove ->
+                    viewModel.updateSelectedVocabularyTags(add, remove)
                     labelEditorOpen = false
+                },
+            )
+        }
+        val dictationDocument = state.dictationDocument
+        if (dictationPreviewOpen && dictationDocument != null) {
+            DictationPreviewDialog(
+                document = dictationDocument,
+                preparing = state.dictationPreparing,
+                exports = state.dictationExports,
+                onDismiss = { dictationPreviewOpen = false },
+                onExport = {
+                    onSaveDictation(state.dictationExports) { savedCount ->
+                        if (savedCount > 0) {
+                            dictationPreviewOpen = false
+                            when (state.dictationMarkMode) {
+                                MarkMode.ALWAYS -> viewModel.finishDictationMark(mark = true, dontAskAgain = false)
+                                MarkMode.NEVER -> Unit
+                                MarkMode.ASK -> dictationMarkOpen = true
+                            }
+                        }
+                    }
+                },
+            )
+        }
+        if (dictationMarkOpen) {
+            DictationMarkDialog(
+                onDismiss = {
+                    dictationMarkOpen = false
+                    viewModel.finishDictationMark(mark = false, dontAskAgain = false)
+                },
+                onFinish = { mark, dontAskAgain ->
+                    dictationMarkOpen = false
+                    viewModel.finishDictationMark(mark, dontAskAgain)
                 },
             )
         }
@@ -216,11 +377,14 @@ fun LexiTrackApp(
                         Text(card.meaning, style = MaterialTheme.typography.titleMedium, color = Ink)
                         HorizontalDivider()
                         card.examples.take(3).forEachIndexed { index, example ->
-                            Text(
-                                "${index + 1}. ${example.english}\n${example.chinese}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Ink,
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                InteractiveSentence(
+                                    "${index + 1}. ${example.english}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Ink,
+                                )
+                                Text(example.chinese, style = MaterialTheme.typography.bodyMedium, color = Ink)
+                            }
                         }
                         if (card.mnemonic.isNotBlank()) {
                             Text("助记  ${card.mnemonic}", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
@@ -232,6 +396,177 @@ fun LexiTrackApp(
                 },
                 dismissButton = null,
             )
+        }
+        WordBubbleOverlay(
+            bubbles = bubbles,
+            onDismissAll = {
+                bubbles.clear()
+                bubbleStack = BubbleStack()
+            },
+            onCloseAfter = { depth ->
+                bubbleStack = bubbleStack.closeAfter(depth)
+                while (bubbles.size > depth + 1) bubbles.removeAt(bubbles.lastIndex)
+            },
+        )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InteractiveSentence(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.labelMedium,
+    color: Color = Ink,
+    textAlign: TextAlign? = null,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
+    val openBubble = LocalOpenWordBubble.current
+    val depth = LocalBubbleDepth.current
+    val dismissBubbles = LocalDismissWordBubbles.current
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var bounds by remember { mutableStateOf(IntRect.Zero) }
+    val annotated = remember(text, color) {
+        buildAnnotatedString {
+            var cursor = 0
+            tokenizeEnglish(text).forEach { token ->
+                append(text.substring(cursor, token.start))
+                pushStringAnnotation("word", token.text)
+                withStyle(SpanStyle(color = color)) { append(token.text) }
+                pop()
+                cursor = token.end
+            }
+            append(text.substring(cursor))
+        }
+    }
+    Text(
+        text = annotated,
+        modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                val rect = coordinates.boundsInWindow()
+                bounds = IntRect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt())
+            }
+            .pointerInput(annotated, bounds) {
+                detectTapGestures(
+                    onTap = tap@{ offset ->
+                        val textLayout = layout ?: run {
+                            dismissBubbles()
+                            return@tap
+                        }
+                        val characterOffset = textLayout.getOffsetForPosition(offset)
+                        val hit = annotated.getStringAnnotations("word", characterOffset, characterOffset + 1).firstOrNull()
+                        if (hit != null && characterOffset < annotated.length && textLayout.getBoundingBox(characterOffset).contains(offset)) {
+                            val tokenBoxes = (hit.start until hit.end).map(textLayout::getBoundingBox)
+                            val tokenBounds = IntRect(
+                                left = bounds.left + tokenBoxes.minOf { it.left }.toInt(),
+                                top = bounds.top + tokenBoxes.minOf { it.top }.toInt(),
+                                right = bounds.left + tokenBoxes.maxOf { it.right }.toInt(),
+                                bottom = bounds.top + tokenBoxes.maxOf { it.bottom }.toInt(),
+                            )
+                            openBubble(hit.item, text, depth, tokenBounds)
+                        } else {
+                            dismissBubbles()
+                        }
+                    },
+                )
+            },
+        style = style,
+        color = color,
+        textAlign = textAlign,
+        maxLines = maxLines,
+        overflow = overflow,
+        onTextLayout = { layout = it },
+    )
+}
+
+@Composable
+private fun WordBubbleOverlay(
+    bubbles: MutableList<WordBubbleState>,
+    onDismissAll: () -> Unit,
+    onCloseAfter: (Int) -> Unit,
+) {
+    bubbles.toList().forEachIndexed { index, bubble ->
+        val positionProvider: PopupPositionProvider = remember(bubble.anchor) {
+            object : PopupPositionProvider {
+                override fun calculatePosition(
+                    anchorBounds: IntRect,
+                    windowSize: IntSize,
+                    layoutDirection: LayoutDirection,
+                    popupContentSize: IntSize,
+                ): IntOffset {
+                    val centeredX = bubble.anchor.left + (bubble.anchor.width - popupContentSize.width) / 2
+                    val x = centeredX.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                    val below = bubble.anchor.bottom + 6
+                    val above = bubble.anchor.top - popupContentSize.height - 6
+                    val y = if (below + popupContentSize.height <= windowSize.height) below else above.coerceAtLeast(0)
+                    return IntOffset(x, y)
+                }
+            }
+        }
+        Popup(
+            popupPositionProvider = positionProvider,
+            onDismissRequest = onDismissAll,
+            properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = false),
+        ) {
+            // Root content uses -1; a bubble's depth is its zero-based stack index.
+            CompositionLocalProvider(
+                LocalBubbleDepth provides index,
+                LocalDismissWordBubbles provides { onCloseAfter(index) },
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .widthIn(min = 220.dp, max = 360.dp)
+                        .pointerInput(index) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Final)
+                                    if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
+                                        onCloseAfter(index)
+                                    }
+                                }
+                            }
+                        },
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(8.dp),
+                    shadowElevation = 8.dp,
+                    border = CardDefaults.outlinedCardBorder(),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text(bubble.data.word, style = MaterialTheme.typography.titleLarge, color = Ink)
+                        if (bubble.data.phonetic.isNotBlank()) {
+                            Text(bubble.data.phonetic, style = MaterialTheme.typography.labelMedium, color = BrandTeal)
+                        }
+                        if (bubble.data.partOfSpeech.isNotBlank()) {
+                            Text(bubble.data.partOfSpeech, style = MaterialTheme.typography.labelMedium, color = BusinessAmber)
+                        }
+                        Text(bubble.data.meaning, style = MaterialTheme.typography.bodyMedium, color = Ink)
+                        val examplePairs = bubble.data.examplePairs.ifEmpty {
+                            bubble.data.examples.map { it to "" }
+                        }
+                        examplePairs.forEach { (english, chinese) ->
+                            InteractiveSentence(
+                                text = english,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MutedInk,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            if (chinese.isNotBlank()) {
+                                Text(
+                                    text = chinese,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Ink,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -273,6 +608,7 @@ private fun AppNavigation(selected: MainSection, dueCount: Int, onSelected: (Mai
         NavigationItem(MainSection.DASHBOARD, "总览", Icons.Outlined.Home),
         NavigationItem(MainSection.STUDY, "学习", Icons.Outlined.School),
         NavigationItem(MainSection.REVIEW, "复习", Icons.Outlined.Refresh),
+        NavigationItem(MainSection.DICTATION, "默写", Icons.Outlined.Edit),
         NavigationItem(MainSection.LIBRARY, "词库", Icons.AutoMirrored.Outlined.List),
         NavigationItem(MainSection.INSIGHTS, "趋势", Icons.Outlined.BarChart),
         NavigationItem(MainSection.SETTINGS, "设置", Icons.Outlined.Settings),
@@ -633,7 +969,7 @@ private fun RevealedCardContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text(
+                    InteractiveSentence(
                         "${index + 1}. ${example.english}",
                         modifier = Modifier.fillMaxWidth(),
                         style = MaterialTheme.typography.labelMedium,
@@ -687,6 +1023,493 @@ private fun RatingButton(label: String, color: Color, modifier: Modifier, onClic
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
+}
+
+@Composable
+private fun DictationScreen(
+    state: MainUiState,
+    onToggleSelection: (String) -> Unit,
+    onBuild: (DictationDocumentOptions, Int, Set<String>, Boolean, Boolean, String) -> Unit,
+) {
+    var formats by remember { mutableStateOf(setOf(DictationFormat.DOCX, DictationFormat.PDF)) }
+    var fontSizeText by remember { mutableStateOf("12") }
+    var missingFields by remember { mutableStateOf(setOf(DictationMissingField.WORD)) }
+    var showInitial by remember { mutableStateOf(false) }
+    var includeExamples by remember { mutableStateOf(false) }
+    var customExample by remember { mutableStateOf("") }
+    var selectedLevels by remember { mutableStateOf(setOf("CET4", "CET6", "CUSTOM")) }
+    var includeEvaluated by remember { mutableStateOf(false) }
+    var countText by remember { mutableStateOf("10") }
+    var manual by remember { mutableStateOf(false) }
+    var countError by remember { mutableStateOf(false) }
+    var confirmationRequested by remember { mutableStateOf<Int?>(null) }
+
+    val effectiveLevels = if (selectedLevels.isEmpty()) state.availableLevels.toSet() else selectedLevels
+    val candidateEntries = state.dictationEntries.filter { entry ->
+        (effectiveLevels.isEmpty() || entry.levels.any { it.uppercase() in effectiveLevels }) &&
+            (includeEvaluated || entry.tags.none { it.equals("evaluated", ignoreCase = true) })
+    }
+    val selectedCandidateIds = state.dictationSelectedIds.intersect(candidateEntries.mapTo(mutableSetOf()) { it.id })
+    val selectedCount = selectedCandidateIds.size
+
+    fun submit() {
+        val count = countText.toIntOrNull()
+        if (count == null || count < 1) {
+            countError = true
+            return
+        }
+        countError = false
+        if (manual && selectedCount in 1 until count) {
+            confirmationRequested = count
+            return
+        }
+        onBuild(
+            DictationDocumentOptions(
+                formats = formats,
+                fontSizePt = fontSizeText.toIntOrNull()?.coerceIn(8, 24) ?: 12,
+                missingFields = missingFields,
+                showInitial = showInitial,
+                includeExamples = includeExamples,
+            ),
+            count,
+            effectiveLevels,
+            includeEvaluated,
+            manual,
+            customExample,
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item { PageHeader("默写", "生成可预览、可打印的 A4 默写页") }
+        item {
+            DictationOptionsPanel(
+                formats = formats,
+                onFormatsChange = { formats = it },
+                fontSizeText = fontSizeText,
+                onFontSizeChange = { fontSizeText = it.filter(Char::isDigit) },
+                missingFields = missingFields,
+                onMissingFieldsChange = { missingFields = it },
+                showInitial = showInitial,
+                onShowInitialChange = { showInitial = it },
+                includeExamples = includeExamples,
+                onIncludeExamplesChange = { includeExamples = it },
+                customExample = customExample,
+                onCustomExampleChange = { customExample = it },
+                selectedLevels = selectedLevels,
+                availableLevels = state.availableLevels,
+                onLevelsChange = { selectedLevels = it },
+                includeEvaluated = includeEvaluated,
+                onIncludeEvaluatedChange = { includeEvaluated = it },
+                countText = countText,
+                onCountChange = { countText = it.filter(Char::isDigit); countError = false },
+                countError = countError,
+                manual = manual,
+                onManualChange = { manual = it },
+                preparing = state.dictationPreparing,
+                onSubmit = ::submit,
+            )
+        }
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(8.dp),
+                border = CardDefaults.outlinedCardBorder(),
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("手选词条", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
+                        Text(
+                            if (manual) "$selectedCount / ${countText.toIntOrNull() ?: 0}" else "随机模式",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = BrandTeal,
+                        )
+                    }
+                    Text(
+                        if (manual) "仅使用勾选的词条；数量不足时会再次确认。" else "随机模式会在筛选结果中无重复取样。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MutedInk,
+                    )
+                    if (manual) {
+                        DictationSelectionTable(
+                            entries = candidateEntries,
+                            selectedIds = state.dictationSelectedIds,
+                            onToggleSelection = onToggleSelection,
+                        )
+                    }
+                    if (candidateEntries.isEmpty()) {
+                        Text("当前筛选没有可用词条。", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
+                    }
+                }
+            }
+        }
+    }
+
+    confirmationRequested?.let { requestedCount ->
+        AlertDialog(
+            onDismissRequest = { confirmationRequested = null },
+            title = { Text("确认选择") },
+            text = { Text("当前仅选择了$selectedCount/$requestedCount，是否确定选择") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmationRequested = null
+                        val count = requestedCount
+                        onBuild(
+                            DictationDocumentOptions(
+                                formats = formats,
+                                fontSizePt = fontSizeText.toIntOrNull()?.coerceIn(8, 24) ?: 12,
+                                missingFields = missingFields,
+                                showInitial = showInitial,
+                                includeExamples = includeExamples,
+                            ),
+                            count,
+                            effectiveLevels,
+                            includeEvaluated,
+                            true,
+                            customExample,
+                        )
+                    },
+                ) { Text("确定选择") }
+            },
+            dismissButton = { TextButton(onClick = { confirmationRequested = null }) { Text("返回选择") } },
+            shape = RoundedCornerShape(8.dp),
+        )
+    }
+}
+
+@Composable
+private fun DictationSelectionTable(
+    entries: List<VocabularyEntry>,
+    selectedIds: Set<String>,
+    onToggleSelection: (String) -> Unit,
+) {
+    val rows = remember(entries) { entries.map(VocabularyEntry::toDictationSelectionRow) }
+    val tableScrollState = rememberScrollState()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(tableScrollState),
+    ) {
+        Column(modifier = Modifier.width(DictationTableWidth)) {
+            DictationSelectionTableHeader()
+            HorizontalDivider()
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 330.dp)) {
+                items(rows, key = { it.id }) { row ->
+                    DictationSelectionTableRow(
+                        row = row,
+                        selected = row.id in selectedIds,
+                        onToggleSelection = { onToggleSelection(row.id) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictationSelectionTableHeader() {
+    Row(
+        modifier = Modifier
+            .width(DictationTableWidth)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DictationTableText("单词", DictationWordColumnWidth, FontWeight.SemiBold)
+        DictationTableText("中文释义", DictationMeaningColumnWidth, FontWeight.SemiBold)
+        DictationTableText("标签", DictationTagsColumnWidth, FontWeight.SemiBold)
+        DictationTableText("考察状态", DictationStatusColumnWidth, FontWeight.SemiBold, TextAlign.Center)
+        DictationTableText("选择", DictationSelectionColumnWidth, FontWeight.SemiBold, TextAlign.Center)
+    }
+}
+
+@Composable
+private fun DictationSelectionTableRow(
+    row: DictationSelectionRow,
+    selected: Boolean,
+    onToggleSelection: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .width(DictationTableWidth)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DictationTableText(row.word, DictationWordColumnWidth, FontWeight.Medium)
+        DictationTableText(row.meaning, DictationMeaningColumnWidth)
+        DictationTableText(row.tagsText, DictationTagsColumnWidth, color = BrandTeal)
+        DictationTableText(
+            row.evaluationStatus,
+            DictationStatusColumnWidth,
+            color = if (row.isEvaluated) Color.Black else BusinessRed,
+            textAlign = TextAlign.Center,
+        )
+        Box(modifier = Modifier.width(DictationSelectionColumnWidth), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .size(60.dp)
+                    .toggleable(
+                        value = selected,
+                        role = Role.Checkbox,
+                        onValueChange = { onToggleSelection() },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = null,
+                    modifier = Modifier.size(48.dp).scale(1.25f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictationTableText(
+    text: String,
+    width: androidx.compose.ui.unit.Dp,
+    fontWeight: FontWeight? = null,
+    textAlign: TextAlign = TextAlign.Start,
+    color: Color = Ink,
+) {
+    Text(
+        text = text,
+        modifier = Modifier.width(width).padding(horizontal = 8.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = color,
+        fontWeight = fontWeight,
+        textAlign = textAlign,
+    )
+}
+
+@Composable
+private fun DictationOptionsPanel(
+    formats: Set<DictationFormat>,
+    onFormatsChange: (Set<DictationFormat>) -> Unit,
+    fontSizeText: String,
+    onFontSizeChange: (String) -> Unit,
+    missingFields: Set<DictationMissingField>,
+    onMissingFieldsChange: (Set<DictationMissingField>) -> Unit,
+    showInitial: Boolean,
+    onShowInitialChange: (Boolean) -> Unit,
+    includeExamples: Boolean,
+    onIncludeExamplesChange: (Boolean) -> Unit,
+    customExample: String,
+    onCustomExampleChange: (String) -> Unit,
+    selectedLevels: Set<String>,
+    availableLevels: List<String>,
+    onLevelsChange: (Set<String>) -> Unit,
+    includeEvaluated: Boolean,
+    onIncludeEvaluatedChange: (Boolean) -> Unit,
+    countText: String,
+    onCountChange: (String) -> Unit,
+    countError: Boolean,
+    manual: Boolean,
+    onManualChange: (Boolean) -> Unit,
+    preparing: Boolean,
+    onSubmit: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        border = CardDefaults.outlinedCardBorder(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("默写设置", style = MaterialTheme.typography.titleMedium, color = Ink)
+            ChoiceRow(
+                title = "输出格式",
+                choices = listOf(DictationFormat.DOCX to "Word", DictationFormat.PDF to "PDF"),
+                selected = formats,
+                onChange = { format -> onFormatsChange(if (format in formats && formats.size > 1) formats - format else formats + format) },
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("字号", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                OutlinedTextField(
+                    value = fontSizeText,
+                    onValueChange = onFontSizeChange,
+                    modifier = Modifier.width(92.dp),
+                    singleLine = true,
+                    suffix = { Text("pt") },
+                    isError = fontSizeText.toIntOrNull()?.let { it !in 8..24 } ?: true,
+                )
+            }
+            Text("可填写 8 到 24 pt，默认小四 12 pt。", style = MaterialTheme.typography.bodySmall, color = MutedInk)
+            ChoiceRow(
+                title = "缺失项",
+                choices = listOf(
+                    DictationMissingField.WORD to "单词",
+                    DictationMissingField.PART_OF_SPEECH to "词性",
+                    DictationMissingField.MEANING to "中文",
+                ),
+                selected = missingFields,
+                onChange = { field ->
+                    onMissingFieldsChange(if (field in missingFields && missingFields.size > 1) missingFields - field else missingFields + field)
+                },
+            )
+            Row(modifier = Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                Text("词库", modifier = Modifier.width(64.dp), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                LevelFilterRow("", selectedLevels, availableLevels) { onLevelsChange(it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("默写数量", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                OutlinedTextField(
+                    value = countText,
+                    onValueChange = onCountChange,
+                    modifier = Modifier.width(120.dp),
+                    singleLine = true,
+                    isError = countError,
+                    supportingText = if (countError) ({ Text("请输入大于 0 的数量") }) else null,
+                )
+            }
+            ChoiceRow(
+                title = "选择方式",
+                choices = listOf(false to "随机填写", true to "从词库选择"),
+                selected = setOf(manual),
+                onChange = onManualChange,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("包含已考察词", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                Switch(checked = includeEvaluated, onCheckedChange = onIncludeEvaluatedChange)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("显示单词首字母", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                Switch(checked = showInitial, onCheckedChange = onShowInitialChange)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("添加例句", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                Switch(checked = includeExamples, onCheckedChange = onIncludeExamplesChange)
+            }
+            if (includeExamples) {
+                OutlinedTextField(
+                    value = customExample,
+                    onValueChange = onCustomExampleChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("自填例句（可选，应用于本次所有词条）") },
+                    minLines = 2,
+                )
+            }
+            Button(
+                onClick = onSubmit,
+                enabled = !preparing && formats.isNotEmpty() && missingFields.isNotEmpty() &&
+                    fontSizeText.toIntOrNull()?.let { it in 8..24 } == true,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            ) {
+                if (preparing) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                else Icon(Icons.Outlined.Visibility, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (preparing) "正在生成" else "生成并预览 A4 页面")
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> ChoiceRow(
+    title: String,
+    choices: List<Pair<T, String>>,
+    selected: Set<T>,
+    onChange: (T) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (title.isNotEmpty()) Text(title, modifier = Modifier.width(64.dp), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+        choices.forEach { (value, label) ->
+            FilterChip(
+                selected = value in selected,
+                onClick = { onChange(value) },
+                label = { Text(label) },
+                modifier = Modifier.padding(end = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DictationPreviewDialog(
+    document: DictationDocument,
+    preparing: Boolean,
+    exports: List<ExportedDictation>,
+    onDismiss: () -> Unit,
+    onExport: () -> Unit,
+) {
+    val lines = remember(document) { dictationPreviewLines(document) }
+    val linesPerPage = (842f / (document.options.fontSizePt * 1.9f)).toInt().coerceIn(12, 42)
+    val pages = lines.chunked(linesPerPage).ifEmpty { listOf(emptyList()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("默写预览 · A4") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("${document.rows.size} 个词条 · ${document.options.fontSizePt} pt · ${pages.size} 页", color = MutedInk)
+                pages.forEachIndexed { pageIndex, pageLines ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().aspectRatio(210f / 297f),
+                        color = Color.White,
+                        border = CardDefaults.outlinedCardBorder(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            pageLines.forEach { line ->
+                                Text(
+                                    line,
+                                    color = Color(0xFF18252F),
+                                    fontSize = (document.options.fontSizePt * 0.75f).sp,
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            Text("${pageIndex + 1} / ${pages.size}", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End, color = MutedInk, fontSize = 8.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onExport, enabled = !preparing && exports.isNotEmpty()) {
+                Text(if (preparing) "正在准备文件" else "下载文档")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("返回修改") } },
+        shape = RoundedCornerShape(8.dp),
+    )
+}
+
+@Composable
+private fun DictationMarkDialog(
+    onDismiss: () -> Unit,
+    onFinish: (Boolean, Boolean) -> Unit,
+) {
+    var dontAskAgain by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("标记默写词条") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("是否将本次导出的词条标记为 evaluated？")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = dontAskAgain, onCheckedChange = { dontAskAgain = it })
+                    Text("不再提示")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onFinish(true, dontAskAgain) }) { Text("标记") } },
+        dismissButton = { TextButton(onClick = { onFinish(false, dontAskAgain) }) { Text("不标记") } },
+        shape = RoundedCornerShape(8.dp),
+    )
 }
 
 @Composable
@@ -778,9 +1601,7 @@ private fun VocabularyRow(entry: VocabularyEntry, selected: Boolean, onToggleSel
     ) {
         Column(modifier = Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (entry.source == "csv" || entry.source == "user") {
-                    Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
-                }
+                Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
                 Text(
                     entry.word,
                     modifier = Modifier.weight(1f),
@@ -813,28 +1634,50 @@ private fun VocabularyLabelDialog(
     onDismiss: () -> Unit,
     onSave: (Set<String>, Set<String>) -> Unit,
 ) {
-    var levels by remember { mutableStateOf(setOf("CUSTOM")) }
-    var tags by remember { mutableStateOf("") }
+    val availableTags = listOf("cet4", "cet6", "gk", "zk", "evaluated")
+    var addTags by remember { mutableStateOf(emptySet<String>()) }
+    var removeTags by remember { mutableStateOf(emptySet<String>()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("批量修改标签") },
+        title = { Text("添加或删除标签") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("已选择 $selectionCount 个导入词条")
-                LevelFilterRow("词汇组", levels, listOf("CET4", "CET6", "CUSTOM")) { levels = it }
-                OutlinedTextField(
-                    value = tags,
-                    onValueChange = { tags = it },
-                    label = { Text("tags（用 | 分隔）") },
-                    singleLine = true,
-                )
+                Text("已选择 $selectionCount 个词条；只能操作程序内置标签。")
+                Text("添加标签", style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    availableTags.forEach { tag ->
+                        FilterChip(
+                            selected = tag in addTags,
+                            onClick = {
+                                addTags = if (tag in addTags) addTags - tag else addTags + tag
+                                removeTags = removeTags - tag
+                            },
+                            label = { Text(tag) },
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
+                    }
+                }
+                Text("删除标签", style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    availableTags.forEach { tag ->
+                        FilterChip(
+                            selected = tag in removeTags,
+                            onClick = {
+                                removeTags = if (tag in removeTags) removeTags - tag else removeTags + tag
+                                addTags = addTags - tag
+                            },
+                            label = { Text(tag) },
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(levels, tags.split('|').map(String::trim).filter(String::isNotEmpty).toSet()) },
-                enabled = levels.isNotEmpty(),
-            ) { Text("保存") }
+                onClick = { onSave(addTags, removeTags) },
+                enabled = addTags.isNotEmpty() || removeTags.isNotEmpty(),
+            ) { Text("保存标签") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -959,6 +1802,8 @@ private fun SettingsScreen(
     onPreviewReminder: () -> Unit,
     studyOrder: String,
     onStudyOrderChange: (String) -> Unit,
+    markMode: MarkMode,
+    onMarkModeChange: (MarkMode) -> Unit,
 ) {
     var reminderEnabledDraft by remember(reminderEnabled) { mutableStateOf(reminderEnabled) }
     var reminderIntervalDraft by remember(reminderIntervalMinutes) {
@@ -990,6 +1835,22 @@ private fun SettingsScreen(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("90%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
                     Text("140%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
+                }
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(8.dp),
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("默写后的标记", style = MaterialTheme.typography.titleMedium, color = Ink)
+                Text("控制导出成功后是否给本次词条添加 evaluated 标签。", style = MaterialTheme.typography.bodyMedium, color = MutedInk)
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = markMode == MarkMode.ALWAYS, onClick = { onMarkModeChange(MarkMode.ALWAYS) }, label = { Text("默认标记") })
+                    FilterChip(selected = markMode == MarkMode.NEVER, onClick = { onMarkModeChange(MarkMode.NEVER) }, label = { Text("默认不标记") })
+                    FilterChip(selected = markMode == MarkMode.ASK, onClick = { onMarkModeChange(MarkMode.ASK) }, label = { Text("每次询问") })
                 }
             }
         }

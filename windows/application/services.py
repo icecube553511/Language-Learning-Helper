@@ -16,6 +16,15 @@ from domain.models import (
     ReviewState,
     VocabularyEntry,
 )
+from domain.dictation import (
+    DictationDocument,
+    DictationFormat,
+    DictationOptions,
+    MarkMode,
+    build_document,
+)
+from domain.word_bubbles import BubbleDefinition, resolve_bubble_definition, tokenize_english
+from application.ports import DictationExporter, ExportedDictation
 from domain.ports import LearningRepository, WordsLearntRepository
 from domain.scheduler import SECONDS_PER_DAY, retention_at, schedule_review
 
@@ -36,10 +45,12 @@ class LearningService:
         repository: LearningRepository,
         csv_importer=None,
         words_learnt_repository: WordsLearntRepository | None = None,
+        dictation_exporter: DictationExporter | None = None,
     ):
         self.repository = repository
         self.csv_importer = csv_importer
         self.words_learnt_repository = words_learnt_repository
+        self.dictation_exporter = dictation_exporter
         self._migrate_legacy_review_states()
 
     def _migrate_legacy_review_states(self) -> int:
@@ -177,6 +188,104 @@ class LearningService:
     def available_levels(self) -> list[str]:
         levels = {level for entry in self.repository.all_entries() for level in entry.levels}
         return sorted(levels or {"CUSTOM"})
+
+    def available_program_tags(self) -> set[str]:
+        return {"cet4", "cet6", "gk", "zk", "evaluated"}
+
+    def word_bubble(self, token: str, context_example: str = "") -> BubbleDefinition:
+        """Resolve an example token without exposing the repository to presentation."""
+        return resolve_bubble_definition(self.repository.all_entries(), token, context_example)
+
+    @staticmethod
+    def example_tokens(text: str):
+        return tokenize_english(text)
+
+    def dictation_candidates(
+        self,
+        count: int,
+        levels: set[str] | None = None,
+        include_evaluated: bool = False,
+        rng: random.Random | None = None,
+    ) -> list[VocabularyEntry]:
+        if count < 0:
+            raise ValueError("默写词数不能为负数")
+        selected = [
+            entry for entry in self.repository.all_entries()
+            if self._matches_levels(entry, levels or set())
+            and (include_evaluated or "evaluated" not in {tag.casefold() for tag in entry.tags})
+        ]
+        pool = sorted({entry.word_id: entry for entry in selected}.values(), key=lambda item: item.word_id)
+        randomizer = rng or random.SystemRandom()
+        result = []
+        for _ in range(min(count, len(pool))):
+            result.append(pool.pop(randomizer.randrange(len(pool))))
+        return result
+
+    def dictation_pool(
+        self,
+        levels: set[str] | None = None,
+        include_evaluated: bool = False,
+    ) -> list[VocabularyEntry]:
+        return self.selected_dictation_candidates(
+            {entry.word_id for entry in self.repository.all_entries()},
+            levels,
+            include_evaluated,
+        )
+
+    def selected_dictation_candidates(
+        self,
+        word_ids: set[str],
+        levels: set[str] | None = None,
+        include_evaluated: bool = False,
+    ) -> list[VocabularyEntry]:
+        wanted = set(word_ids)
+        return [entry for entry in self.repository.all_entries()
+                if entry.word_id in wanted
+                and self._matches_levels(entry, levels or set())
+                and (include_evaluated or "evaluated" not in {tag.casefold() for tag in entry.tags})]
+
+    def build_dictation_document(
+        self,
+        options: DictationOptions,
+        *,
+        count: int | None = None,
+        levels: set[str] | None = None,
+        include_evaluated: bool = False,
+        word_ids: set[str] | None = None,
+        entries: list[VocabularyEntry] | None = None,
+        rng: random.Random | None = None,
+    ) -> DictationDocument:
+        selected_entries = (entries if entries is not None else
+                            self.selected_dictation_candidates(word_ids, levels, include_evaluated)
+                            if word_ids is not None else
+                            self.dictation_candidates(count or 0, levels, include_evaluated, rng))
+        return build_document(selected_entries, options)
+
+    def export_dictation(self, document: DictationDocument, exporter: DictationExporter | None = None) -> list[ExportedDictation]:
+        adapter = exporter or self.dictation_exporter
+        if adapter is None:
+            raise RuntimeError("Dictation exporter is not configured")
+        return [adapter.export(document, output_format) for output_format in sorted(document.options.formats, key=lambda item: item.value)]
+
+    def update_program_tags(self, word_ids: set[str], add: set[str], remove: set[str]) -> int:
+        normalized_add = {str(tag).strip().casefold() for tag in add if str(tag).strip()}
+        normalized_remove = {str(tag).strip().casefold() for tag in remove if str(tag).strip()}
+        if not (normalized_add | normalized_remove) <= self.available_program_tags():
+            raise ValueError("只允许修改程序标签")
+        if normalized_add & normalized_remove:
+            raise ValueError("同一标签不能同时添加和移除")
+        return self.repository.update_tags(set(word_ids), normalized_add, normalized_remove)
+
+    def mark_mode(self) -> MarkMode:
+        getter = getattr(self.repository, "get_mark_mode", None)
+        return getter() if getter else MarkMode.ASK
+
+    def set_mark_mode(self, mode: MarkMode | str) -> MarkMode:
+        resolved = mode if isinstance(mode, MarkMode) else MarkMode(str(mode).upper())
+        setter = getattr(self.repository, "set_mark_mode", None)
+        if setter:
+            setter(resolved)
+        return resolved
 
     def update_entry_labels(self, word_ids: set[str], level: str, tags: set[str]) -> int:
         updater = getattr(self.repository, "update_entry_labels", None)

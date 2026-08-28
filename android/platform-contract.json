@@ -2,6 +2,7 @@
   "releaseVersion": "0.2.0",
   "schemaVersion": 4,
   "algorithmVersion": "lexi-sm2-v1",
+  "wordBubbleVersion": "word-bubble-v1",
   "contentVersion": "cet-2026.08-v2",
   "branding": { "appImage": "shared/assets/branding/app_image.png" },
   "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
@@ -26,7 +27,12 @@
     "independentVocabularyFilters": "ready",
     "reminderVocabularyFilters": "ready",
     "batchVocabularyLabels": "ready",
-    "androidBackgroundLearningReminders": "ready"
+    "androidBackgroundLearningReminders": "ready",
+    "dictationExport": "ready",
+    "dictationDownload": "ready",
+    "dictationManualSelectionTable": "ready",
+    "programTagOverrides": "ready",
+    "wordBubbleInteraction": "ready"
   },
   "platforms": ["windows", "android"]
 }

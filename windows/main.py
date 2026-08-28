@@ -8,8 +8,10 @@ from pathlib import Path
 import sys
 
 from application.services import LearningService
+from domain.dictation import DictationDocument, DictationFormat, DictationOptions, DictationRow
 from infrastructure.catalog import CatalogLoader
 from infrastructure.csv_importer import CsvVocabularyImporter
+from infrastructure.dictation_exporter import DictationDocumentExporter
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
 from presentation.app import LexiTrackApp, run_gui_smoke
@@ -55,6 +57,7 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         repository,
         CsvVocabularyImporter(),
         words_learnt_repository,
+        DictationDocumentExporter(),
     )
     return LexiTrackApp(
         service=service,
@@ -63,6 +66,21 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         catalog_rejected=loader.rejected_count,
         catalog_error=loader.error,
     )
+
+
+def run_dictation_export_smoke() -> dict[str, bool]:
+    options = DictationOptions(formats=frozenset({DictationFormat.DOCX, DictationFormat.PDF}))
+    document = DictationDocument(
+        rows=(DictationRow("w ______", "n", "释义", ("A ______ example.",)),),
+        options=options,
+    )
+    exporter = DictationDocumentExporter()
+    docx = exporter.export(document, DictationFormat.DOCX)
+    pdf = exporter.export(document, DictationFormat.PDF)
+    return {
+        "dictationDocxReady": docx.bytes.startswith(b"PK"),
+        "dictationPdfReady": pdf.bytes.startswith(b"%PDF"),
+    }
 
 
 def parse_args(argv: list[str] | None = None):
@@ -78,8 +96,21 @@ def main(argv: list[str] | None = None) -> int:
     app = build_app(args.data_dir)
     if args.smoke_test:
         result = run_gui_smoke(app)
-        print(json.dumps(result, ensure_ascii=False))
-        return 0 if result["ok"] and result["studyCardReady"] else 1
+        try:
+            result.update(run_dictation_export_smoke())
+        except Exception as error:
+            result.update({
+                "dictationDocxReady": False,
+                "dictationPdfReady": False,
+                "dictationExportError": f"{type(error).__name__}: {error}",
+            })
+        rendered_result = json.dumps(result, ensure_ascii=False)
+        args.data_dir.mkdir(parents=True, exist_ok=True)
+        (args.data_dir / "smoke-result.json").write_text(rendered_result, encoding="utf-8")
+        print(rendered_result)
+        ready = result["ok"] and result["studyCardReady"]
+        ready = ready and result["dictationDocxReady"] and result["dictationPdfReady"]
+        return 0 if ready else 1
     app.mainloop()
     return 0
 

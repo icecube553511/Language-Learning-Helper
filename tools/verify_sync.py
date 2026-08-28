@@ -79,6 +79,67 @@ def verify_weighted_review() -> None:
         fail("Unexpected default review batch size")
 
 
+def verify_dictation_contract() -> None:
+    contract_path = CONTRACTS / "dictation-export-v1.md"
+    golden_path = CONTRACTS / "dictation-export-golden-v1.json"
+    if not contract_path.is_file() or not contract_path.read_text(encoding="utf-8").strip():
+        fail("Dictation export contract is missing or empty")
+    if not golden_path.is_file():
+        fail("Dictation export golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "dictation-export-v1":
+        fail("Unexpected dictation export contract version")
+    page = payload.get("page", {})
+    if page.get("size") != "A4" or page.get("orientation") != "portrait":
+        fail("Dictation export must use A4 portrait")
+    font_size = payload.get("fontSizePt", {})
+    if (font_size.get("default"), font_size.get("minimum"), font_size.get("maximum")) != (12, 8, 24):
+        fail("Unexpected dictation export font-size bounds")
+    if payload.get("formats") != ["DOCX", "PDF"]:
+        fail("Dictation export formats differ from the shared contract")
+    if payload.get("allowedTags") != ["cet4", "cet6", "gk", "zk", "evaluated"]:
+        fail("Dictation program tag allowlist differs from the shared contract")
+    confirmation = payload.get("confirmation", {})
+    if confirmation.get("rendered") != "当前仅选择了3/10，是否确定选择":
+        fail("Dictation manual-selection confirmation text differs from the shared contract")
+    evaluated = payload.get("evaluated", {})
+    if evaluated.get("defaultPreference") != "ASK" or evaluated.get("preferences") != ["ASK", "ALWAYS", "NEVER"]:
+        fail("Dictation evaluated preferences differ from the shared contract")
+    selection_ui = payload.get("manualSelectionUi", {})
+    if selection_ui.get("columns") != ["word", "meaning", "tags", "evaluationStatus", "selected"]:
+        fail("Dictation manual-selection columns differ from the shared contract")
+    if selection_ui.get("headings") != ["单词", "中文释义", "标签", "考察状态", "选择"]:
+        fail("Dictation manual-selection headings differ from the shared contract")
+    if (
+        selection_ui.get("evaluatedTag") != "evaluated"
+        or selection_ui.get("evaluatedText") != "已考察"
+        or selection_ui.get("evaluatedColor") != "black"
+        or selection_ui.get("unevaluatedText") != "未考察"
+        or selection_ui.get("unevaluatedColor") != "red"
+        or selection_ui.get("emptyTagsText") != "-"
+        or selection_ui.get("selectionControl") != "checkbox"
+        or selection_ui.get("horizontalOverflow") != "scroll"
+        or selection_ui.get("downloadAction") != "下载文档"
+        or selection_ui.get("downloadPathSelection") != "user-selected"
+    ):
+        fail("Dictation manual-selection behavior differs from the shared contract")
+
+
+def verify_word_bubble_contract() -> None:
+    contract_path = CONTRACTS / "word-bubble-v1.md"
+    golden_path = CONTRACTS / "word-bubble-golden-v1.json"
+    if not contract_path.is_file() or "word-bubble-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Word bubble contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Word bubble golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "word-bubble-v1" or payload.get("maxDepth") != 20:
+        fail("Word bubble contract version or max depth differs")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("wordBubbleVersion") != "word-bubble-v1":
+        fail("Parity manifest does not declare word-bubble-v1")
+
+
 def verify_catalog() -> None:
     catalog_path = CONTENT / "catalog.json"
     manifest_path = CONTENT / "catalog-manifest.json"
@@ -149,7 +210,7 @@ def verify_platform_markers() -> None:
         if not marker_path.exists():
             fail(f"Missing platform marker: {marker_path.relative_to(ROOT)}")
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "contentVersion"):
+        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "wordBubbleVersion", "contentVersion"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         for key in ("branding", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
@@ -162,6 +223,8 @@ def verify_platform_markers() -> None:
 def main() -> int:
     verify_scheduler()
     verify_weighted_review()
+    verify_dictation_contract()
+    verify_word_bubble_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()

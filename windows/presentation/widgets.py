@@ -1,6 +1,118 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import tkinter as tk
+import tkinter.font as tkfont
+from typing import Callable
+
+from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken, normalize_token, tokenize_english
+
+
+@dataclass(frozen=True)
+class _TextLine:
+    start: int
+    end: int
+    width: int
+
+
+def _wrapped_text_lines(text: str, max_width: int, measure: Callable[[str], int]) -> tuple[_TextLine, ...]:
+    """Approximate Tk label word wrapping while retaining source offsets."""
+    lines: list[_TextLine] = []
+    paragraph_start = 0
+    for paragraph in text.split("\n"):
+        paragraph_end = paragraph_start + len(paragraph)
+        if not paragraph:
+            lines.append(_TextLine(paragraph_start, paragraph_start, 0))
+        cursor = paragraph_start
+        while cursor < paragraph_end:
+            end = cursor
+            while end < paragraph_end and measure(text[cursor:end + 1]) <= max_width:
+                end += 1
+            if end == paragraph_end:
+                lines.append(_TextLine(cursor, end, measure(text[cursor:end])))
+                break
+            if end == cursor:
+                end += 1
+            whitespace = max(
+                (index for index in range(cursor + 1, end + 1) if text[index - 1].isspace()),
+                default=-1,
+            )
+            line_end = whitespace - 1 if whitespace >= 0 else end
+            while line_end > cursor and text[line_end - 1].isspace():
+                line_end -= 1
+            if line_end == cursor:
+                line_end = end
+            lines.append(_TextLine(cursor, line_end, measure(text[cursor:line_end])))
+            cursor = whitespace if whitespace >= 0 else end
+            while cursor < paragraph_end and text[cursor].isspace():
+                cursor += 1
+        paragraph_start = paragraph_end + 1
+    return tuple(lines)
+
+
+def _hit_test_lines(
+    tokens: tuple[WordToken, ...],
+    lines: tuple[_TextLine, ...],
+    measure: Callable[[str], int],
+    text: str,
+    x: int,
+    y: int,
+    block_left: int,
+    block_top: int,
+    block_width: int,
+    line_height: int,
+    justify: str,
+    source_offset: int = 0,
+) -> WordToken | None:
+    if line_height <= 0 or y < block_top:
+        return None
+    line_index = (y - block_top) // line_height
+    if line_index >= len(lines):
+        return None
+    line = lines[line_index]
+    if justify == "left":
+        line_left = block_left
+    elif justify == "right":
+        line_left = block_left + block_width - line.width
+    else:
+        line_left = block_left + (block_width - line.width) // 2
+    for token in tokens:
+        start = source_offset + token.start
+        end = source_offset + token.end
+        if line.start <= start and end <= line.end:
+            left = line_left + measure(text[line.start:start])
+            right = line_left + measure(text[line.start:end])
+            if left - 2 <= x <= right + 2:
+                return token
+    return None
+
+
+def _text_block_origin(
+    anchor: str,
+    width: int,
+    height: int,
+    padx: int,
+    pady: int,
+    block_width: int,
+    block_height: int,
+) -> tuple[int, int]:
+    horizontal = anchor if anchor in {"w", "e"} else anchor[-1:] if len(anchor) == 2 else ""
+    vertical = anchor if anchor in {"n", "s"} else anchor[:1] if len(anchor) == 2 else ""
+    block_left = (
+        padx
+        if horizontal == "w"
+        else width - padx - block_width
+        if horizontal == "e"
+        else (width - block_width) // 2
+    )
+    block_top = (
+        pady
+        if vertical == "n"
+        else height - pady - block_height
+        if vertical == "s"
+        else (height - block_height) // 2
+    )
+    return block_left, block_top
 
 
 class Tooltip:
@@ -40,6 +152,358 @@ class Tooltip:
         if self.window is not None:
             self.window.destroy()
             self.window = None
+
+
+@dataclass(frozen=True)
+class WordRegion:
+    """Screen geometry of one rendered word, in local widget coordinates."""
+
+    text: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class WordClickableText(tk.Text):
+    """Read-only sentence exposing each rendered word as an exact hit region.
+
+    After ``set_sentence`` lays the text out, ``word_regions`` returns the
+    on-page rectangle of every English token. ``hit_test`` uses those
+    rectangles so a click always lands on the word actually rendered there,
+    regardless of wrapping or font scaling.
+    """
+
+    def __init__(
+        self,
+        master,
+        on_token,
+        context: str = "",
+        *,
+        wrap: str = "word",
+        **kwargs,
+    ) -> None:
+        self._justify = kwargs.pop("justify", "left")
+        kwargs.setdefault("relief", tk.FLAT)
+        kwargs.setdefault("borderwidth", 0)
+        kwargs.setdefault("highlightthickness", 0)
+        super().__init__(master, wrap=wrap, **kwargs)
+        self._on_token = on_token
+        self._context = context
+        self._tag_tokens: list[str] = []
+        self.bind("<Button-1>", self._on_click, add="+")
+
+    def set_sentence(self, text: str, context: str | None = None, highlight_word: str | None = None) -> None:
+        if context is not None:
+            self._context = context
+        highlight = normalize_token(highlight_word) if highlight_word else None
+        self.configure(state="normal")
+        self.delete("1.0", tk.END)
+        self._tag_tokens = []
+        cursor = 0
+        for token in tokenize_english(text):
+            self.insert(tk.END, text[cursor:token.start])
+            tag = f"word{len(self._tag_tokens)}"
+            self._tag_tokens.append(token.text)
+            token_tags = [tag]
+            if highlight is not None and normalize_token(token.text) == highlight:
+                token_tags.append("hl")
+            self.insert(tk.END, token.text, tuple(token_tags))
+            cursor = token.end
+        self.insert(tk.END, text[cursor:])
+        self.tag_configure("align", justify=self._justify)
+        self.tag_add("align", "1.0", "end-1c")
+        if highlight is not None:
+            bold_font = tkfont.Font(font=self.cget("font"))
+            bold_font.configure(weight="bold")
+            self.tag_configure("hl", foreground="#16866F", font=bold_font)
+        self.update_idletasks()
+        counted = self.count("1.0", "end", "displaylines")
+        lines = counted[0] if counted else 1
+        self.configure(height=max(1, int(lines)))
+        self.configure(state="disabled")
+
+    def word_regions(self) -> tuple[WordRegion, ...]:
+        """Return the bounding box of every rendered English word."""
+        regions: list[WordRegion] = []
+        for index, token in enumerate(self._tag_tokens):
+            first = self.bbox(f"word{index}.first")
+            last = self.bbox(f"word{index}.last")
+            if first and last:
+                left, top = first[0], first[1]
+                right, bottom = last[0] + last[2], last[1] + last[3]
+                regions.append(WordRegion(token, left, top, right - left, bottom - top))
+        return tuple(regions)
+
+    def hit_test(self, x: int, y: int) -> str | None:
+        """Return the token whose rendered rectangle contains (x, y)."""
+        for region in self.word_regions():
+            if region.x <= x <= region.x + region.width and region.y <= y <= region.y + region.height:
+                return region.text
+        return None
+
+    def _on_click(self, event):
+        token = self.hit_test(event.x, event.y)
+        self._on_token(token, self._context, event.x_root, event.y_root)
+        return "break"
+
+
+class WordBubbleManager:
+    """Presentation-only controller for transient recursive vocabulary bubbles."""
+
+    def __init__(self, root: tk.Misc, service):
+        self.root = root
+        self.service = service
+        self.stack = BubbleStack()
+        self._windows: list[tk.Toplevel] = []
+        self._bound_widgets: set[tk.Widget] = set()
+        root.bind_all("<Button-1>", self._on_global_click, add="+")
+
+    def bind_example(self, widget: tk.Label, english: str, context_example: str = "") -> None:
+        widget._word_bubble_english = english  # type: ignore[attr-defined]
+        widget._word_bubble_context = context_example  # type: ignore[attr-defined]
+        widget.configure(cursor="hand2")
+        if widget not in self._bound_widgets:
+            widget.bind("<Button-1>", self._on_example_click, add="+")
+            self._bound_widgets.add(widget)
+
+    def open_from_token(
+        self,
+        parent_depth: int,
+        token_text: str | None,
+        context_example: str,
+        x_root: int,
+        y_root: int,
+    ) -> None:
+        """Open a bubble from a concrete token, or clear on a blank click."""
+        if token_text is None:
+            if parent_depth >= 0:
+                self._close_after(parent_depth)
+            else:
+                self.clear()
+            return
+        token = WordToken(token_text, 0, len(token_text))
+        self._open(parent_depth, token, context_example, x_root, y_root)
+
+    def clear(self) -> None:
+        self.stack = self.stack.close_all()
+        self._destroy_from(0)
+
+    def _on_global_click(self, event) -> None:
+        widget = event.widget
+        if any(self._is_descendant(widget, window) for window in self._windows):
+            return
+        self.clear()
+
+    @staticmethod
+    def _is_descendant(widget: tk.Widget, parent: tk.Widget) -> bool:
+        current: tk.Widget | None = widget
+        while current is not None:
+            if current == parent:
+                return True
+            current = current.master
+        return False
+
+    def _on_example_click(self, event):
+        widget = event.widget
+        english = getattr(widget, "_word_bubble_english", "")
+        context = getattr(widget, "_word_bubble_context", english)
+        token = self._token_at(widget, english, event.x, event.y)
+        if token is None:
+            self.clear()
+            return "break"
+        self._open(-1, token, context, event.x_root, event.y_root)
+        return "break"
+
+    def _token_at(self, widget: tk.Label, text: str, x: int, y: int) -> WordToken | None:
+        tokens = self.service.example_tokens(text)
+        if not tokens:
+            return None
+        displayed_text = str(widget.cget("text"))
+        source_offset = displayed_text.find(text)
+        if source_offset < 0:
+            return None
+        font = widget.cget("font")
+        try:
+            measured = tkfont.Font(font=font)
+        except tk.TclError:
+            return None
+        width = widget.winfo_width()
+        height = widget.winfo_height()
+        padx = int(float(widget.cget("padx")))
+        pady = int(float(widget.cget("pady")))
+        wrap_length = int(float(widget.cget("wraplength")))
+        content_width = max(1, width - padx * 2)
+        max_width = min(content_width, wrap_length) if wrap_length > 0 else content_width
+        lines = _wrapped_text_lines(displayed_text, max_width, measured.measure)
+        block_width = max((line.width for line in lines), default=0)
+        line_height = measured.metrics("linespace")
+        block_height = line_height * len(lines)
+        anchor = str(widget.cget("anchor"))
+        block_left, block_top = _text_block_origin(
+            anchor,
+            width,
+            height,
+            padx,
+            pady,
+            block_width,
+            block_height,
+        )
+        return _hit_test_lines(
+            tokens,
+            lines,
+            measured.measure,
+            displayed_text,
+            x,
+            y,
+            block_left,
+            block_top,
+            block_width,
+            line_height,
+            str(widget.cget("justify")),
+            source_offset,
+        )
+
+    def _open(
+        self,
+        parent_depth: int,
+        token: WordToken,
+        context: str,
+        x_root: int,
+        y_root: int,
+    ) -> None:
+        definition = self.service.word_bubble(token.text, context)
+        previous = self.stack
+        if parent_depth < 0:
+            self.stack = self.stack.open_root(definition)
+            depth = 0
+        else:
+            self.stack = self.stack.open_child(parent_depth, definition)
+            depth = len(self.stack.frames) - 1
+        if self.stack == previous:
+            return
+        self._destroy_from(depth)
+        if not self.stack.frames:
+            return
+        self._create_popup(self.stack.frames[-1].definition, depth, x_root, y_root)
+
+    def _destroy_from(self, depth: int) -> None:
+        while self._windows and len(self._windows) > depth:
+            window = self._windows.pop()
+            if window.winfo_exists():
+                window.destroy()
+
+    def _create_popup(self, definition: BubbleDefinition, depth: int, x_root: int, y_root: int) -> None:
+        # A proper, titled window (not an overrideredirect bubble) so it can be
+        # moved/closed and stays above the main window; styled like the
+        # word-learning reminder card.
+        popup = tk.Toplevel(self.root)
+        popup.title("LexiTrack 词程 · 单词释义")
+        popup.configure(bg="#F7F9FA")
+        popup.transient(self.root.winfo_toplevel())
+        popup.minsize(480, 380)
+        popup.geometry("580x560")
+        popup.resizable(False, False)
+
+        header = tk.Frame(popup, bg="#17212B")
+        header.pack(fill=tk.X)
+        title_row = tk.Frame(header, bg="#17212B")
+        title_row.pack(fill=tk.X)
+        tk.Label(title_row, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(side=tk.LEFT, padx=24, pady=(16, 2))
+        tk.Label(header, text="点击例句中的英文单词可继续查看", bg="#17212B", fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=24, pady=(0, 14))
+
+        body = tk.Frame(popup, bg="#FFFFFF")
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=14)
+        body.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+
+        heading = tk.Label(body, text=definition.word, bg="#FFFFFF", fg="#1B2733", font="LexiWord", anchor="w")
+        heading.pack(fill=tk.X, anchor="w")
+        heading.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        if definition.phonetic:
+            phonetic = tk.Label(body, text=definition.phonetic, bg="#FFFFFF", fg="#65727E", font="LexiBody", anchor="w")
+            phonetic.pack(fill=tk.X, anchor="w", pady=(0, 2))
+            phonetic.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        part_of_speech = tk.Label(body, text=definition.part_of_speech, bg="#FFFFFF", fg="#16866F", font="LexiSmall", anchor="w")
+        part_of_speech.pack(fill=tk.X, anchor="w")
+        part_of_speech.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        meaning = tk.Label(body, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBodyBold", wraplength=520, justify="left", anchor="w")
+        meaning.pack(fill=tk.X, anchor="w", pady=(4, 10))
+        meaning.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+        tk.Label(body, text="双语例句", bg="#FFFFFF", fg="#65727E", font="LexiSmall", anchor="w").pack(anchor="w", pady=(0, 2))
+
+        example_pairs = definition.example_pairs or tuple((example, "") for example in definition.examples[:3])
+        for english, chinese in example_pairs[:3]:
+            sentence = WordClickableText(
+                body,
+                on_token=lambda token, ctx, x_root, y_root, d=depth: self.open_from_token(
+                    d, token, ctx, x_root, y_root,
+                ),
+                context=english,
+                bg="#FFFFFF",
+                fg="#1B2733",
+                font="LexiSmall",
+                justify="left",
+                wrap="word",
+                padx=0,
+                pady=2,
+                cursor="hand2",
+            )
+            sentence.set_sentence(english, highlight_word=definition.word)
+            sentence.pack(fill=tk.X)
+            if chinese:
+                translation = tk.Label(body, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=520, justify="left", anchor="w")
+                translation.pack(fill=tk.X, anchor="w", pady=(0, 3))
+                translation.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
+
+        actions = tk.Frame(popup, bg="#F7F9FA")
+        actions.pack(fill=tk.X, side=tk.BOTTOM)
+        actions_inner = tk.Frame(actions, bg="#F7F9FA")
+        actions_inner.pack(fill=tk.X, padx=24, pady=14)
+        close = tk.Button(
+            actions_inner,
+            text="知道了",
+            command=lambda d=depth: self._close_after(d),
+            bg="#16866F",
+            fg="#FFFFFF",
+            activebackground="#12705C",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            bd=0,
+            font="LexiBody",
+            padx=18,
+            pady=7,
+        )
+        close.pack(side=tk.RIGHT)
+        popup.update_idletasks()
+        width, height = popup.winfo_width(), popup.winfo_height()
+        above = y_root - height - 8
+        below = y_root + 22
+        screen_height = self.root.winfo_screenheight()
+        y = above if above >= 4 else min(below, screen_height - height - 4)
+        x = max(4, min(x_root - width // 2, self.root.winfo_screenwidth() - width - 8))
+        popup.geometry(f"+{x}+{max(4, y)}")
+        popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_window(d))
+        self._windows.append(popup)
+
+    def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
+        token = self._token_at(widget, example, event.x, event.y)
+        if token is not None:
+            x_root = widget.winfo_rootx() + event.x
+            y_root = widget.winfo_rooty() + event.y
+            self._open(parent_depth, token, example, x_root, y_root)
+        else:
+            self._close_after(parent_depth)
+        return "break"
+
+    def _close_after(self, depth: int) -> None:
+        self.stack = self.stack.close_after(depth)
+        self._destroy_from(depth + 1)
+
+    def _close_window(self, depth: int) -> None:
+        """Close the window at ``depth`` and its descendants, keep ancestors."""
+        keep = depth - 1
+        self.stack = self.stack.close_after(keep)
+        self._destroy_from(keep)
 
 
 def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:
@@ -83,6 +547,10 @@ def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:
     elif name == "clock":
         canvas.create_oval(4, 4, 24, 24, outline=color, width=2)
         canvas.create_line(14, 8, 14, 14, 19, 17, **line)
+    elif name == "edit":
+        canvas.create_line(7, 22, 21, 8, **line)
+        canvas.create_line(6, 24, 10, 23, **line)
+        canvas.create_line(20, 5, 23, 8, **line)
 
 
 class NavItem(tk.Frame):
@@ -233,3 +701,100 @@ class MemoryChart(tk.Canvas):
                 self.create_line(*points, fill="#3973C6", width=3, smooth=True)
         self.create_text(left, 9, text=f"每日到期数  最大 {maximum}", anchor="w", fill="#65727E", font="LexiChart")
         self.create_text(right, 9, text="蓝线：平均保持率", anchor="e", fill="#3973C6", font="LexiChart")
+
+
+class DictationLoadingOverlay(tk.Frame):
+    """Full-page overlay with an animated arc spinner for the dictation entry.
+
+    Transient presentation state only: created on entering the dictation page and
+    destroyed once the loading animation concludes. Default colours mirror the
+    LexiTrack light palette so the overlay reads as part of the app.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        message: str = "正在准备默写词条…",
+        background: str = "#F3F6F7",
+        surface: str = "#FFFFFF",
+        accent: str = "#16866F",
+        text: str = "#1B2733",
+        muted: str = "#65727E",
+        border: str = "#DDE3E8",
+        size: int = 56,
+    ):
+        super().__init__(parent, bg=background)
+        self._size = size
+        self._bg = background
+        self._surface = surface
+        self._accent = accent
+        self._muted = muted
+        self._border = border
+        self._after_id: str | None = None
+        self._angle = 0
+
+        card = tk.Frame(self, bg=surface, highlightbackground=border, highlightthickness=1)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        inner = tk.Frame(card, bg=surface)
+        inner.pack(padx=44, pady=30)
+        self._spinner = tk.Canvas(
+            inner,
+            width=size,
+            height=size,
+            bg=surface,
+            bd=0,
+            highlightthickness=0,
+        )
+        self._spinner.pack()
+        self._label = tk.Label(
+            inner,
+            text=message,
+            bg=surface,
+            fg=muted,
+            font="LexiBody",
+        )
+        self._label.pack(pady=(14, 0))
+        self._draw(0)
+
+    def start(self) -> None:
+        if self._after_id is None:
+            self._after_id = self.after(80, self._tick)
+
+    def stop(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+
+    def _tick(self) -> None:
+        self._after_id = None
+        self._angle = (self._angle + 24) % 360
+        self._draw(self._angle)
+        self._after_id = self.after(80, self._tick)
+
+    def _draw(self, angle: int) -> None:
+        self._spinner.delete("all")
+        size = self._size
+        bbox = (2, 2, size - 2, size - 2)
+        self._spinner.create_arc(
+            *bbox,
+            start=0,
+            extent=359.9,
+            style=tk.ARC,
+            outline=self._border,
+            width=5,
+        )
+        self._spinner.create_arc(
+            *bbox,
+            start=angle,
+            extent=120,
+            style=tk.ARC,
+            outline=self._accent,
+            width=5,
+        )
+
+    def destroy(self) -> None:
+        self.stop()
+        super().destroy()

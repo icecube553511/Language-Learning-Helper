@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
 import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,11 +17,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lexitrack.learning.presentation.LexiTrackApp
 import com.lexitrack.learning.presentation.MainViewModel
 import com.lexitrack.learning.presentation.MainViewModelFactory
+import com.lexitrack.learning.presentation.DICTATION_DOCX_MIME_TYPE
+import com.lexitrack.learning.presentation.DICTATION_PDF_MIME_TYPE
+import com.lexitrack.learning.presentation.dictationSaveSpec
+import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.infrastructure.AndroidReminderScheduler
 import com.lexitrack.learning.infrastructure.ReminderReceiver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.ArrayDeque
 
 class MainActivity : ComponentActivity() {
     private val container by lazy { AppContainer(applicationContext) }
@@ -29,6 +35,11 @@ class MainActivity : ComponentActivity() {
     private var pendingReminderWordId: String? = null
     private var reminderEnabled = false
     private var reminderIntervalMinutes = 30.0f
+    private var dictationDocxSaveLauncher: ActivityResultLauncher<String>? = null
+    private var dictationPdfSaveLauncher: ActivityResultLauncher<String>? = null
+    private val dictationSaveQueue = ArrayDeque<ExportedDictation>()
+    private var dictationSavedCount = 0
+    private var dictationSaveCompletion: ((Int) -> Unit)? = null
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -78,6 +89,14 @@ class MainActivity : ComponentActivity() {
                         }
                 }
             }
+            val saveDocxLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument(DICTATION_DOCX_MIME_TYPE),
+            ) { uri -> handleDictationSaveResult(uri) }
+            val savePdfLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument(DICTATION_PDF_MIME_TYPE),
+            ) { uri -> handleDictationSaveResult(uri) }
+            dictationDocxSaveLauncher = saveDocxLauncher
+            dictationPdfSaveLauncher = savePdfLauncher
             LexiTrackApp(
                 viewModel = viewModel,
                 onReminderSettingsRequested = { enabled, interval ->
@@ -93,7 +112,64 @@ class MainActivity : ComponentActivity() {
                 onChooseCsv = {
                     launcher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain"))
                 },
+                onSaveDictation = { outputs, onComplete ->
+                    requestDictationSave(outputs, onComplete)
+                },
             )
+        }
+    }
+
+    private fun requestDictationSave(outputs: List<ExportedDictation>, onComplete: (Int) -> Unit) {
+        dictationSaveQueue.clear()
+        dictationSaveQueue.addAll(outputs)
+        dictationSavedCount = 0
+        dictationSaveCompletion = onComplete
+        launchNextDictationSave()
+    }
+
+    private fun launchNextDictationSave() {
+        val output = dictationSaveQueue.peekFirst()
+        if (output == null) {
+            val completion = dictationSaveCompletion
+            dictationSaveCompletion = null
+            completion?.invoke(dictationSavedCount)
+            return
+        }
+        val saveSpec = runCatching { dictationSaveSpec(output) }.getOrNull()
+        if (saveSpec == null) {
+            dictationSaveQueue.removeFirst()
+            launchNextDictationSave()
+            return
+        }
+        val launcher = when (saveSpec.mimeType) {
+            DICTATION_DOCX_MIME_TYPE -> dictationDocxSaveLauncher
+            DICTATION_PDF_MIME_TYPE -> dictationPdfSaveLauncher
+            else -> null
+        }
+        if (launcher == null) {
+            dictationSaveQueue.clear()
+            launchNextDictationSave()
+            return
+        }
+        launcher.launch(saveSpec.fileName)
+    }
+
+    private fun handleDictationSaveResult(uri: android.net.Uri?) {
+        val output = if (dictationSaveQueue.isEmpty()) null else dictationSaveQueue.removeFirst()
+        if (output == null) return
+        if (uri == null) {
+            launchNextDictationSave()
+            return
+        }
+        lifecycleScope.launch {
+            val saved = runCatching {
+                withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri)?.use { stream -> stream.write(output.bytes) }
+                        ?: error("无法打开保存位置。")
+                }
+            }.isSuccess
+            if (saved) dictationSavedCount += 1
+            launchNextDictationSave()
         }
     }
 

@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -44,6 +45,21 @@ class AndroidVocabularyRepositoryTest {
         val custom = repository.words.value.first { it.id == "custom-word" }
         assertEquals(setOf("CET6"), custom.levels)
         assertEquals(setOf("batch", "exam"), custom.tags)
+    }
+
+    @Test
+    fun tagOverridesApplyToBuiltInEntriesAndPersist() = runBlocking {
+        val repository = AndroidVocabularyRepository(context)
+        repository.initialize()
+        val id = repository.words.value.first { it.id == "a" }.id
+        repository.updateTags(setOf(id), setOf("evaluated"), emptySet())
+        assertTrue(repository.words.value.first { it.id == id }.tags.contains("evaluated"))
+
+        val reloaded = AndroidVocabularyRepository(context)
+        reloaded.initialize()
+        assertTrue(reloaded.words.value.first { it.id == id }.tags.contains("evaluated"))
+        reloaded.updateTags(setOf(id), emptySet(), setOf("evaluated"))
+        assertTrue(!reloaded.words.value.first { it.id == id }.tags.contains("evaluated"))
     }
 
     private fun clearPreferences() {
