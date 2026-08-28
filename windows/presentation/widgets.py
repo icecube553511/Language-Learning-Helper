@@ -218,9 +218,12 @@ class WordClickableText(tk.Text):
             bold_font.configure(weight="bold")
             self.tag_configure("hl", foreground="#16866F", font=bold_font)
         self.update_idletasks()
-        counted = self.count("1.0", "end", "displaylines")
-        lines = counted[0] if counted else 1
-        self.configure(height=max(1, int(lines)))
+        if self.winfo_width() > 1 or self.winfo_ismapped():
+            counted = self.count("1.0", "end", "displaylines")
+            lines = counted[0] if counted else 1
+            self.configure(height=max(1, int(lines)))
+        else:
+            self.configure(height=1)
         self.configure(state="disabled")
 
     def word_regions(self) -> tuple[WordRegion, ...]:
@@ -402,7 +405,6 @@ class WordBubbleManager:
         popup.configure(bg="#F7F9FA")
         popup.transient(self.root.winfo_toplevel())
         popup.minsize(480, 380)
-        popup.geometry("580x560")
         popup.resizable(False, False)
 
         header = tk.Frame(popup, bg="#17212B")
@@ -432,6 +434,7 @@ class WordBubbleManager:
         tk.Label(body, text="双语例句", bg="#FFFFFF", fg="#65727E", font="LexiSmall", anchor="w").pack(anchor="w", pady=(0, 2))
 
         example_pairs = definition.example_pairs or tuple((example, "") for example in definition.examples[:3])
+        example_texts_created: list[WordClickableText] = []
         for english, chinese in example_pairs[:3]:
             sentence = WordClickableText(
                 body,
@@ -444,12 +447,14 @@ class WordBubbleManager:
                 font="LexiSmall",
                 justify="left",
                 wrap="word",
+                width=1,
                 padx=0,
                 pady=2,
                 cursor="hand2",
             )
             sentence.set_sentence(english, highlight_word=definition.word)
             sentence.pack(fill=tk.X)
+            example_texts_created.append(sentence)
             if chinese:
                 translation = tk.Label(body, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=520, justify="left", anchor="w")
                 translation.pack(fill=tk.X, anchor="w", pady=(0, 3))
@@ -474,14 +479,30 @@ class WordBubbleManager:
             pady=7,
         )
         close.pack(side=tk.RIGHT)
+
+        # Give the content a sensible width first so wrapping is stable, then
+        # re-measure each example sentence at that width and auto-size the window.
         popup.update_idletasks()
-        width, height = popup.winfo_width(), popup.winfo_height()
-        above = y_root - height - 8
-        below = y_root + 22
+        target_width = 560
+        popup.geometry(f"{target_width}x{max(300, popup.winfo_reqheight())}")
+        popup.update_idletasks()
+        for sentence in example_texts_created:
+            counted = sentence.count("1.0", "end", "displaylines")
+            lines = int(counted[0]) if counted else 1
+            sentence.configure(height=max(1, lines))
+        popup.update_idletasks()
+
+        screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
+        req_width = max(popup.winfo_reqwidth(), target_width)
+        req_height = popup.winfo_reqheight()
+        width = min(max(req_width, 460), screen_width - 80, 720)
+        height = min(max(req_height, 300), screen_height - 80)
+        above = y_root - height - 10
+        below = y_root + 26
         y = above if above >= 4 else min(below, screen_height - height - 4)
-        x = max(4, min(x_root - width // 2, self.root.winfo_screenwidth() - width - 8))
-        popup.geometry(f"+{x}+{max(4, y)}")
+        x = max(4, min(x_root - width // 2, screen_width - width - 8))
+        popup.geometry(f"{width}x{height}+{x}+{max(4, y)}")
         popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_window(d))
         self._windows.append(popup)
 
