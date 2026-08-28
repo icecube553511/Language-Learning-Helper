@@ -410,21 +410,6 @@ class WordBubbleManager:
         title_row = tk.Frame(header, bg="#17212B")
         title_row.pack(fill=tk.X)
         tk.Label(title_row, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(side=tk.LEFT, padx=24, pady=(16, 2))
-        close_x = tk.Button(
-            title_row,
-            text="✕",
-            command=lambda d=depth: self._close_window(d),
-            bg="#17212B",
-            fg="#FFFFFF",
-            activebackground="#17212B",
-            activeforeground="#FFFFFF",
-            relief=tk.FLAT,
-            bd=0,
-            font="LexiBody",
-            padx=12,
-            pady=0,
-        )
-        close_x.pack(side=tk.RIGHT, padx=14, pady=(8, 0))
         tk.Label(header, text="点击例句中的英文单词可继续查看", bg="#17212B", fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=24, pady=(0, 14))
 
         body = tk.Frame(popup, bg="#FFFFFF")
