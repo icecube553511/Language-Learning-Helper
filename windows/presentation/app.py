@@ -1457,7 +1457,7 @@ class LexiTrackApp(tk.Tk):
         elif key == "review":
             self.refresh_review_page()
         elif key == "dictation":
-            self._begin_dictation_loading()
+            self._refresh_dictation_candidates()
         elif key == "library":
             self.refresh_library()
         elif key == "analytics":
@@ -2051,8 +2051,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     original_font_scale = app.service.font_scale()
     for page in ("dashboard", "study", "review", "dictation", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
-        app.update()
-        app._complete_dictation_loading()
         app.update()
         visited.append(page)
         if page == "dictation":

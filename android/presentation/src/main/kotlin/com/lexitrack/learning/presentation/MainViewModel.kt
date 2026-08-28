@@ -126,7 +126,6 @@ class MainViewModel(
     fun selectSection(section: MainSection) {
         _uiState.value = _uiState.value.copy(section = section)
         if (section == MainSection.STUDY) ensureCurrentCard()
-        if (section == MainSection.DICTATION) startDictationLoading()
     }
 
     private fun startDictationLoading() {
