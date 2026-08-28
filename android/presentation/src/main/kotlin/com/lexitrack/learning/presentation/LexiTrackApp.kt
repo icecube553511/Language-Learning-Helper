@@ -95,6 +95,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -254,14 +259,20 @@ fun LexiTrackApp(
                         onRate = viewModel::rateReviewCurrent,
                         onLevelsChange = viewModel::setReviewLevels,
                     )
-                    MainSection.DICTATION -> DictationScreen(
-                        state = state,
-                        onToggleSelection = viewModel::toggleDictationSelection,
-                        onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
-                            viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
-                            dictationPreviewOpen = true
-                        },
-                    )
+                    MainSection.DICTATION -> {
+                        if (state.dictationLoading) {
+                            DictationLoadingOverlay()
+                        } else {
+                            DictationScreen(
+                                state = state,
+                                onToggleSelection = viewModel::toggleDictationSelection,
+                                onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
+                                    viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
+                                    dictationPreviewOpen = true
+                                },
+                            )
+                        }
+                    }
                     MainSection.LIBRARY -> LibraryScreen(
                         state = state,
                         onQueryChange = viewModel::updateSearch,
@@ -975,8 +986,6 @@ private fun RevealedCardContent(
                         style = MaterialTheme.typography.labelMedium,
                         color = Ink,
                         textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         example.chinese,
@@ -984,8 +993,6 @@ private fun RevealedCardContent(
                         style = MaterialTheme.typography.labelMedium,
                         color = MutedInk,
                         textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -1022,6 +1029,132 @@ private fun RatingButton(label: String, color: Color, modifier: Modifier, onClic
         contentPadding = PaddingValues(horizontal = 5.dp, vertical = 10.dp),
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+    }
+}
+
+@Composable
+private fun DictationLoadingOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = CardDefaults.outlinedCardBorder(),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 48.dp, vertical = 36.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                BookTurningAnimation()
+                Text(
+                    "正在准备默写词条…",
+                    color = MutedInk,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    "正在生成可打印的 A4 默写页",
+                    color = MutedInk,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookTurningAnimation() {
+    val transition = rememberInfiniteTransition(label = "dictationLoading")
+    // 0 -> 180 -> 0 with a calm hold at each landing.
+    val angle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "angle",
+    )
+    Box(
+        modifier = Modifier.size(96.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val pageColor = Color.White
+            val edge = Color(0xFFDCE7E3)
+            val ink = Color(0xFFE7EEF0)
+            val spine = size.width / 2f
+            val half = spine
+            val h = size.height
+            // Base left page.
+            drawRect(
+                color = pageColor,
+                topLeft = Offset(1f, 1f),
+                size = androidx.compose.ui.geometry.Size(spine - 1f, h - 2f),
+            )
+            // Base right page.
+            drawRect(
+                color = pageColor,
+                topLeft = Offset(spine, 1f),
+                size = androidx.compose.ui.geometry.Size(spine - 1f, h - 2f),
+            )
+            // Simple text lines on both pages.
+            repeat(4) { i ->
+                val y = h * (0.22f + i * 0.18f)
+                drawLine(color = ink, start = Offset(12f, y), end = Offset(spine - 12f, y), strokeWidth = 2f)
+                drawLine(color = ink, start = Offset(spine + 12f, y), end = Offset(size.width - 12f, y), strokeWidth = 2f)
+            }
+            // Turning page hinged at the spine.
+            val rad = angle * 3.14159265f
+            val cosRad = kotlin.math.cos(rad)
+            val sinRad = kotlin.math.sin(rad)
+            val edgeX = spine + half * cosRad
+            val lift = 8f * kotlin.math.abs(sinRad)
+            val path = Path().apply {
+                moveTo(spine, 0f)
+                lineTo(edgeX, lift)
+                lineTo(edgeX, h - lift)
+                lineTo(spine, h)
+                close()
+            }
+            // Soft shadow under the turning page.
+            if (kotlin.math.abs(cosRad) < 0.999f) {
+                val shadow = Path().apply {
+                    moveTo(spine, 2f)
+                    lineTo(edgeX, 4f + lift)
+                    lineTo(edgeX, h - 4f + lift)
+                    lineTo(spine, h - 2f)
+                    close()
+                }
+                drawPath(path = shadow, color = Color(0xFFEAF0F1))
+            }
+            drawPath(path = path, color = pageColor)
+            // Edge outline + text lines on the turning page.
+            val edgePath = Path().apply {
+                moveTo(spine, 0f)
+                lineTo(edgeX, lift)
+                lineTo(edgeX, h - lift)
+                lineTo(spine, h)
+            }
+            drawPath(path = edgePath, color = edge, style = Stroke(width = 1.5f))
+            repeat(4) { i ->
+                val y = h * (0.22f + i * 0.18f)
+                val lineStart = spine + 12f
+                val lineEnd = edgeX + 12f
+                drawLine(
+                    color = ink,
+                    start = Offset(lineStart, y),
+                    end = Offset(lineEnd, y + lift / h * (lineEnd - spine)),
+                    strokeWidth = 2f,
+                )
+            }
+            // Spine crease.
+            drawLine(color = edge, start = Offset(spine, 0f), end = Offset(spine, h), strokeWidth = 2f)
+        }
     }
 }
 

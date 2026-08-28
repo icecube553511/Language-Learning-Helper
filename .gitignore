@@ -8,6 +8,11 @@ __pycache__/
 windows/build/
 windows/dist/
 windows/.smoke-data/
+windows/.exe-smoke/
+windows/.preview-debug/
+windows/.demo-*.png
+windows/LexiTrack.spec
+.win_smoke_loading/
 android/.gradle/
 android/**/build/
 android/local.properties

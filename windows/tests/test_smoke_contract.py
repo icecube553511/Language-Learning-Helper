@@ -20,6 +20,8 @@ from presentation.app import (
     RED,
     dictation_candidate_display,
     dictation_preview_blocks,
+    dictation_render_range,
+    distribute_dictation_columns,
     scroll_contract_ready,
     visible_dictation_selection,
 )
@@ -31,6 +33,30 @@ class SmokeContractTests(unittest.TestCase):
         self.assertEqual(DICTATION_SELECTION_COLUMN_WIDTH, 76)
         self.assertEqual(DICTATION_CHECKBOX_FONT[1], 16)
         self.assertGreater(DICTATION_CHECKBOX_PAD_Y, 0)
+
+    def test_dictation_columns_grow_to_fill_the_viewport(self):
+        # Narrow viewport keeps the content minimums (still horizontally
+        # scrollable), while a wide viewport stretches the flexible columns.
+        narrow = distribute_dictation_columns(170, 260, 200, 640)
+        self.assertEqual(narrow, (170, 260, 200))
+
+        wide = distribute_dictation_columns(170, 260, 200, 1400)
+        self.assertGreater(sum(wide) + 120 + DICTATION_SELECTION_COLUMN_WIDTH, 1100)
+        self.assertGreater(wide[1], DICTATION_MEANING_COLUMN_WIDTH)
+        self.assertGreater(wide[0], 170)
+        self.assertGreater(wide[2], 200)
+
+    def test_dictation_render_range_only_covers_viewport_plus_buffer(self):
+        # 2000 uniform rows of 56px; a small viewport must only need a band.
+        row_heights = [56] * 2000
+        row_tops = [index * 56 for index in range(2000)]
+        start, end = dictation_render_range(row_tops, row_heights, 1000, 1180, buffer=20)
+        # Visible rows ~ 18..21; with ±20 buffer it must stay far below 2000.
+        self.assertGreaterEqual(start, 0)
+        self.assertLessEqual(end, 1999)
+        self.assertLess(end - start, 80)
+        self.assertLess(start, 22)
+        self.assertGreater(end, 38)
 
     def test_dictation_download_uses_each_selected_path_and_marks_after_success(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
+import random
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -12,6 +13,7 @@ from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
 from presentation.widgets import (
+    DictationLoadingOverlay,
     MemoryChart,
     NavItem,
     ScrollableExamplePanel,
@@ -40,6 +42,7 @@ DICTATION_MEANING_COLUMN_WIDTH = 260
 DICTATION_SELECTION_COLUMN_WIDTH = 76
 DICTATION_CHECKBOX_FONT = ("Microsoft YaHei UI", 16)
 DICTATION_CHECKBOX_PAD_Y = 4
+DICTATION_RENDER_BUFFER = 20
 
 
 def scroll_contract_ready(
@@ -90,6 +93,68 @@ def visible_dictation_selection(
     entries: list[VocabularyEntry],
 ) -> set[str]:
     return selected_ids & {entry.word_id for entry in entries}
+
+
+def distribute_dictation_columns(
+    word_width: int,
+    meaning_width: int,
+    tags_width: int,
+    viewport_width: int,
+    *,
+    fixed_widths: int = 120 + DICTATION_SELECTION_COLUMN_WIDTH,
+    minimum_word: int = 170,
+    minimum_tags: int = 200,
+) -> tuple[int, int, int]:
+    """Grow the word/meaning/tags columns so the table fills the viewport.
+
+    The status and selection columns stay fixed. When the viewport is wider
+    than the content, spare width is distributed: meaning gets half, then
+    word and tags split the rest. The three minimums are preserved so the
+    table still scrolls horizontally when content is narrow.
+    """
+    minimums = word_width + meaning_width + tags_width + fixed_widths
+    if viewport_width <= minimums:
+        return word_width, meaning_width, tags_width
+    headroom = viewport_width - minimums
+    meaning_extra = int(headroom * 0.5)
+    meaning_width += meaning_extra
+    remaining = headroom - meaning_extra
+    word_base = max(word_width, minimum_word)
+    tags_base = max(tags_width, minimum_tags)
+    word_extra = min(remaining, max(0, int(remaining * 0.4)))
+    word_width = word_base + word_extra
+    tags_width = tags_base + max(0, remaining - word_extra)
+    return word_width, meaning_width, tags_width
+
+
+def dictation_render_range(
+    row_tops: list[int],
+    row_heights: list[int],
+    viewport_top: float,
+    viewport_bottom: float,
+    buffer: int = DICTATION_RENDER_BUFFER,
+) -> tuple[int, int]:
+    """Return the [start, end] row band that must be rendered.
+
+    Only rows intersecting the viewport plus ``buffer`` rows on each side are
+    needed; rows farther away are never drawn.
+    """
+    total = len(row_tops)
+    if total == 0:
+        return 0, -1
+    first = 0
+    while first < total and row_tops[first] + row_heights[first] < viewport_top:
+        first += 1
+    last = total - 1
+    while last > 0 and row_tops[last] > viewport_bottom:
+        last -= 1
+    return max(0, first - buffer), min(total - 1, last + buffer)
+
+
+def dictation_loading_delay_ms(rand: random.Random | None = None) -> int:
+    """Random 1-2 second delay in 100 ms steps for the dictation entry animation."""
+    rng = rand or random.SystemRandom()
+    return rng.randint(10, 20) * 100
 
 
 class FontManager:
@@ -166,6 +231,8 @@ class LexiTrackApp(tk.Tk):
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()
+        self._dictation_loading: DictationLoadingOverlay | None = None
+        self._dictation_loading_after_id: str | None = None
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
@@ -362,9 +429,8 @@ class LexiTrackApp(tk.Tk):
             height=1,
         )
         self.study_meaning.pack()
-        self.study_examples_view = ScrollableExamplePanel(self.answer_panel, SURFACE, BORDER)
-        self.study_examples_view.pack(pady=(6, 2))
-        examples_area = self.study_examples_view.content
+        examples_area = tk.Frame(self.answer_panel, bg=SURFACE)
+        examples_area.pack(fill=tk.BOTH, expand=True, padx=32, pady=(6, 2))
         self.study_examples_area = examples_area
         examples_area.grid_columnconfigure(0, weight=1)
         self.example_texts: list[WordClickableText] = []
@@ -399,7 +465,6 @@ class LexiTrackApp(tk.Tk):
                 pady=0,
             )
             label.pack(fill=tk.BOTH, expand=True)
-            self.study_examples_view.bind_mousewheel(row, english, label)
             self.example_texts.append(english)
             self.example_labels.append(label)
             self.example_rows.append(row)
@@ -496,6 +561,7 @@ class LexiTrackApp(tk.Tk):
 
     def _build_dictation_page(self):
         _, body = self._new_page("dictation", "默写", "选择词库内容，生成可打印的 A4 默写页")
+        self.dictation_body = body
         controls = self._card(body)
         controls.pack(fill=tk.X, pady=(0, 12))
         inner = tk.Frame(controls, bg=SURFACE)
@@ -600,6 +666,7 @@ class LexiTrackApp(tk.Tk):
         self.dictation_selection_count.pack(anchor="w", padx=16, pady=(0, 8))
         table = tk.Frame(selection, bg=SURFACE)
         table.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        self.dictation_table_frame = table
         table.grid_rowconfigure(1, weight=1)
         table.grid_columnconfigure(0, weight=1)
         self.dictation_table_header = tk.Canvas(
@@ -629,6 +696,12 @@ class LexiTrackApp(tk.Tk):
         self.dictation_table_canvas.bind(
             "<Configure>", lambda _event: self._schedule_visible_dictation_checkboxes(), add="+",
         )
+        table.bind(
+            "<Configure>", lambda _event: self._schedule_dictation_table_resize(), add="+",
+        )
+        self._dictation_table_resize_id: str | None = None
+        self._dictation_draw_start: int = 0
+        self._dictation_draw_end: int = -1
         self.dictation_candidates: list[VocabularyEntry] = []
         self.dictation_selection_vars: dict[str, tk.BooleanVar] = {}
         self.dictation_selection_checkboxes: dict[str, tk.Checkbutton] = {}
@@ -668,24 +741,84 @@ class LexiTrackApp(tk.Tk):
         self.dictation_row_backgrounds.clear()
         self.dictation_table_header.delete("all")
         self.dictation_table_canvas.delete("all")
+        self._dictation_draw_start = 0
+        self._dictation_draw_end = -1
 
-        displays = [dictation_candidate_display(entry) for entry in self.dictation_candidates]
         body_font = self.font_manager.fonts["LexiSmall"]
         heading_font = self.font_manager.fonts["LexiBodyBold"]
 
-        def measured_width(values: list[str], minimum: int) -> int:
-            return max([minimum, *(body_font.measure(value) + 24 for value in values)])
+        # Pure content measurement + layout is expensive, so cache it. It only
+        # depends on the candidate list, never on the window size.
+        fingerprint = tuple(entry.word_id for entry in self.dictation_candidates)
+        if not hasattr(self, "_dictation_content_fingerprint") or self._dictation_content_fingerprint != fingerprint:
+            displays = [dictation_candidate_display(entry) for entry in self.dictation_candidates]
+            self._dictation_displays = displays
+            default_meaning_width = DICTATION_MEANING_COLUMN_WIDTH - 20
 
+            def measure(values: list[str], minimum: int) -> int:
+                return max([minimum, *(body_font.measure(value) + 24 for value in values)])
+
+            word_content = measure([item.word for item in displays], 170)
+            tags_content = measure([item.tags for item in displays], 200)
+            row_heights = [
+                max(56, body_font.metrics("linespace") * self._wrapped_line_count(item.meaning, default_meaning_width, body_font) + 14)
+                for item in displays
+            ]
+            row_tops: list[int] = []
+            cursor = 0
+            for height in row_heights:
+                row_tops.append(cursor)
+                cursor += height
+            self._dictation_table_row_height = max(row_heights, default=56)
+            self._dictation_table_row_tops = row_tops
+            self._dictation_table_row_heights = row_heights
+            self._dictation_content_widths = (word_content, tags_content)
+            self._dictation_content_fingerprint = fingerprint
+            self._dictation_body_height = cursor
+
+        word_content, tags_content = self._dictation_content_widths
+        total_width = self._apply_dictation_columns(word_content, tags_content, heading_font)
+
+        body_height = self._dictation_body_height
+        self.dictation_table_header.configure(scrollregion=(0, 0, total_width, 40))
+        self.dictation_table_canvas.configure(scrollregion=(0, 0, total_width, body_height))
+        self._scroll_dictation_horizontally("moveto", 0)
+        self.dictation_table_canvas.yview_moveto(0)
+        self._refresh_dictation_rows()
+
+    def _apply_dictation_columns(self, word_content: int, tags_content: int, heading_font: tkfont.Font) -> int:
+        """Rebuild column widths/header for the current viewport."""
+        fixed_widths = 120 + DICTATION_SELECTION_COLUMN_WIDTH
+        try:
+            viewport_width = max(320, self.dictation_table_frame.winfo_width() - 18)
+        except tk.TclError:
+            viewport_width = max(320, self.dictation_table_canvas.winfo_width())
+        word_width, meaning_width, tags_width = distribute_dictation_columns(
+            word_content,
+            DICTATION_MEANING_COLUMN_WIDTH,
+            tags_content,
+            viewport_width,
+            fixed_widths=fixed_widths,
+        )
         column_specs = (
-            ("单词", measured_width([item.word for item in displays], 170)),
-            ("中文释义", DICTATION_MEANING_COLUMN_WIDTH),
-            ("标签", measured_width([item.tags for item in displays], 200)),
+            ("单词", word_width),
+            ("中文释义", meaning_width),
+            ("标签", tags_width),
             ("考察状态", 120),
             ("选择", DICTATION_SELECTION_COLUMN_WIDTH),
         )
-        self._dictation_table_column_widths = [width for _, width in column_specs]
+        new_widths = [width for _, width in column_specs]
+        layout_changed = getattr(self, "_dictation_table_column_widths", None) != new_widths
+        self._dictation_table_column_widths = new_widths
+        if layout_changed:
+            # Column positions moved, so redraw the whole visible band.
+            self.dictation_table_canvas.delete("dictation_row")
+            self.dictation_row_backgrounds.clear()
+            self._dictation_draw_start = 0
+            self._dictation_draw_end = -1
         column_lefts: list[int] = []
         total_width = 0
+        self.dictation_table_header.delete("all")
         for title, width in column_specs:
             column_lefts.append(total_width)
             self.dictation_table_header.create_rectangle(
@@ -697,45 +830,71 @@ class LexiTrackApp(tk.Tk):
             )
             total_width += width
         self._dictation_table_column_lefts = column_lefts
+        return total_width
 
-        meaning_width = DICTATION_MEANING_COLUMN_WIDTH - 20
+    @staticmethod
+    def _wrapped_line_count(value: str, meaning_width: int, body_font: tkfont.Font) -> int:
+        count = 0
+        for paragraph in value.splitlines() or [""]:
+            current = ""
+            paragraph_lines = 1
+            for character in paragraph:
+                candidate = current + character
+                if current and body_font.measure(candidate) > meaning_width:
+                    paragraph_lines += 1
+                    current = character
+                else:
+                    current = candidate
+            count += paragraph_lines
+        return max(1, count)
 
-        def wrapped_line_count(value: str) -> int:
-            count = 0
-            for paragraph in value.splitlines() or [""]:
-                current = ""
-                paragraph_lines = 1
-                for character in paragraph:
-                    candidate = current + character
-                    if current and body_font.measure(candidate) > meaning_width:
-                        paragraph_lines += 1
-                        current = character
-                    else:
-                        current = candidate
-                count += paragraph_lines
-            return max(1, count)
+    def _refresh_dictation_rows(self):
+        """Render only the visible rows plus a small preload buffer.
 
-        row_heights = [
-            max(56, body_font.metrics("linespace") * wrapped_line_count(item.meaning) + 14)
-            for item in displays
-        ]
-        row_tops: list[int] = []
-        cursor = 0
-        for height in row_heights:
-            row_tops.append(cursor)
-            cursor += height
-        self._dictation_table_row_height = max(row_heights, default=56)
-        self._dictation_table_row_tops = row_tops
-        self._dictation_table_row_heights = row_heights
-        for index, (entry, display) in enumerate(zip(self.dictation_candidates, displays)):
+        Rows outside the viewport (± ``DICTATION_RENDER_BUFFER``) are dropped
+        so opening or stretching the table never draws the whole catalog.
+        """
+        if not hasattr(self, "dictation_table_canvas") or not self.dictation_candidates:
+            return
+        canvas = self.dictation_table_canvas
+        viewport_top = max(0.0, canvas.canvasy(0))
+        viewport_height = max(1, canvas.winfo_height())
+        viewport_bottom = viewport_top + viewport_height
+        row_tops = self._dictation_table_row_tops
+        row_heights = self._dictation_table_row_heights
+        render_start, render_end = dictation_render_range(
+            row_tops,
+            row_heights,
+            viewport_top,
+            viewport_bottom,
+            DICTATION_RENDER_BUFFER,
+        )
+
+        # Drop rows that fell outside the band.
+        for index in range(self._dictation_draw_start, self._dictation_draw_end + 1):
+            if index < render_start or index > render_end:
+                canvas.delete(f"dictation_row_{index}")
+
+        body_font = self.font_manager.fonts["LexiSmall"]
+        meaning_width = self._dictation_table_column_widths[1] - 20
+        column_lefts = self._dictation_table_column_lefts
+        column_widths = self._dictation_table_column_widths
+        total_width = sum(column_widths)
+        displays = self._dictation_displays
+        for index in range(render_start, render_end + 1):
+            if canvas.find_withtag(f"dictation_row_{index}"):
+                continue
+            entry = self.dictation_candidates[index]
+            display = displays[index]
             top = row_tops[index]
             row_height = row_heights[index]
             background = "#F8FAFB" if index % 2 else SURFACE
             if entry.word_id in self.dictation_selected_ids:
                 background = "#E2F1EC"
-            rectangle = self.dictation_table_canvas.create_rectangle(
+            rectangle = canvas.create_rectangle(
                 0, top, total_width, top + row_height,
                 fill=background, outline=BORDER,
+                tags=(f"dictation_row_{index}", "dictation_row"),
             )
             self.dictation_row_backgrounds[entry.word_id] = rectangle
             values = (display.word, display.meaning, display.tags, display.evaluation_status)
@@ -744,21 +903,20 @@ class LexiTrackApp(tk.Tk):
                 text_options = {"fill": color, "font": body_font}
                 if column == 1:
                     text_options.update(width=meaning_width, justify="left")
-                self.dictation_table_canvas.create_text(
+                canvas.create_text(
                     column_lefts[column] + 10,
                     top + row_height / 2,
                     text=value,
                     anchor="w",
+                    tags=(f"dictation_row_{index}", "dictation_row"),
                     **text_options,
                 )
-
-        body_height = sum(row_heights)
+        self._dictation_draw_start = render_start
+        self._dictation_draw_end = render_end
+        # Column separator lines only within the drawn band.
+        canvas.delete("dictation_separator")
         for left in column_lefts[1:]:
-            self.dictation_table_canvas.create_line(left, 0, left, body_height, fill=BORDER)
-        self.dictation_table_header.configure(scrollregion=(0, 0, total_width, 40))
-        self.dictation_table_canvas.configure(scrollregion=(0, 0, total_width, body_height))
-        self._scroll_dictation_horizontally("moveto", 0)
-        self.dictation_table_canvas.yview_moveto(0)
+            canvas.create_line(left, 0, left, self._dictation_body_height, fill=BORDER, tags=("dictation_separator",))
         self._refresh_visible_dictation_checkboxes()
 
     def _scroll_dictation_horizontally(self, *args):
@@ -767,12 +925,42 @@ class LexiTrackApp(tk.Tk):
 
     def _scroll_dictation_vertically(self, *args):
         self.dictation_table_canvas.yview(*args)
-        self._schedule_visible_dictation_checkboxes()
+        self._schedule_dictation_rows()
 
     def _schedule_visible_dictation_checkboxes(self):
         if self._dictation_checkbox_refresh_id is not None:
             self.after_cancel(self._dictation_checkbox_refresh_id)
         self._dictation_checkbox_refresh_id = self.after_idle(self._refresh_visible_dictation_checkboxes)
+
+    def _schedule_dictation_rows(self):
+        if self._dictation_checkbox_refresh_id is not None:
+            self.after_cancel(self._dictation_checkbox_refresh_id)
+            self._dictation_checkbox_refresh_id = None
+        if self._dictation_table_resize_id is not None:
+            self.after_cancel(self._dictation_table_resize_id)
+            self._dictation_table_resize_id = None
+        self._dictation_table_resize_id = self.after_idle(self._refresh_dictation_rows)
+
+    def _schedule_dictation_table_resize(self):
+        if self._dictation_table_resize_id is not None:
+            self.after_cancel(self._dictation_table_resize_id)
+        self._dictation_table_resize_id = self.after_idle(self._apply_dictation_table_resize)
+
+    def _apply_dictation_table_resize(self):
+        self._dictation_table_resize_id = None
+        if not hasattr(self, "dictation_table_canvas") or not self.dictation_candidates:
+            return
+        if not hasattr(self, "_dictation_content_widths"):
+            self._render_dictation_candidates()
+            return
+        word_content, tags_content = self._dictation_content_widths
+        heading_font = self.font_manager.fonts["LexiBodyBold"]
+        total_width = self._apply_dictation_columns(word_content, tags_content, heading_font)
+        self.dictation_table_header.configure(scrollregion=(0, 0, total_width, 40))
+        self.dictation_table_canvas.configure(
+            scrollregion=(0, 0, total_width, self._dictation_body_height),
+        )
+        self._refresh_dictation_rows()
 
     def _refresh_visible_dictation_checkboxes(self):
         self._dictation_checkbox_refresh_id = None
@@ -837,7 +1025,7 @@ class LexiTrackApp(tk.Tk):
             self.dictation_table_canvas.xview_scroll(direction * units, "units")
         else:
             self.dictation_table_canvas.yview_scroll(direction * units, "units")
-            self._schedule_visible_dictation_checkboxes()
+            self._schedule_dictation_rows()
         return "break"
 
     def _set_dictation_selected(self, word_id: str, selected: bool):
@@ -1106,7 +1294,7 @@ class LexiTrackApp(tk.Tk):
             self.example_texts,
             self.example_labels,
             wrap_width,
-            self.study_examples_view.available_text_width(),
+            wrap_width,
             preserve_examples=True,
         )
 
@@ -1431,6 +1619,8 @@ class LexiTrackApp(tk.Tk):
 
     def show_page(self, key: str):
         self.word_bubbles.clear()
+        if key != "dictation":
+            self._cancel_dictation_loading()
         if self.current_page:
             self.pages[self.current_page].pack_forget()
             self.nav_items[self.current_page].set_selected(False)
@@ -1444,13 +1634,48 @@ class LexiTrackApp(tk.Tk):
         elif key == "review":
             self.refresh_review_page()
         elif key == "dictation":
-            self._refresh_dictation_candidates()
+            self._begin_dictation_loading()
         elif key == "library":
             self.refresh_library()
         elif key == "analytics":
             self.refresh_analytics()
         elif key == "reminder":
             self._refresh_word_reminder_status()
+
+    def _begin_dictation_loading(self) -> None:
+        self._cancel_dictation_loading()
+        overlay = DictationLoadingOverlay(self.dictation_body)
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        self._dictation_loading = overlay
+        overlay.start()
+        delay_ms = dictation_loading_delay_ms()
+        self._dictation_loading_after_id = self.after(delay_ms, self._complete_dictation_loading)
+
+    def _complete_dictation_loading(self) -> None:
+        self._cancel_dictation_loading_timer()
+        overlay = self._dictation_loading
+        if overlay is None:
+            return
+        self._refresh_dictation_candidates()
+        self._dictation_loading = None
+        overlay.stop()
+        overlay.destroy()
+
+    def _cancel_dictation_loading(self) -> None:
+        self._cancel_dictation_loading_timer()
+        overlay = self._dictation_loading
+        if overlay is not None:
+            self._dictation_loading = None
+            overlay.stop()
+            overlay.destroy()
+
+    def _cancel_dictation_loading_timer(self) -> None:
+        if self._dictation_loading_after_id is not None:
+            try:
+                self.after_cancel(self._dictation_loading_after_id)
+            except tk.TclError:
+                pass
+            self._dictation_loading_after_id = None
 
     def refresh_dashboard(self):
         snapshot = self.service.dashboard()
@@ -1467,7 +1692,6 @@ class LexiTrackApp(tk.Tk):
         self.word_bubbles.clear()
         self.current_card = self.service.next_card(exclude_id=exclude_id)
         self.answer_visible = False
-        self.study_examples_view.scroll_to_top()
         self.answer_panel.pack_forget()
         self.rating_frame.pack_forget()
         self.study_controls.pack(fill=tk.X, pady=(4, 2))
@@ -1499,10 +1723,9 @@ class LexiTrackApp(tk.Tk):
             self.example_texts,
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
-            self.study_examples_view.available_text_width(),
+            max(360, self.answer_panel.winfo_width() - 80),
             preserve_examples=True,
         )
-        self.study_examples_view.scroll_to_top()
         if entry.mnemonic:
             self.study_mnemonic.configure(text=f"助记  {entry.mnemonic}")
             self.study_mnemonic.pack(pady=(8, 0))
@@ -1914,10 +2137,9 @@ class LexiTrackApp(tk.Tk):
             self.example_texts,
             self.example_labels,
             max(360, self.answer_panel.winfo_width() - 80),
-            self.study_examples_view.available_text_width(),
+            max(360, self.answer_panel.winfo_width() - 80),
             preserve_examples=True,
         )
-        self.study_examples_view.scroll_to_top()
         review_card = self.review_queue[0] if self.review_queue else None
         self._apply_answer_text(
             review_card,
@@ -2003,6 +2225,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     original_font_scale = app.service.font_scale()
     for page in ("dashboard", "study", "review", "dictation", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
+        app.update()
+        app._complete_dictation_loading()
         app.update()
         visited.append(page)
         if page == "dictation":
@@ -2124,26 +2348,18 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     answer_left = app.answer_panel.winfo_rootx()
     answer_width = app.answer_panel.winfo_width()
     answer_center = answer_left + answer_width / 2
-    example_viewport = app.study_examples_view
-    example_viewport_top = example_viewport.winfo_rooty()
-    example_viewport_bottom = example_viewport_top + example_viewport.winfo_height()
-    example_viewport_center = example_viewport.winfo_rootx() + example_viewport.winfo_width() / 2
+    example_area = app.study_examples_area
+    example_area_top = example_area.winfo_rooty()
+    example_area_bottom = example_area_top + example_area.winfo_height()
+    example_area_center = example_area.winfo_rootx() + example_area.winfo_width() / 2
     example_content_center = app.study_examples_area.winfo_rootx() + app.study_examples_area.winfo_width() / 2
-    study_example_viewport_ready = (
-        example_viewport.winfo_manager() == "pack"
-        and example_viewport.winfo_width() == ScrollableExamplePanel.VIEWPORT_WIDTH
-        and example_viewport.winfo_height() == ScrollableExamplePanel.VIEWPORT_HEIGHT
-        and int(example_viewport.cget("width")) == ScrollableExamplePanel.VIEWPORT_WIDTH
-        and int(example_viewport.cget("height")) == ScrollableExamplePanel.VIEWPORT_HEIGHT
-        and not bool(example_viewport.pack_propagate())
-        and int(example_viewport.cget("highlightthickness")) == 1
-        and abs(example_viewport_center - answer_center) <= 3
-    )
-    study_example_scrollbar_ready = (
-        example_viewport.scrollbar.winfo_manager() == "pack"
-        and bool(example_viewport.scrollbar.winfo_ismapped())
-        and example_viewport.scrollbar.winfo_height() >= example_viewport.winfo_height() - 2
-        and example_viewport.canvas.winfo_manager() == "pack"
+    study_examples_no_scroll = not any(isinstance(widget, tk.Scrollbar) for widget in example_area.winfo_children())
+    study_examples_visible = app.current_card is None or (
+        example_area.winfo_manager() == "pack"
+        and abs(example_area_center - answer_center) <= 3
+        and all(label.winfo_manager() == "pack" and label.winfo_height() >= 24 for label in app.example_labels)
+        and all(row.winfo_manager() == "grid" and row.winfo_width() > 0 for row in app.example_rows)
+        and study_examples_no_scroll
     )
     example_bounds, example_gaps, examples_compact = example_stack_metrics(
         app.example_rows,
@@ -2184,10 +2400,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and rating_bottom <= window_bottom + 2
     )
     examples_visible = app.current_card is None or (
-        example_viewport_top >= answer_top - 2
-        and example_viewport_bottom <= answer_bottom + 2
-        and example_viewport_bottom <= rating_top + 2
-        and example_viewport_bottom <= window_bottom + 2
+        example_area_top >= answer_top - 2
+        and example_area_bottom <= answer_bottom + 2
+        and example_area_bottom <= rating_top + 2
+        and example_area_bottom <= window_bottom + 2
     )
     example_font = tkfont.nametofont("LexiExample")
     expected_example_font_size = min(14, max(11, round(FontManager.BASE_SIZES["LexiExample"] * app.service.font_scale())))
@@ -2213,26 +2429,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     max_scale_answer_top = app.answer_panel.winfo_rooty()
     max_scale_answer_bottom = app.answer_panel.winfo_rooty() + app.answer_panel.winfo_height()
     max_scale_window_bottom = app.winfo_rooty() + app.winfo_height()
-    max_scale_examples_top = example_viewport.winfo_rooty()
-    max_scale_examples_bottom = max_scale_examples_top + example_viewport.winfo_height()
+    max_scale_examples_top = example_area.winfo_rooty()
+    max_scale_examples_bottom = max_scale_examples_top + example_area.winfo_height()
     max_scale_example_font = tkfont.nametofont("LexiExample")
-    max_scale_example_viewport_size = [example_viewport.winfo_width(), example_viewport.winfo_height()]
-    max_scale_example_scrollable = example_viewport.is_scrollable()
-    max_scale_yview_before = list(example_viewport.canvas.yview())
-    example_viewport.canvas.event_generate("<MouseWheel>", delta=-120)
-    app.update_idletasks()
-    app.update()
-    max_scale_yview_after = list(example_viewport.canvas.yview())
-    max_scale_wheel_scroll = (
-        max_scale_example_scrollable
-        and max_scale_yview_after[0] > max_scale_yview_before[0]
-    )
-    example_viewport.scroll_to_top()
-    max_scale_examples_visible = (
-        max_scale_example_viewport_size
-        == [ScrollableExamplePanel.VIEWPORT_WIDTH, ScrollableExamplePanel.VIEWPORT_HEIGHT]
-        and all(label.winfo_height() >= 24 for label in app.example_labels)
-    )
+    max_scale_examples_visible = study_examples_visible
     max_scale_example_bounds, max_scale_example_gaps, max_scale_examples_compact = example_stack_metrics(
         app.example_rows,
         app.study_examples_area,
@@ -2253,9 +2453,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         max_scale_answer_bottom <= max_scale_rating_top + 2
         and max_scale_rating_bottom <= max_scale_window_bottom + 2
         and max_scale_examples_visible
-        and max_scale_examples_compact
-        and max_scale_example_scrollable
-        and max_scale_wheel_scroll
         and int(max_scale_example_font.cget("size")) == 14
     )
     app.change_font_scale(str(original_font_scale * 100))
@@ -2385,10 +2582,9 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and study_header_centered
             and answers_above_ratings
             and examples_visible
-            and examples_compact
             and examples_centered_stack
-            and study_example_viewport_ready
-            and study_example_scrollbar_ready
+            and study_examples_visible
+            and study_examples_no_scroll
             and rating_buttons_visible
             and max_scale_button_fit
             and max_scale_layout_fit
@@ -2422,9 +2618,9 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "revealLabel": reveal_label,
         "studyPageScrollDisabled": not study_has_scrollbar,
         "answerBounds": [answer_top, answer_bottom],
-        "studyExampleViewportReady": study_example_viewport_ready,
-        "studyExampleViewportSize": [example_viewport.winfo_width(), example_viewport.winfo_height()],
-        "studyExampleScrollbarReady": study_example_scrollbar_ready,
+        "studyExamplesNoScroll": study_examples_no_scroll,
+        "studyExamplesVisible": study_examples_visible,
+        "studyExamplesAreaSize": [example_area.winfo_width(), example_area.winfo_height()],
         "exampleBounds": example_bounds,
         "exampleGaps": example_gaps,
         "examplesVisible": examples_visible,
@@ -2448,10 +2644,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "maxScaleExamplesBottom": max_scale_examples_bottom,
         "maxScaleExamplesVisible": max_scale_examples_visible,
         "maxScaleExamplesGeometry": [max_scale_examples_top, max_scale_answer_bottom, max_scale_example_font.metrics("linespace")],
-        "maxScaleExampleViewportSize": max_scale_example_viewport_size,
-        "maxScaleExampleScrollable": max_scale_example_scrollable,
-        "maxScaleWheelScroll": max_scale_wheel_scroll,
-        "maxScaleExampleYView": [max_scale_yview_before, max_scale_yview_after],
         "maxScaleExampleBottoms": max_scale_example_bottoms,
         "maxScaleExampleGaps": max_scale_example_gaps,
         "maxScaleExamplesCompact": max_scale_examples_compact,

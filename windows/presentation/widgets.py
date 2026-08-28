@@ -684,3 +684,240 @@ class MemoryChart(tk.Canvas):
                 self.create_line(*points, fill="#3973C6", width=3, smooth=True)
         self.create_text(left, 9, text=f"每日到期数  最大 {maximum}", anchor="w", fill="#65727E", font="LexiChart")
         self.create_text(right, 9, text="蓝线：平均保持率", anchor="e", fill="#3973C6", font="LexiChart")
+
+
+class DictationLoadingOverlay(tk.Frame):
+    """Full-size, animated overlay resembling a smooth website preloader.
+
+    Draws a minimal open book whose right page turns over the spine in a
+    smooth loop, with a soft shadow and breathing caption on a rounded
+    card, driven by a ~16ms frame loop. The ``place``/``start``/``stop``
+    contract used by the app is preserved.
+    """
+
+    BOOK_WIDTH = 180
+    BOOK_HEIGHT = 130
+    PAGE_COLOR = "#FFFFFF"
+    PAGE_EDGE = "#DCE7E3"
+    PAGE_LINES = "#E7EEF0"
+    CARD_WIDTH = 460
+    CARD_HEIGHT = 320
+    _FRAME_MS = 16
+    _PAGE_TURN_MS = 1400
+    _PAGE_HOLD_MS = 500
+
+    def __init__(self, master: tk.Widget, **kwargs):
+        super().__init__(
+            master,
+            bg="#F3F6F7",
+            highlightthickness=0,
+            bd=0,
+            **kwargs,
+        )
+        self._running = False
+        self._step = 0
+        self._after_id: str | None = None
+        self._turn_duration = self._PAGE_TURN_MS // self._FRAME_MS
+        self._build()
+
+    def _build(self) -> None:
+        self.card = tk.Frame(
+            self,
+            bg="#FFFFFF",
+            highlightbackground="#DDE3E8",
+            highlightthickness=1,
+            bd=0,
+            width=self.CARD_WIDTH,
+            height=self.CARD_HEIGHT,
+        )
+        self.card.pack_propagate(False)
+        self.card.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.book = tk.Canvas(
+            self.card,
+            width=self.BOOK_WIDTH + 16,
+            height=self.BOOK_HEIGHT + 16,
+            bg="#FFFFFF",
+            bd=0,
+            highlightthickness=0,
+        )
+        self.book.pack(pady=(38, 6))
+
+        self.title = tk.Label(
+            self.card,
+            text="正在准备默写词条…",
+            bg="#FFFFFF",
+            fg="#1B2733",
+            font="LexiHeading",
+        )
+        self.title.pack()
+
+        self.sub = tk.Label(
+            self.card,
+            text="正在生成可打印的 A4 默写页",
+            bg="#FFFFFF",
+            fg="#65727E",
+            font="LexiSmall",
+        )
+        self.sub.pack(pady=(6, 0))
+
+        self._left = 8
+        self._top = 8
+        self._half = self.BOOK_WIDTH / 2
+        self._height = self.BOOK_HEIGHT
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._step = 0
+        self._tick()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+
+    def _tick(self) -> None:
+        if not self._running:
+            return
+        self._draw_book()
+        self._breathe()
+        self._step += 1
+        self._after_id = self.after(self._FRAME_MS, self._tick)
+
+    def _draw_book(self) -> None:
+        from math import cos, pi, sin, radians
+
+        book = self.book
+        book.delete("all")
+        left = self._left
+        top = self._top
+        half = self._half
+        height = self._height
+        spine_x = left + half
+        right_x = left + half * 2
+        turn_frames = self._turn_duration
+        hold_frames = self._PAGE_HOLD_MS // self._FRAME_MS
+
+        # Static spread: left page + right page.
+        self._spread(book, left, right_x, top, spine_x, height)
+
+        # Determine the current turning angle with eased 0->180->0 motion.
+        cycle = turn_frames + hold_frames
+        phase = self._step % (cycle * 2)
+        if phase < turn_frames:
+            progress = phase / turn_frames
+            eased = 0.5 - 0.5 * cos(pi * progress)
+            angle = eased * 180.0
+        elif phase < turn_frames + hold_frames:
+            angle = 180.0
+        elif phase < cycle * 2 - hold_frames:
+            progress = (phase - turn_frames - hold_frames) / turn_frames
+            eased = 0.5 - 0.5 * cos(pi * progress)
+            angle = 180.0 - eased * 180.0
+        else:
+            angle = 0.0
+
+        self._turning_page(book, spine_x, top, half, height, angle)
+
+    def _spread(self, book: tk.Canvas, left: int, right_x: int, top: int, spine_x: int, height: int) -> None:
+        # Left base page.
+        book.create_polygon(
+            left,
+            top,
+            spine_x,
+            top,
+            spine_x,
+            top + height,
+            left,
+            top + height,
+            fill=self.PAGE_COLOR,
+            outline=self.PAGE_EDGE,
+            width=1,
+        )
+        # Right base page.
+        book.create_polygon(
+            spine_x,
+            top,
+            right_x,
+            top,
+            right_x,
+            top + height,
+            spine_x,
+            top + height,
+            fill=self.PAGE_COLOR,
+            outline=self.PAGE_EDGE,
+            width=1,
+        )
+        self._write_lines(book, left, top, spine_x, height)
+        self._write_lines(book, spine_x, top, right_x, height)
+        # Central spine crease.
+        book.create_line(spine_x, top, spine_x, top + height, fill=self.PAGE_EDGE, width=2)
+
+    def _turning_page(self, book: tk.Canvas, spine_x: int, top: int, half: int, height: int, angle: float) -> None:
+        from math import cos, radians, sin
+
+        rad = radians(angle)
+        # The leading edge sweeps left/right across the spine as it turns.
+        edge_x = spine_x + half * cos(rad)
+        # Lift the edge a little mid-turn for a soft 3D curl.
+        lift = 8.0 * sin(rad)
+        # Soft shadow under the turning page.
+        if abs(cos(rad)) < 0.999:
+            book.create_polygon(
+                spine_x,
+                top + 2,
+                edge_x,
+                top + 4 + lift,
+                edge_x,
+                top + height - 4 + lift,
+                spine_x,
+                top + height - 2,
+                fill="#EAF0F1",
+                outline="",
+                width=0,
+            )
+        book.create_polygon(
+            spine_x,
+            top,
+            edge_x,
+            top + lift,
+            edge_x,
+            top + height + lift,
+            spine_x,
+            top + height,
+            fill=self.PAGE_COLOR,
+            outline=self.PAGE_EDGE,
+            width=1,
+        )
+        self._write_lines(book, spine_x, top, edge_x, height, tilt=lift)
+
+    def _write_lines(self, book: tk.Canvas, x1: int, top: int, x2: float, height: int, tilt: float = 0.0) -> None:
+        for index in range(5):
+            ly = top + int(height * (0.20 + index * 0.15))
+            start = x1 + 12
+            end = x2 - 12
+            if end > start + 6:
+                book.create_line(
+                    start,
+                    ly,
+                    end,
+                    ly + tilt / height * (end - x1),
+                    fill=self.PAGE_LINES,
+                    width=2,
+                    smooth=True,
+                )
+
+    def _breathe(self) -> None:
+        # Gentle opacity-like pulse for the caption to feel alive.
+        from math import sin, pi
+
+        pulse = (sin(self._step / 10.0 * pi) + 1) / 2
+        color = "#16866F" if pulse > 0.5 else "#65727E"
+        self.sub.configure(fg=color)
+        self.title.configure(fg="#1B2733" if pulse > 0.75 else "#2B3A44")
