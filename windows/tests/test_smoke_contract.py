@@ -20,6 +20,7 @@ from presentation.app import (
     RED,
     dictation_candidate_display,
     dictation_preview_blocks,
+    dictation_preview_scroll_units,
     dictation_render_range,
     distribute_dictation_columns,
     scroll_contract_ready,
@@ -57,6 +58,15 @@ class SmokeContractTests(unittest.TestCase):
         self.assertLess(end - start, 80)
         self.assertLess(start, 22)
         self.assertGreater(end, 38)
+
+    def test_dictation_preview_scroll_units_scale_with_delta(self):
+        # Windows wheel delta is typically ±120 per notch; a block/delta of
+        # multiple notches scrolls farther so large wheels stay responsive.
+        self.assertEqual(dictation_preview_scroll_units(0), (0, 0))
+        self.assertEqual(dictation_preview_scroll_units(120), (-1, 1))
+        self.assertEqual(dictation_preview_scroll_units(-120), (1, 1))
+        self.assertEqual(dictation_preview_scroll_units(240), (-1, 2))
+        self.assertEqual(dictation_preview_scroll_units(-360), (1, 3))
 
     def test_dictation_download_uses_each_selected_path_and_marks_after_success(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +150,18 @@ class SmokeContractTests(unittest.TestCase):
                 "1. conduct    v    指挥, 进行\n    e.g. They _______ the test.",
                 "2. focus    n / v    焦点; 专注",
             ],
+        )
+
+    def test_dictation_preview_includes_chinese_when_present(self):
+        document = DictationDocument(
+            rows=(
+                DictationRow("conduct", "v", "指挥", ("They _______ it.",), ("他们指挥它。",)),
+            ),
+            options=DictationOptions(),
+        )
+        self.assertEqual(
+            dictation_preview_blocks(document),
+            ["1. conduct    v    指挥\n    e.g. They _______ it.（他们指挥它。）"],
         )
 
 

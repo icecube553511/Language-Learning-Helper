@@ -36,9 +36,11 @@ class DictationDocumentExporter:
             paragraph = doc.add_paragraph()
             run = paragraph.add_run(f"{index}. {row.word}  {row.part_of_speech}  {row.meaning}")
             self._set_docx_font(run, document.options.font_size_pt)
-            for example in row.examples:
+            for offset, example in enumerate(row.examples):
+                chinese = row.example_chinese[offset] if offset < len(row.example_chinese) else ""
+                suffix = f"（{chinese}）" if chinese else ""
                 paragraph = doc.add_paragraph()
-                run = paragraph.add_run(f"    e.g. {example}")
+                run = paragraph.add_run(f"    e.g. {example}{suffix}")
                 self._set_docx_font(run, document.options.font_size_pt)
         output = BytesIO()
         doc.save(output)
@@ -76,8 +78,10 @@ class DictationDocumentExporter:
         for index, row in enumerate(document.rows, 1):
             text = f"{index}. {row.word}  {row.part_of_speech}  {row.meaning}"
             story.append(Paragraph(self._escape_pdf(text), style))
-            for example in row.examples:
-                story.append(Paragraph(self._escape_pdf(f"    e.g. {example}"), style))
+            for offset, example in enumerate(row.examples):
+                chinese = row.example_chinese[offset] if offset < len(row.example_chinese) else ""
+                suffix = f"（{chinese}）" if chinese else ""
+                story.append(Paragraph(self._escape_pdf(f"    e.g. {example}{suffix}"), style))
             story.append(Spacer(1, document.options.font_size_pt * 0.5))
         doc.build(story)
         return output.getvalue()

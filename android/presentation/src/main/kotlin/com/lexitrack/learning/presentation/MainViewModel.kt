@@ -77,6 +77,21 @@ data class MainUiState(
     val wordReminderCard: VocabularyEntry? = null,
 )
 
+
+internal fun resolveReviewReminderMessage(
+    dueNow: Int,
+    lastRemindedDueCount: Int,
+    currentMessage: String?,
+): Pair<String?, Int> {
+    return when {
+        dueNow > 0 && dueNow != lastRemindedDueCount ->
+            "有 $dueNow 个单词已按记忆曲线到期。" to dueNow
+        dueNow == 0 -> null to 0
+        else -> currentMessage to lastRemindedDueCount
+    }
+}
+
+
 class MainViewModel(
     private val useCases: AppUseCases,
 ) : ViewModel() {
@@ -176,6 +191,12 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(
             dictationSelectedIds = if (wordId in selected) selected - wordId else selected + wordId,
         )
+    }
+
+    fun setDictationSelection(wordIds: Collection<String>, selected: Boolean) {
+        val current = _uiState.value.dictationSelectedIds.toMutableSet()
+        if (selected) current.addAll(wordIds) else current.removeAll(wordIds.toSet())
+        _uiState.value = _uiState.value.copy(dictationSelectedIds = current)
     }
 
     fun buildDictation(
@@ -460,13 +481,12 @@ class MainViewModel(
             useCases.words.value.firstOrNull { it.id == id }
         }
         val dashboard = useCases.dashboard()
-        val reminder = if (dashboard.dueNow > 0 && dashboard.dueNow != lastRemindedDueCount) {
-            lastRemindedDueCount = dashboard.dueNow
-            "有 ${dashboard.dueNow} 个单词已按记忆曲线到期。"
-        } else {
-            if (dashboard.dueNow == 0) lastRemindedDueCount = 0
-            _uiState.value.reviewReminderMessage
-        }
+        val (reminder, updatedLastReminded) = resolveReviewReminderMessage(
+            dueNow = dashboard.dueNow,
+            lastRemindedDueCount = lastRemindedDueCount,
+            currentMessage = _uiState.value.reviewReminderMessage,
+        )
+        lastRemindedDueCount = updatedLastReminded
         _uiState.value = _uiState.value.copy(
             catalogStatus = status,
             dashboard = dashboard,

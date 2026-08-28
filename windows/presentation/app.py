@@ -83,7 +83,10 @@ def dictation_preview_blocks(document) -> list[str]:
     for index, row in enumerate(document.rows, 1):
         fields = "    ".join((row.word, row.part_of_speech, row.meaning)).rstrip()
         lines = [f"{index}. {fields}"]
-        lines.extend(f"    e.g. {example}" for example in row.examples)
+        for offset, example in enumerate(row.examples):
+            chinese = row.example_chinese[offset] if offset < len(row.example_chinese) else ""
+            suffix = f"（{chinese}）" if chinese else ""
+            lines.append(f"    e.g. {example}{suffix}")
         blocks.append("\n".join(lines))
     return blocks
 
@@ -155,6 +158,18 @@ def dictation_loading_delay_ms(rand: random.Random | None = None) -> int:
     """Random 1-2 second delay in 100 ms steps for the dictation entry animation."""
     rng = rand or random.SystemRandom()
     return rng.randint(10, 20) * 100
+
+
+def dictation_preview_scroll_units(delta: int) -> tuple[int, int]:
+    """Return ``(direction, units)`` for a dictation-preview mouse-wheel delta.
+
+    Positive deltas scroll up; the step count scales with the delta so a single
+    notch on Windows (typically ±120) moves the preview by one line unit.
+    """
+    if not delta:
+        return 0, 0
+    units = max(1, abs(delta) // 120)
+    return (-1 if delta > 0 else 1), units
 
 
 class FontManager:
@@ -264,7 +279,7 @@ class LexiTrackApp(tk.Tk):
             ("dashboard", "总览", "dashboard"),
             ("study", "学习", "study"),
             ("review", "复习", "review"),
-            ("dictation", "默写", "edit"),
+            ("dictation", "默写纸", "edit"),
             ("library", "词库", "library"),
             ("analytics", "记忆分析", "analytics"),
             ("reminder", "学习提醒", "clock"),
@@ -478,8 +493,12 @@ class LexiTrackApp(tk.Tk):
         self.review_summary = tk.Label(toolbar, text="", bg=BG, fg=MUTED, font="LexiBody")
         self.review_summary.pack(side=tk.LEFT)
         self.review_filter_vars = self._build_level_filters(toolbar, "复习", self.service.review_levels, self._save_review_levels, inline=True)
-        self.review_start_button = self._primary_button(toolbar, "开始复习", self.start_review_session, width=10)
-        self.review_start_button.pack(side=tk.RIGHT)
+        self.review_start_row = tk.Frame(body, bg=BG)
+        self.review_start_row.pack(fill=tk.X, pady=(0, 10))
+        self.review_start_button = self._primary_button(
+            self.review_start_row, "开始复习", self.start_review_session, width=22, color=ACCENT,
+        )
+        self.review_start_button.pack(anchor="center", pady=8)
         self.review_card = self._card(body)
         self.review_card.pack(fill=tk.BOTH, expand=True)
         review_meta = tk.Frame(self.review_card, bg=SURFACE)
@@ -560,7 +579,7 @@ class LexiTrackApp(tk.Tk):
         self.refresh_review_page()
 
     def _build_dictation_page(self):
-        _, body = self._new_page("dictation", "默写", "选择词库内容，生成可打印的 A4 默写页")
+        _, body = self._new_page("dictation", "默写纸", "选择词库内容，生成可打印的 A4 默写页")
         self.dictation_body = body
         controls = self._card(body)
         controls.pack(fill=tk.X, pady=(0, 12))
@@ -646,6 +665,12 @@ class LexiTrackApp(tk.Tk):
             bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
             font="LexiSmall", padx=0,
         ).pack(side=tk.LEFT, padx=(0, 10))
+        self.dictation_example_chinese_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            example_row, text="例句含中文释义", variable=self.dictation_example_chinese_var,
+            bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
+            font="LexiSmall", padx=0,
+        ).pack(side=tk.LEFT, padx=(0, 10))
         tk.Label(example_row, text="自填例句（可选，应用于本次所有词条）", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT)
         self.dictation_custom_example_var = tk.StringVar()
         ttk.Entry(example_row, textvariable=self.dictation_custom_example_var, width=58).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
@@ -693,6 +718,8 @@ class LexiTrackApp(tk.Tk):
         )
         self.dictation_table_canvas.bind("<MouseWheel>", self._on_dictation_table_mousewheel, add="+")
         self.dictation_table_canvas.bind("<Shift-MouseWheel>", self._on_dictation_table_mousewheel, add="+")
+        self.dictation_table_canvas.bind("<ButtonPress-1>", self._on_dictation_table_click, add="+")
+        self.dictation_table_canvas.bind("<B1-Motion>", self._on_dictation_table_drag, add="+")
         self.dictation_table_canvas.bind(
             "<Configure>", lambda _event: self._schedule_visible_dictation_checkboxes(), add="+",
         )
@@ -712,6 +739,8 @@ class LexiTrackApp(tk.Tk):
         self._dictation_table_row_heights: list[int] = []
         self._dictation_table_column_lefts: list[int] = []
         self._dictation_table_column_widths: list[int] = []
+        self._dictation_drag_anchor_id: str | None = None
+        self._dictation_drag_anchor_selected: bool | None = None
 
     def _dictation_levels(self) -> set[str]:
         selected = {level for level, variable in self.dictation_level_vars.items() if variable.get()}
@@ -739,6 +768,8 @@ class LexiTrackApp(tk.Tk):
         self.dictation_selection_vars.clear()
         self.dictation_selection_checkboxes.clear()
         self.dictation_row_backgrounds.clear()
+        self._dictation_drag_anchor_id = None
+        self._dictation_drag_anchor_selected = None
         self.dictation_table_header.delete("all")
         self.dictation_table_canvas.delete("all")
         self._dictation_draw_start = 0
@@ -1028,6 +1059,54 @@ class LexiTrackApp(tk.Tk):
             self._schedule_dictation_rows()
         return "break"
 
+    def _dictation_row_index_at(self, canvas_y: float) -> int | None:
+        for index, row_top in enumerate(self._dictation_table_row_tops):
+            if row_top <= canvas_y <= row_top + self._dictation_table_row_heights[index]:
+                return index
+        return None
+
+    def _dictation_entry_at(self, canvas_y: float) -> VocabularyEntry | None:
+        index = self._dictation_row_index_at(canvas_y)
+        if index is None or index >= len(self.dictation_candidates):
+            return None
+        return self.dictation_candidates[index]
+
+    def _on_dictation_table_click(self, event):
+        if self.dictation_mode_var.get() != "manual":
+            return "break"
+        canvas_y = self.dictation_table_canvas.canvasy(event.y)
+        entry = self._dictation_entry_at(canvas_y)
+        if entry is None:
+            return "break"
+        selected = entry.word_id not in self.dictation_selected_ids
+        self._set_dictation_selected(entry.word_id, selected)
+        # Remember the anchor so a subsequent drag extends the same action.
+        self._dictation_drag_anchor_id = entry.word_id
+        self._dictation_drag_anchor_selected = selected
+        return "break"
+
+    def _on_dictation_table_drag(self, event):
+        if self.dictation_mode_var.get() != "manual":
+            return "break"
+        canvas_y = self.dictation_table_canvas.canvasy(event.y)
+        entry = self._dictation_entry_at(canvas_y)
+        if entry is None:
+            return "break"
+        if self._dictation_drag_anchor_id is None:
+            self._dictation_drag_anchor_id = entry.word_id
+            self._dictation_drag_anchor_selected = entry.word_id not in self.dictation_selected_ids
+        anchor_selected = self._dictation_drag_anchor_selected
+        start = next(
+            (i for i, item in enumerate(self.dictation_candidates) if item.word_id == self._dictation_drag_anchor_id),
+            0,
+        )
+        end = next((i for i, item in enumerate(self.dictation_candidates) if item.word_id == entry.word_id), start)
+        low, high = sorted((start, end))
+        for index in range(low, high + 1):
+            target = self.dictation_candidates[index]
+            self._set_dictation_selected(target.word_id, anchor_selected)
+        return "break"
+
     def _set_dictation_selected(self, word_id: str, selected: bool):
         if selected:
             self.dictation_selected_ids.add(word_id)
@@ -1045,6 +1124,9 @@ class LexiTrackApp(tk.Tk):
         checkbox = self.dictation_selection_checkboxes.get(word_id)
         if checkbox is not None:
             checkbox.configure(bg=background, activebackground=background)
+            variable = self.dictation_selection_vars.get(word_id)
+            if variable is not None:
+                variable.set(selected)
         self._update_dictation_selection_count()
 
     def _update_dictation_selection_count(self):
@@ -1064,6 +1146,7 @@ class LexiTrackApp(tk.Tk):
             missing_fields=fields,
             show_initial=self.dictation_initial_var.get(),
             include_examples=self.dictation_examples_var.get(),
+            include_example_chinese=self.dictation_example_chinese_var.get(),
             custom_examples=custom_examples,
         )
 
@@ -1142,6 +1225,14 @@ class LexiTrackApp(tk.Tk):
         canvas = tk.Canvas(frame, bg="#DCE3E5", highlightthickness=0)
         scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        def scroll_preview(event) -> str:
+            direction, units = dictation_preview_scroll_units(getattr(event, "delta", 0))
+            if units:
+                canvas.yview_scroll(direction * units, "units")
+            return "break"
+
+        canvas.bind("<MouseWheel>", scroll_preview)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         page_width, page_height, gap = 520, 736, 22
@@ -1747,8 +1838,10 @@ class LexiTrackApp(tk.Tk):
         self._sync_review_batch_control()
         if self.review_queue:
             self.review_toolbar.pack_forget()
+            self.review_start_row.pack_forget()
         elif not self.review_toolbar.winfo_manager():
-            self.review_toolbar.pack(fill=tk.X, pady=(0, 10), before=self.review_card)
+            self.review_toolbar.pack(fill=tk.X, pady=(0, 4), before=self.review_card)
+            self.review_start_row.pack(fill=tk.X, pady=(0, 10), before=self.review_card)
         learnt_count = self.service.learnt_word_count()
         due_count = self.service.due_review_count()
         batch_size = min(self.service.review_batch_size(), learnt_count) if learnt_count else 0
@@ -1783,6 +1876,7 @@ class LexiTrackApp(tk.Tk):
             self.refresh_review_page()
             return
         self.review_toolbar.pack_forget()
+        self.review_start_row.pack_forget()
         card = self.review_queue[0]
         self.review_level.configure(text=card.level or "custom")
         self.review_word.configure(text=card.word)

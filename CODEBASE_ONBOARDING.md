@@ -109,3 +109,7 @@ Android 构建需要 JDK 17、Android SDK 35；Windows 打包还需要 windows/r
 ## 当前架构审查提示
 
 共享 JSON 和 Android 使用可多选的 memberships 集合；Windows 为兼容旧状态仍持久化 `level` 字符串，但领域模型通过 `VocabularyEntry.levels` 暴露集合语义。学习、复习和提醒筛选必须保持相互独立，并使用集合接口，不得直接按单个字符串比较。
+
+### Agent Team 协同（新增）
+
+跨端功能由 `win_fix`（Windows）与 `android_fix`（Android）并发完成，`grill_plan` 负责规划/质疑，根 agent 负责共享契约、`tools/verify_sync.py`、文档与 Git/GitHub 留痕。两平台互不重叠，共享资源只读。每个行为变更必须同时落地 Windows 与 Android，附带两端测试，并提交并推送 GitHub PR。已确认的跨端行为：完成后复习提醒自动清除、复习开始按钮居中放大、默写手选整行点选与拖拽范围多选、默写预览滚轮翻页。

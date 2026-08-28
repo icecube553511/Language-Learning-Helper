@@ -32,7 +32,10 @@ internal fun dictationPreviewLines(document: DictationDocument): List<String> =
     document.rows.flatMapIndexed { index, row ->
         buildList {
             add("${index + 1}. ${row.word}    ${row.partOfSpeech}    ${row.meaning}")
-            row.examples.forEach { add("    e.g. $it") }
+            row.examples.forEachIndexed { offset, example ->
+                val chinese = row.exampleChinese.getOrNull(offset).orEmpty()
+                add("    e.g. $example" + if (chinese.isNotEmpty()) "（$chinese）" else "")
+            }
             add("")
         }
     }

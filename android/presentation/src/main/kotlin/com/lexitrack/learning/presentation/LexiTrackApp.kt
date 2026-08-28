@@ -3,6 +3,9 @@ package com.lexitrack.learning.presentation
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -75,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -266,6 +270,7 @@ fun LexiTrackApp(
                             DictationScreen(
                                 state = state,
                                 onToggleSelection = viewModel::toggleDictationSelection,
+                                onSetSelection = viewModel::setDictationSelection,
                                 onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
                                     viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
                                     dictationPreviewOpen = true
@@ -619,7 +624,7 @@ private fun AppNavigation(selected: MainSection, dueCount: Int, onSelected: (Mai
         NavigationItem(MainSection.DASHBOARD, "总览", Icons.Outlined.Home),
         NavigationItem(MainSection.STUDY, "学习", Icons.Outlined.School),
         NavigationItem(MainSection.REVIEW, "复习", Icons.Outlined.Refresh),
-        NavigationItem(MainSection.DICTATION, "默写", Icons.Outlined.Edit),
+        NavigationItem(MainSection.DICTATION, "默写纸", Icons.Outlined.Edit),
         NavigationItem(MainSection.LIBRARY, "词库", Icons.AutoMirrored.Outlined.List),
         NavigationItem(MainSection.INSIGHTS, "趋势", Icons.Outlined.BarChart),
         NavigationItem(MainSection.SETTINGS, "设置", Icons.Outlined.Settings),
@@ -1162,6 +1167,7 @@ private fun BookTurningAnimation() {
 private fun DictationScreen(
     state: MainUiState,
     onToggleSelection: (String) -> Unit,
+    onSetSelection: (Collection<String>, Boolean) -> Unit,
     onBuild: (DictationDocumentOptions, Int, Set<String>, Boolean, Boolean, String) -> Unit,
 ) {
     var formats by remember { mutableStateOf(setOf(DictationFormat.DOCX, DictationFormat.PDF)) }
@@ -1169,6 +1175,7 @@ private fun DictationScreen(
     var missingFields by remember { mutableStateOf(setOf(DictationMissingField.WORD)) }
     var showInitial by remember { mutableStateOf(false) }
     var includeExamples by remember { mutableStateOf(false) }
+    var includeExampleChinese by remember { mutableStateOf(false) }
     var customExample by remember { mutableStateOf("") }
     var selectedLevels by remember { mutableStateOf(setOf("CET4", "CET6", "CUSTOM")) }
     var includeEvaluated by remember { mutableStateOf(false) }
@@ -1203,6 +1210,7 @@ private fun DictationScreen(
                 missingFields = missingFields,
                 showInitial = showInitial,
                 includeExamples = includeExamples,
+                includeExampleChinese = includeExampleChinese,
             ),
             count,
             effectiveLevels,
@@ -1230,6 +1238,8 @@ private fun DictationScreen(
                 onShowInitialChange = { showInitial = it },
                 includeExamples = includeExamples,
                 onIncludeExamplesChange = { includeExamples = it },
+                includeExampleChinese = includeExampleChinese,
+                onIncludeExampleChineseChange = { includeExampleChinese = it },
                 customExample = customExample,
                 onCustomExampleChange = { customExample = it },
                 selectedLevels = selectedLevels,
@@ -1272,6 +1282,7 @@ private fun DictationScreen(
                             entries = candidateEntries,
                             selectedIds = state.dictationSelectedIds,
                             onToggleSelection = onToggleSelection,
+                            onSetSelection = onSetSelection,
                         )
                     }
                     if (candidateEntries.isEmpty()) {
@@ -1299,6 +1310,7 @@ private fun DictationScreen(
                                 missingFields = missingFields,
                                 showInitial = showInitial,
                                 includeExamples = includeExamples,
+                                includeExampleChinese = includeExampleChinese,
                             ),
                             count,
                             effectiveLevels,
@@ -1320,25 +1332,72 @@ private fun DictationSelectionTable(
     entries: List<VocabularyEntry>,
     selectedIds: Set<String>,
     onToggleSelection: (String) -> Unit,
+    onSetSelection: (Collection<String>, Boolean) -> Unit,
 ) {
     val rows = remember(entries) { entries.map(VocabularyEntry::toDictationSelectionRow) }
     val tableScrollState = rememberScrollState()
+    val rowBounds = remember(entries) { mutableStateOf<Map<String, Rect>>(emptyMap()) }
+    val containerTop = remember { mutableStateOf(0f) }
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(tableScrollState),
+            .onGloballyPositioned { containerTop.value = it.boundsInWindow().top }
+            .pointerInput(rows, selectedIds) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                    // Do NOT consume the down so a simple tap still reaches the
+                    // row's toggleable; only a drag past the slop takes over.
+                    val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                        val windowY = containerTop.value + change.position.y
+                        val anchor = rowBounds.value.entries
+                            .firstOrNull { windowY in it.value.top..it.value.bottom }?.key
+                        if (anchor != null) {
+                            onSetSelection(listOf(anchor), anchor !in selectedIds)
+                        }
+                        change.consume()
+                    }
+                    if (drag == null) return@awaitEachGesture
+                    var anchorId: String? = null
+                    val windowY0 = containerTop.value + drag.position.y
+                    anchorId = rowBounds.value.entries
+                        .firstOrNull { windowY0 in it.value.top..it.value.bottom }?.key
+                    if (anchorId != null) onSetSelection(listOf(anchorId), anchorId !in selectedIds)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == drag.id } ?: break
+                        if (!change.pressed) break
+                        val windowY = containerTop.value + change.position.y
+                        val hits = rowBounds.value.entries
+                            .filter { windowY in it.value.top..it.value.bottom }
+                            .map { it.key }
+                        if (hits.isNotEmpty()) onSetSelection(hits, anchorId?.let { it !in selectedIds } ?: true)
+                        change.consume()
+                    }
+                }
+            },
     ) {
-        Column(modifier = Modifier.width(DictationTableWidth)) {
-            DictationSelectionTableHeader()
-            HorizontalDivider()
-            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 330.dp)) {
-                items(rows, key = { it.id }) { row ->
-                    DictationSelectionTableRow(
-                        row = row,
-                        selected = row.id in selectedIds,
-                        onToggleSelection = { onToggleSelection(row.id) },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(tableScrollState),
+        ) {
+            Column(modifier = Modifier.width(DictationTableWidth)) {
+                DictationSelectionTableHeader()
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 330.dp),
+                ) {
+                    items(rows, key = { it.id }) { row ->
+                        DictationSelectionTableRow(
+                            row = row,
+                            selected = row.id in selectedIds,
+                            onToggleSelection = { onToggleSelection(row.id) },
+                            onBounds = { id, rect ->
+                                rowBounds.value = rowBounds.value + (id to rect)
+                            },
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
                 }
             }
         }
@@ -1367,10 +1426,17 @@ private fun DictationSelectionTableRow(
     row: DictationSelectionRow,
     selected: Boolean,
     onToggleSelection: () -> Unit,
+    onBounds: (String, Rect) -> Unit,
 ) {
     Row(
         modifier = Modifier
             .width(DictationTableWidth)
+            .toggleable(
+                value = selected,
+                role = Role.Checkbox,
+                onValueChange = { onToggleSelection() },
+            )
+            .onGloballyPositioned { onBounds(row.id, it.boundsInWindow()) }
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1384,22 +1450,11 @@ private fun DictationSelectionTableRow(
             textAlign = TextAlign.Center,
         )
         Box(modifier = Modifier.width(DictationSelectionColumnWidth), contentAlignment = Alignment.Center) {
-            Box(
-                modifier = Modifier
-                    .size(60.dp)
-                    .toggleable(
-                        value = selected,
-                        role = Role.Checkbox,
-                        onValueChange = { onToggleSelection() },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    modifier = Modifier.size(48.dp).scale(1.25f),
-                )
-            }
+            Checkbox(
+                checked = selected,
+                onCheckedChange = null,
+                modifier = Modifier.size(48.dp).scale(1.25f),
+            )
         }
     }
 }
@@ -1434,6 +1489,8 @@ private fun DictationOptionsPanel(
     onShowInitialChange: (Boolean) -> Unit,
     includeExamples: Boolean,
     onIncludeExamplesChange: (Boolean) -> Unit,
+    includeExampleChinese: Boolean,
+    onIncludeExampleChineseChange: (Boolean) -> Unit,
     customExample: String,
     onCustomExampleChange: (String) -> Unit,
     selectedLevels: Set<String>,
@@ -1519,6 +1576,10 @@ private fun DictationOptionsPanel(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("添加例句", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
                 Switch(checked = includeExamples, onCheckedChange = onIncludeExamplesChange)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("例句含中文释义", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
+                Switch(checked = includeExampleChinese, onCheckedChange = onIncludeExampleChineseChange)
             }
             if (includeExamples) {
                 OutlinedTextField(

@@ -10,9 +10,21 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class DictationTest {
     private val golden by lazy { Json.parseToJsonElement(File(requireNotNull(System.getProperty("dictation.export.golden.path"))).readText()).jsonObject }
+
+    private fun entry(id: String = "adapt") = VocabularyEntry(
+        id = id,
+        word = id,
+        meaning = "v. 适应",
+        examples = listOf(
+            BilingualExample("We adapt quickly.", "我们很快适应。"),
+            BilingualExample("They adapt well.", "他们适应得很好。"),
+            BilingualExample("Adapt everywhere.", "随处适应。"),
+        ),
+    )
 
     @Test fun `blank vectors match shared golden`() {
         golden.getValue("blankVectors").jsonArray.forEach { item ->
@@ -47,5 +59,27 @@ class DictationTest {
 
     @Test fun `missing fields cannot be empty`() {
         assertFailsWith<IllegalArgumentException> { DictationDocumentOptions(missingFields = emptySet()) }
+    }
+
+    @Test fun `example chinese appends translation when enabled`() {
+        val options = DictationDocumentOptions(
+            missingFields = setOf(DictationMissingField.WORD),
+            includeExamples = true,
+            includeExampleChinese = true,
+        )
+        val row = DictationRow.fromEntry(entry(), options)
+        assertEquals(listOf("We _________ quickly."), row.examples)
+        assertEquals(listOf("我们很快适应。"), row.exampleChinese)
+    }
+
+    @Test fun `example chinese empty when disabled`() {
+        val options = DictationDocumentOptions(
+            missingFields = setOf(DictationMissingField.WORD),
+            includeExamples = true,
+            includeExampleChinese = false,
+        )
+        val row = DictationRow.fromEntry(entry(), options)
+        assertEquals(listOf("We _________ quickly."), row.examples)
+        assertTrue(row.exampleChinese.isEmpty())
     }
 }

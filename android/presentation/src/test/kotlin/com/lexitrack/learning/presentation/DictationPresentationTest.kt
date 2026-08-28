@@ -91,6 +91,21 @@ class DictationPresentationTest {
         assertTrue(seen.size > 1)
     }
 
+    @Test
+    fun `review reminder message clears when due count reaches zero`() {
+        // A fresh due count announces the reminder and records the count.
+        val announce = resolveReviewReminderMessage(dueNow = 5, lastRemindedDueCount = 0, currentMessage = null)
+        assertEquals("有 5 个单词已按记忆曲线到期。" to 5, announce)
+
+        // Same due count keeps the current message without re-announcing.
+        val same = resolveReviewReminderMessage(dueNow = 5, lastRemindedDueCount = 5, currentMessage = announce.first)
+        assertEquals(announce.first to 5, same)
+
+        // After reviewing, dueNow == 0 clears the lingering reminder.
+        val cleared = resolveReviewReminderMessage(dueNow = 0, lastRemindedDueCount = 5, currentMessage = announce.first)
+        assertEquals(null to 0, cleared)
+    }
+
     private fun entry(tags: Set<String>) = VocabularyEntry(
         id = "ability",
         word = "ability",

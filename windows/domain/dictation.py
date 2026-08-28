@@ -33,6 +33,7 @@ class DictationOptions:
     missing_fields: frozenset[DictationField] = frozenset({DictationField.WORD})
     show_initial: bool = False
     include_examples: bool = False
+    include_example_chinese: bool = False
     custom_examples: Mapping[str, str] | None = None
     paper_width_pt: int = 595
     paper_height_pt: int = 842
@@ -58,6 +59,7 @@ class DictationRow:
     part_of_speech: str
     meaning: str
     examples: tuple[str, ...] = ()
+    example_chinese: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -105,18 +107,37 @@ def select_dictation_example(entry: VocabularyEntry, custom_example: str | None 
     return next((sentence for sentence in non_empty if pattern.search(sentence)), None) or (non_empty[0] if non_empty else None)
 
 
+def select_dictation_example_chinese(entry: VocabularyEntry, custom_example: str | None = None) -> str | None:
+    """Return the Chinese translation paired with the selected English example."""
+    if custom_example is not None and custom_example.strip():
+        # Custom examples have no paired translation unless provided in the entry.
+        return None
+    selected_english = select_dictation_example(entry, None)
+    if selected_english is None:
+        return None
+    for item in entry.examples:
+        if item.english.strip() == selected_english:
+            return item.chinese.strip() or None
+    return None
+
+
 def row_from_entry(entry: VocabularyEntry, options: DictationOptions) -> DictationRow:
     part_of_speech, chinese_meaning = parse_meaning(entry.meaning)
     examples: tuple[str, ...] = ()
+    example_chinese: tuple[str, ...] = ()
     if options.include_examples:
         source = select_dictation_example(entry, (options.custom_examples or {}).get(entry.word_id))
         if source is not None:
             examples = (cloze_example(source, entry.word, options.show_initial) if DictationField.WORD in options.missing_fields else source,)
+            if options.include_example_chinese:
+                chinese = select_dictation_example_chinese(entry, (options.custom_examples or {}).get(entry.word_id))
+                example_chinese = (chinese,) if chinese else ()
     return DictationRow(
         word=word_prompt(entry.word, options.show_initial) if DictationField.WORD in options.missing_fields else entry.word.strip(),
         part_of_speech="_" * blank_count(part_of_speech) if DictationField.PART_OF_SPEECH in options.missing_fields else part_of_speech,
         meaning="_" * blank_count(chinese_meaning) if DictationField.MEANING in options.missing_fields else chinese_meaning,
         examples=examples,
+        example_chinese=example_chinese,
     )
 
 
