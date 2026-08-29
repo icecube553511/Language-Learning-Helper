@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import random
 import sys
 import tempfile
 import unittest
@@ -60,6 +61,28 @@ class DictationDomainTests(unittest.TestCase):
         self.assertEqual(row.word, "_____________")
         self.assertEqual(row.examples, ("_____________ this review.",))
 
+    def test_include_example_chinese_appends_translation(self):
+        options = DictationOptions(
+            missing_fields=frozenset({DictationField.WORD}),
+            include_examples=True,
+            include_example_chinese=True,
+        )
+        document = build_document([entry()], options)
+        row = document.rows[0]
+        self.assertEqual(row.examples, ("They _____________ the test.",))
+        self.assertEqual(row.example_chinese, ("他们进行测试。",))
+
+    def test_include_example_chinese_off_is_empty(self):
+        options = DictationOptions(
+            missing_fields=frozenset({DictationField.WORD}),
+            include_examples=True,
+            include_example_chinese=False,
+        )
+        document = build_document([entry()], options)
+        row = document.rows[0]
+        self.assertEqual(row.examples, ("They _____________ the test.",))
+        self.assertEqual(row.example_chinese, ())
+
     def test_shared_golden_vectors(self):
         root = json.loads((WINDOWS_DIR.parent / "shared/contracts/dictation-export-golden-v1.json").read_text(encoding="utf-8"))
         for vector in root["blankVectors"]:
@@ -75,6 +98,12 @@ class DictationDomainTests(unittest.TestCase):
         for vector in root["exampleBoundaryVectors"]:
             with self.subTest(vector=vector["name"]):
                 self.assertEqual(cloze_example(vector["englishInput"], vector["word"], vector.get("showFirstLetter", False)), vector["englishOutput"])
+        example_chinese = root.get("exampleChineseVector", {})
+        if example_chinese:
+            self.assertEqual(
+                example_chinese["renderedExampleLine"],
+                "e.g. We _________ quickly.（我们很快适应。）",
+            )
 
     def test_docx_and_pdf_are_openable_a4_and_contain_content(self):
         exporter = DictationDocumentExporter()
@@ -97,6 +126,19 @@ class DictationDomainTests(unittest.TestCase):
         exporter = DictationDocumentExporter()
         with self.assertRaises(ValueError):
             exporter.export(build_document([], DictationOptions()), DictationFormat.PDF)
+
+
+class DictationLoadingTests(unittest.TestCase):
+    def test_delay_is_random_one_to_two_seconds_in_100ms_steps(self):
+        from presentation.app import dictation_loading_delay_ms
+
+        rng = random.Random(20260828)
+        seen = {dictation_loading_delay_ms(rng) for _ in range(500)}
+        for value in seen:
+            self.assertGreaterEqual(value, 1000)
+            self.assertLessEqual(value, 2000)
+            self.assertEqual(value % 100, 0)
+        self.assertGreater(len(seen), 1)
 
 
 if __name__ == "__main__":

@@ -119,10 +119,19 @@ def verify_dictation_contract() -> None:
         or selection_ui.get("emptyTagsText") != "-"
         or selection_ui.get("selectionControl") != "checkbox"
         or selection_ui.get("horizontalOverflow") != "scroll"
+        or selection_ui.get("rowClickSelection") is not True
+        or selection_ui.get("dragMultiSelect") is not True
         or selection_ui.get("downloadAction") != "下载文档"
         or selection_ui.get("downloadPathSelection") != "user-selected"
     ):
         fail("Dictation manual-selection behavior differs from the shared contract")
+    example_chinese = payload.get("exampleChineseVector", {})
+    if (
+        example_chinese.get("includeExample") is not True
+        or example_chinese.get("includeExampleChinese") is not True
+        or example_chinese.get("renderedExampleLine") != "e.g. We _________ quickly.（我们很快适应。）"
+    ):
+        fail("Dictation example-with-Chinese semantics differ from the shared contract")
 
 
 def verify_word_bubble_contract() -> None:
@@ -135,6 +144,11 @@ def verify_word_bubble_contract() -> None:
     payload = json.loads(golden_path.read_text(encoding="utf-8"))
     if payload.get("contractVersion") != "word-bubble-v1" or payload.get("maxDepth") != 20:
         fail("Word bubble contract version or max depth differs")
+    stack_vectors = payload.get("stackVectors", {})
+    if stack_vectors.get("dismissChild") != ["root"] or stack_vectors.get("dismissRoot") != []:
+        fail("Word bubble dismiss semantics differ from the shared golden")
+    if "bilingual example" not in contract_path.read_text(encoding="utf-8"):
+        fail("Word bubble contract must require bilingual example rendering")
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     if parity.get("wordBubbleVersion") != "word-bubble-v1":
         fail("Parity manifest does not declare word-bubble-v1")

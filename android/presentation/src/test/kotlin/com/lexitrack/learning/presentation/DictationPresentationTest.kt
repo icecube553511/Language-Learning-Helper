@@ -6,6 +6,7 @@ import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
 import com.lexitrack.learning.domain.DictationRow
 import com.lexitrack.learning.domain.VocabularyEntry
+import kotlin.random.Random
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -75,6 +76,34 @@ class DictationPresentationTest {
             ),
             dictationPreviewLines(document),
         )
+    }
+
+    @Test
+    fun `dictation loading delay is a random one to two seconds in 100 ms steps`() {
+        val seen = mutableSetOf<Long>()
+        val random = Random(20260828)
+        repeat(500) {
+            seen += dictationLoadingDelayMs(random)
+        }
+
+        assertTrue(seen.all { it in 1000L..2000L })
+        assertTrue(seen.all { it % 100L == 0L })
+        assertTrue(seen.size > 1)
+    }
+
+    @Test
+    fun `review reminder message clears when due count reaches zero`() {
+        // A fresh due count announces the reminder and records the count.
+        val announce = resolveReviewReminderMessage(dueNow = 5, lastRemindedDueCount = 0, currentMessage = null)
+        assertEquals("有 5 个单词已按记忆曲线到期。" to 5, announce)
+
+        // Same due count keeps the current message without re-announcing.
+        val same = resolveReviewReminderMessage(dueNow = 5, lastRemindedDueCount = 5, currentMessage = announce.first)
+        assertEquals(announce.first to 5, same)
+
+        // After reviewing, dueNow == 0 clears the lingering reminder.
+        val cleared = resolveReviewReminderMessage(dueNow = 0, lastRemindedDueCount = 5, currentMessage = announce.first)
+        assertEquals(null to 0, cleared)
     }
 
     private fun entry(tags: Set<String>) = VocabularyEntry(

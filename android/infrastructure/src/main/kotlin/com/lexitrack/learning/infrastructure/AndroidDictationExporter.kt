@@ -62,7 +62,10 @@ class AndroidDictationExporter : DictationExporter {
         try {
             document.rows.forEachIndexed { index, row ->
                 line("${index + 1}. ${row.word}  ${row.partOfSpeech}  ${row.meaning}")
-                row.examples.forEach { example -> line("   e.g. $example") }
+                row.examples.forEachIndexed { offset, example ->
+                    val chinese = row.exampleChinese.getOrNull(offset).orEmpty()
+                    line("   e.g. $example" + if (chinese.isNotEmpty()) "（$chinese）" else "")
+                }
                 y += lineHeight * .35f
             }
             page?.let(pdf::finishPage)
@@ -78,7 +81,10 @@ class AndroidDictationExporter : DictationExporter {
         val body = buildString {
             document.rows.forEachIndexed { index, row ->
                 paragraph("${index + 1}. ${row.word}  ${row.partOfSpeech}  ${row.meaning}", document.options.fontSizePt)
-                row.examples.forEach { paragraph("    e.g. $it", document.options.fontSizePt) }
+                row.examples.forEachIndexed { offset, example ->
+                    val chinese = row.exampleChinese.getOrNull(offset).orEmpty()
+                    paragraph("    e.g. $example" + if (chinese.isNotEmpty()) "（$chinese）" else "", document.options.fontSizePt)
+                }
             }
         }
         val xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>$body<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\" w:orient=\"portrait\"/><w:pgMar w:top=\"720\" w:right=\"720\" w:bottom=\"720\" w:left=\"720\"/></w:sectPr></w:body></w:document>"

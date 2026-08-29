@@ -9,7 +9,13 @@ WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.models import ExampleSentence, VocabularyEntry
-from domain.word_bubbles import MAX_BUBBLE_DEPTH, BubbleStack, resolve_bubble_definition, tokenize_english
+from domain.word_bubbles import (
+    FALLBACK_EXAMPLE_ZH,
+    MAX_BUBBLE_DEPTH,
+    BubbleStack,
+    resolve_bubble_definition,
+    tokenize_english,
+)
 from presentation.widgets import _hit_test_lines, _text_block_origin, _wrapped_text_lines
 
 
@@ -43,6 +49,8 @@ class WordBubbleTests(unittest.TestCase):
         actual = {
             "rootThenChildThenSibling": [frame.definition.word for frame in with_sibling.frames],
             "blankAtRoot": [frame.definition.word for frame in with_sibling.close_after(0).frames],
+            "dismissChild": [frame.definition.word for frame in with_sibling.close_bubble(1).frames],
+            "dismissRoot": [frame.definition.word for frame in with_sibling.close_bubble(0).frames],
             "outside": [frame.definition.word for frame in with_sibling.close_all().frames],
         }
         self.assertEqual(actual, golden["stackVectors"])
@@ -58,6 +66,39 @@ class WordBubbleTests(unittest.TestCase):
         self.assertFalse(definition.known)
         self.assertEqual(definition.meaning, "词库暂无中文释义")
         self.assertEqual(definition.examples, ("Unknown appears here.",))
+
+    def test_known_word_bubble_carries_bilingual_example_pairs(self):
+        definition = resolve_bubble_definition([entry("Focus", "v. 集中 n. 焦点")], "focus")
+        self.assertTrue(definition.known)
+        self.assertEqual(len(definition.example_pairs), 3)
+        for english, chinese in definition.example_pairs:
+            self.assertTrue(english)
+            self.assertTrue(chinese)
+
+    def test_unknown_word_bubble_pads_simplified_chinese(self):
+        definition = resolve_bubble_definition([], "unknown", "Unknown appears here.")
+        self.assertFalse(definition.known)
+        self.assertEqual(definition.example_pairs, (("Unknown appears here.", FALLBACK_EXAMPLE_ZH),))
+
+    def test_known_word_bubble_fills_missing_simplified_chinese(self):
+        with_missing = VocabularyEntry.create("Focus", "v. 集中", [
+            ExampleSentence("Use focus here.", "在这里集中。"),
+            ExampleSentence("Keep focus alive.", ""),
+            ExampleSentence("Focus matters today.", "今天专注很重要。"),
+        ])
+        definition = resolve_bubble_definition([with_missing], "focus")
+        self.assertTrue(definition.known)
+        self.assertEqual(
+            [chinese for _english, chinese in definition.example_pairs],
+            ["在这里集中。", FALLBACK_EXAMPLE_ZH, "今天专注很重要。"],
+        )
+
+    def test_dismiss_closes_current_bubble_and_descendants(self):
+        definitions = [resolve_bubble_definition([entry(word)], word) for word in ("root", "child", "sibling")]
+        stack = BubbleStack().open_root(definitions[0]).open_child(0, definitions[1])
+        sibling = stack.open_child(0, definitions[2])
+        self.assertEqual([frame.definition.word for frame in sibling.close_bubble(1).frames], ["root"])
+        self.assertEqual(len(sibling.close_bubble(0).frames), 0)
 
     def test_stack_truncates_descendants_and_closes_at_depth(self):
         definitions = [resolve_bubble_definition([entry(word)], word) for word in ("root", "child", "sibling")]

@@ -140,6 +140,7 @@
   ],
   "customExampleVector": {
     "includeExample": true,
+    "includeExampleChinese": false,
     "word": "adapt",
     "catalogExamples": [
       { "english": "We adapt quickly.", "chinese": "我们很快适应。" },
@@ -149,6 +150,17 @@
     "missingFields": ["word"],
     "exampleOutput": "People _________ together.",
     "renderedExampleLine": "e.g. People _________ together."
+  },
+  "exampleChineseVector": {
+    "includeExample": true,
+    "includeExampleChinese": true,
+    "word": "adapt",
+    "catalogExamples": [
+      { "english": "We adapt quickly.", "chinese": "我们很快适应。" }
+    ],
+    "missingFields": ["word"],
+    "exampleOutput": "We _________ quickly.",
+    "renderedExampleLine": "e.g. We _________ quickly.（我们很快适应。）"
   },
   "catalogExampleSelectionVectors": [
     {
@@ -215,6 +227,8 @@
     "emptyTagsText": "-",
     "selectionControl": "checkbox",
     "horizontalOverflow": "scroll",
+    "rowClickSelection": true,
+    "dragMultiSelect": true,
     "downloadAction": "下载文档",
     "downloadPathSelection": "user-selected"
   },

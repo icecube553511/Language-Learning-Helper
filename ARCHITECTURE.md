@@ -31,11 +31,11 @@ Presentation  --->  Application  --->  Domain
 - 学习、复习与弹窗提醒分别持久化互不影响的多选词汇组筛选。
 - 字体缩放范围 `0.9..1.4`、每日新词/复习上限及版本字段。
 - `dictation-export-v1` 的 A4 portrait worksheet、字段挖空、词性 extraction、例句替换、候选选择、evaluated tag override 和 DOCX/PDF 输出语义。
-- `word-bubble-v1` 的英文 token、词性/中文解析、九层递归栈和点击关闭语义。
+- `word-bubble-v1` 的英文 token、词性/中文解析、九层递归栈、双语例句展示、弹窗尺寸与关闭语义。
 
 默写导出必须先生成平台无关的 `Document` 模型；preview 与 DOCX/PDF 输出共享该模型，不能由各 writer 重复实现业务规则。内置 catalog 只读，evaluated 只能写入本地 tag override。
 
-例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约，九层上限和外部点击关闭规则不得由单端自行变更。
+例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约：已知词必须同时展示中文释义与至少三组双语例句，例句必须是“英文+简体中文”双语搭配，缺少简体中文时以“（暂无中文释义）”占位补全；弹窗尺寸必须恰好足以完整展示单词信息（不得过大或裁剪）；九层上限、显式关闭（当前气泡及其子级）与外部点击关闭规则不得由单端自行变更。
 
 ## 数据与隐私
 

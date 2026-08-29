@@ -48,6 +48,7 @@ n,v,vt,vi,adj,adv,prep,pron,conj,interj,aux,num,art,abbr,a
 ## 例句
 
 - `includeExample=true` 时，每个词条最多输出一条英文例句，绝不输出三条或多条；renderer 将它输出为单独一行 `e.g. {example}`。`includeExample=false` 时不输出例句。
+- `includeExampleChinese=true` 且 `includeExample=true` 时，renderer 将选中例句的中文翻译作为该行的一部分输出，格式为 `e.g. {example}（{chinese}）`；为 `false` 时保持仅英文。`includeExampleChinese` 只影响 renderer 的例句行，不影响例句的英文选择、挖空或计数。中文翻译取自该词条对应双语例句的中文部分；自填 `customExample` 无中文时，该行保持纯英文。
 - 若词条存在 trim 后非空的 `customExample`，优先使用它作为唯一例句，并覆盖 catalog examples；空白 `customExample` 视为不存在。
 - 没有有效 `customExample` 时，按 catalog 原顺序扫描双语 examples，仅取第一条英文文本 trim 后非空且包含目标词完整匹配的例句。若没有任何一条包含目标词完整匹配，则回退到 catalog 原顺序中的第一条非空英文例句。若没有非空英文例句，则该词条不输出例句。
 - catalog example 是双语结构时仅取英文文本，中文翻译不得进入 worksheet。
@@ -84,6 +85,8 @@ Windows 与 Android 的手选词条 UI 必须按以下固定顺序展示列：`w
   否则显示“未考察”并使用红色。
 - `selected` 必须使用逐行复选框，勾选状态与手选 ID 集合双向同步。
 - 表头与每一行必须保持相同列宽，纵向浏览不得破坏横向对齐。
+- 该表格必须支持“点击整行任意位置即选择/取消该词条”，不得要求用户只点复选框。复选框与整行点击动作保持一致。
+- 该表格必须支持按住左键（或长按）拖动跨越相邻行来多选/多取消词条；拖动经过的行按起始行的选中状态批量应用。
 
 ## evaluated 与 tags
 

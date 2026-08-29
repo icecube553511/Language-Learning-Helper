@@ -16,6 +16,7 @@ data class DictationDocumentOptions(
     val missingFields: Set<DictationMissingField> = setOf(DictationMissingField.WORD),
     val showInitial: Boolean = false,
     val includeExamples: Boolean = false,
+    val includeExampleChinese: Boolean = false,
     val customExamples: Map<String, String> = emptyMap(),
 ) {
     init {
@@ -31,6 +32,7 @@ data class DictationRow(
     val partOfSpeech: String,
     val meaning: String,
     val examples: List<String> = emptyList(),
+    val exampleChinese: List<String> = emptyList(),
 ) {
     companion object
 }
@@ -85,19 +87,33 @@ fun selectDictationExample(entry: VocabularyEntry, customExample: String? = null
         ?: entry.examples.asSequence().map { it.english.trim() }.firstOrNull(String::isNotEmpty)
 }
 
+fun selectDictationExampleChinese(entry: VocabularyEntry, customExample: String? = null): String? {
+    customExample?.trim()?.takeIf(String::isNotEmpty)?.let { return null }
+    val selectedEnglish = selectDictationExample(entry, null) ?: return null
+    return entry.examples.firstOrNull { it.english.trim() == selectedEnglish }?.chinese?.trim()?.takeIf(String::isNotEmpty)
+}
+
 fun DictationRow.Companion.fromEntry(
     entry: VocabularyEntry,
     options: DictationDocumentOptions,
 ): DictationRow {
     val parsed = parseMeaning(entry.meaning)
-    val examples = if (!options.includeExamples) emptyList() else {
+    val selectedEnglish = if (!options.includeExamples) null else {
         selectDictationExample(entry, options.customExamples[entry.id])?.let(::listOf) ?: emptyList()
-    }.map { example ->
-        if (DictationMissingField.WORD in options.missingFields) {
+    }?.firstOrNull()
+    val examples = selectedEnglish?.let { example ->
+        val cloze = if (DictationMissingField.WORD in options.missingFields) {
             clozeExample(example, entry.word, options.showInitial)
         } else {
             example
         }
+        listOf(cloze)
+    } ?: emptyList()
+    val exampleChinese = if (!options.includeExamples || !options.includeExampleChinese) emptyList() else {
+        if (selectedEnglish != null) {
+            val chinese = selectDictationExampleChinese(entry, options.customExamples[entry.id])
+            listOfNotNull(chinese)
+        } else emptyList()
     }
     return DictationRow(
         word = if (DictationMissingField.WORD in options.missingFields) wordPrompt(entry.word, options.showInitial) else entry.word,
@@ -108,5 +124,6 @@ fun DictationRow.Companion.fromEntry(
             "_".repeat(blankCount(parsed.chineseMeaning))
         } else parsed.chineseMeaning,
         examples = examples,
+        exampleChinese = exampleChinese,
     )
 }
