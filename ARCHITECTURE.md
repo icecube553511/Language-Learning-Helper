@@ -32,6 +32,7 @@ Presentation  --->  Application  --->  Domain
 - 字体缩放范围 `0.9..1.4`、每日新词/复习上限及版本字段。
 - `dictation-export-v1` 的 A4 portrait worksheet、字段挖空、词性 extraction、例句替换、候选选择、evaluated tag override 和 DOCX/PDF 输出语义。
 - `word-bubble-v1` 的英文 token、词性/中文解析、九层递归栈、双语例句展示、弹窗尺寸与关闭语义。
+- `vocabulary-groups-v1` 的词书分组推导（词书 code 归一化、标签/词书判组、自定义来源）、既定顺序（全部、CET-4、CET-6、中考/zk、高考/gk、自定义）、显示标签与词库分组浏览器；进入词库先展示分组，点击分组后查看该组单词并保留现有词库全部功能。
 
 默写导出必须先生成平台无关的 `Document` 模型；preview 与 DOCX/PDF 输出共享该模型，不能由各 writer 重复实现业务规则。内置 catalog 只读，evaluated 只能写入本地 tag override。
 

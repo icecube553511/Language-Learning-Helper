@@ -116,6 +116,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.application.ForecastDay
+import com.lexitrack.learning.application.LibraryGroup
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
 import com.lexitrack.learning.domain.DictationFormat
@@ -284,6 +285,7 @@ fun LexiTrackApp(
                         onChooseCsv = onChooseCsv,
                         onToggleSelection = viewModel::toggleVocabularySelection,
                         onEditLabels = { labelEditorOpen = true },
+                        onSelectGroup = viewModel::selectLibraryGroup,
                     )
                     MainSection.INSIGHTS -> InsightsScreen(state.forecast)
                     MainSection.SETTINGS -> SettingsScreen(
@@ -1737,10 +1739,26 @@ private fun LibraryScreen(
     onChooseCsv: () -> Unit,
     onToggleSelection: (String) -> Unit,
     onEditLabels: () -> Unit,
+    onSelectGroup: (String?) -> Unit,
 ) {
+    val browsingGroups = state.libraryGroup == null && state.searchQuery.isEmpty()
+    val activeGroupLabel = state.libraryGroups.firstOrNull { it.key == state.libraryGroup }?.label
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(20.dp))
-        PageHeader("词库", "${state.totalSearchResults} 个匹配词条")
+        if (state.libraryGroup != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onSelectGroup(null) }) { Text("← 返回词书") }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    activeGroupLabel ?: "词库",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Ink,
+                )
+            }
+        } else {
+            val total = state.libraryGroups.firstOrNull { it.key == "all" }?.count ?: 0
+            PageHeader("词库", "$total 条词条 · 先选择词书分组")
+        }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -1774,13 +1792,24 @@ private fun LibraryScreen(
             ) { Text("标签 (${state.selectedVocabularyIds.size})") }
         }
         Text(
-            "CSV 的 level 支持 CET4、CET6、custom（多个用 | 分隔），tags 也用 | 分隔；勾选导入词条可批量修改。",
+            "CSV 的 level 支持 CET4、CET6、custom（多个用 | 分隔），tags 也用 | 分隔；点击分组进入该组，可批量修改。",
             style = MaterialTheme.typography.labelMedium,
             color = MutedInk,
         )
         Spacer(Modifier.height(12.dp))
-        if (state.searchResults.isEmpty()) {
-            EmptyState(Icons.AutoMirrored.Outlined.List, "没有匹配词条", "可调整搜索条件或导入 CSV 词库")
+        if (browsingGroups) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.libraryGroups, key = { it.key }) { group ->
+                    VocabularyGroupCard(group = group, onClick = { onSelectGroup(group.key) })
+                }
+            }
+        } else if (state.searchResults.isEmpty()) {
+            val emptyMessage = if (state.libraryGroup != null) "该分组暂无词条" else "可调整搜索条件或导入 CSV 词库"
+            EmptyState(Icons.AutoMirrored.Outlined.List, "没有匹配词条", emptyMessage)
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -1805,6 +1834,25 @@ private fun LibraryScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VocabularyGroupCard(group: LibraryGroup, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        border = CardDefaults.outlinedCardBorder(),
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp, 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(group.label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
+            Text("${group.count} 词", style = MaterialTheme.typography.labelMedium, color = MutedInk)
         }
     }
 }

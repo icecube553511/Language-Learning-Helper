@@ -24,6 +24,13 @@ from domain.dictation import (
     build_document,
 )
 from domain.word_bubbles import BubbleDefinition, resolve_bubble_definition, tokenize_english
+from domain.groups import (
+    GROUP_ORDER,
+    canonical_memberships,
+    classify_groups,
+    group_label,
+    normalize_group_membership,
+)
 from application.ports import DictationExporter, ExportedDictation
 from domain.ports import LearningRepository, WordsLearntRepository
 from domain.scheduler import SECONDS_PER_DAY, retention_at, schedule_review
@@ -37,6 +44,13 @@ class DashboardSnapshot:
     reviewed_today: int
     due_next_7_days: int
     due_next_30_days: int
+
+
+@dataclass(frozen=True)
+class LibraryGroup:
+    key: str
+    label: str
+    count: int
 
 
 class LearningService:
@@ -445,6 +459,57 @@ class LearningService:
             if key in entry.word.casefold()
             or key in entry.meaning.casefold()
             or any(key in tag.casefold() for tag in entry.tags)
+        ]
+
+    def library_groups(self) -> list[LibraryGroup]:
+        """Return the ordered library groups (canonical first, then extras)."""
+        entries = self.repository.all_entries()
+        canonical_counts = {key: 0 for key in GROUP_ORDER}
+        extra_counts: dict[str, int] = {}
+        for entry in entries:
+            memberships = {normalize_group_membership(value) for value in entry.levels}
+            group_keys = classify_groups(memberships, entry.tags)
+            for key in group_keys:
+                if key in canonical_counts:
+                    canonical_counts[key] += 1
+            for code in memberships:
+                if code not in canonical_memberships():
+                    extra_counts[code] = extra_counts.get(code, 0) + 1
+
+        result = [LibraryGroup("all", group_label("all"), canonical_counts["all"])]
+        for key in GROUP_ORDER[1:]:
+            result.append(LibraryGroup(key, group_label(key), canonical_counts[key]))
+        for code in sorted(extra_counts):
+            result.append(LibraryGroup(code, code, extra_counts[code]))
+        return result
+
+    def words_in_group(self, key: str, query: str = "") -> list[VocabularyEntry]:
+        """Return the member words of a group, optionally filtered by query."""
+        entries = self.repository.all_entries()
+        if key == "all":
+            selected = entries
+        elif key in GROUP_ORDER:
+            selected = [
+                entry for entry in entries
+                if key in classify_groups(
+                    {normalize_group_membership(value) for value in entry.levels},
+                    entry.tags,
+                )
+            ]
+        else:
+            code = normalize_group_membership(key)
+            selected = [
+                entry for entry in entries
+                if code in {normalize_group_membership(value) for value in entry.levels}
+            ]
+        needle = query.strip().casefold()
+        if not needle:
+            return selected
+        return [
+            entry for entry in selected
+            if needle in entry.word.casefold()
+            or needle in entry.meaning.casefold()
+            or any(needle in tag.casefold() for tag in entry.tags)
         ]
 
     def import_csv(self, path) -> ImportReport:

@@ -258,6 +258,41 @@ class LearningServiceTests(unittest.TestCase):
         document = service.build_dictation_document(DictationOptions(missing_fields={DictationField.MEANING}), word_ids={"built"}, include_evaluated=True)
         self.assertEqual(len(document.rows), 1)
 
+    def test_library_groups_ordering_and_counts(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4", tags=("gk",)),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6", tags=("zk",)),
+            VocabularyEntry.create("zephyr", "和风", examples, level="CET4|CET6"),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+        groups = service.library_groups()
+        self.assertEqual([group.key for group in groups], ["all", "cet4", "cet6", "zk", "gk", "custom"])
+        counts = {group.key: group.count for group in groups}
+        self.assertEqual(counts, {"all": 4, "cet4": 2, "cet6": 2, "zk": 1, "gk": 1, "custom": 1})
+        labels = {group.key: group.label for group in groups}
+        self.assertEqual(labels["cet4"], "CET-4（四级）")
+        self.assertEqual(labels["custom"], "自定义")
+
+    def test_words_in_group_and_search_within_group(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4", tags=("gk",)),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6", tags=("zk",)),
+            VocabularyEntry.create("zephyr", "和风", examples, level="CET4|CET6"),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+
+        self.assertEqual(len(service.words_in_group("all")), 4)
+        self.assertEqual({entry.word for entry in service.words_in_group("cet4")}, {"adapt", "zephyr"})
+        self.assertEqual([entry.word for entry in service.words_in_group("gk")], ["adapt"])
+        self.assertEqual([entry.word for entry in service.words_in_group("custom")], ["myword"])
+        self.assertEqual([entry.word for entry in service.words_in_group("zk", "aband")], ["abandon"])
+        self.assertEqual([entry.word for entry in service.words_in_group("all", "zeph")], ["zephyr"])
+        self.assertEqual(service.words_in_group("missing"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,7 +30,10 @@ can run them, in parallel; they never touch overlapping files.
 Recorded in `CLAUDE.md` and `CODEBASE_ONBOARDING.md`. As of now they include:
 review reminder auto-clearing from the dashboard, centered/enlarged review
 start button, dictation row-click and drag-range multi-select, dictation
-preview wheel paging, and the recursive word bubble fixes below.
+preview wheel paging, the recursive word bubble fixes below, and the library
+group browser (`vocabulary-groups-v1`): entering 词库 shows the wordbook groups
+first (全部, CET-4, CET-6, 中考/zk, 高考/gk, 自定义), then a group opens its words
+while preserving all existing library features.
 
 ## Current word-bubble cross-platform contract
 

@@ -1,0 +1,60 @@
+{
+  "contractVersion": "vocabulary-groups-v1",
+  "groupOrder": ["all", "cet4", "cet6", "zk", "gk", "custom"],
+  "groupLabels": {
+    "all": "全部",
+    "cet4": "CET-4（四级）",
+    "cet6": "CET-6（六级）",
+    "zk": "中考（zk）",
+    "gk": "高考（gk）",
+    "custom": "自定义"
+  },
+  "normalize": {
+    "CET-4": "CET4",
+    " CET4 ": "CET4",
+    "ceT4": "CET4",
+    "gk": "GK",
+    "  zk  ": "ZK",
+    "custom": "CUSTOM"
+  },
+  "fixtures": [
+    {
+      "id": "adapt",
+      "word": "adapt",
+      "memberships": ["CET4"],
+      "tags": ["gk"],
+      "expectedGroups": ["all", "cet4", "gk"]
+    },
+    {
+      "id": "abandon",
+      "word": "abandon",
+      "memberships": ["CET6"],
+      "tags": ["zk"],
+      "expectedGroups": ["all", "cet6", "zk"]
+    },
+    {
+      "id": "zephyr",
+      "word": "zephyr",
+      "memberships": ["CET4", "CET6"],
+      "tags": [],
+      "expectedGroups": ["all", "cet4", "cet6"]
+    },
+    {
+      "id": "myword",
+      "word": "myword",
+      "memberships": ["CUSTOM"],
+      "tags": [],
+      "expectedGroups": ["all", "custom"]
+    },
+    {
+      "id": "negotiate",
+      "word": "negotiate",
+      "memberships": ["GK"],
+      "tags": ["business"],
+      "expectedGroups": ["all", "gk"]
+    }
+  ],
+  "expected": {
+    "groupCounts": { "all": 5, "cet4": 2, "cet6": 2, "zk": 1, "gk": 2, "custom": 1 }
+  }
+}
