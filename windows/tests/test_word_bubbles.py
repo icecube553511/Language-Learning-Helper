@@ -9,7 +9,7 @@ WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.models import ExampleSentence, VocabularyEntry
-from domain.word_bubbles import BubbleStack, resolve_bubble_definition, tokenize_english
+from domain.word_bubbles import FALLBACK_EXAMPLE_ZH, BubbleStack, resolve_bubble_definition, tokenize_english
 from presentation.widgets import _hit_test_lines, _text_block_origin, _wrapped_text_lines
 
 
@@ -69,10 +69,23 @@ class WordBubbleTests(unittest.TestCase):
             self.assertTrue(english)
             self.assertTrue(chinese)
 
-    def test_unknown_word_bubble_has_no_invented_chinese(self):
+    def test_unknown_word_bubble_pads_simplified_chinese(self):
         definition = resolve_bubble_definition([], "unknown", "Unknown appears here.")
         self.assertFalse(definition.known)
-        self.assertEqual(definition.example_pairs, (("Unknown appears here.", ""),))
+        self.assertEqual(definition.example_pairs, (("Unknown appears here.", FALLBACK_EXAMPLE_ZH),))
+
+    def test_known_word_bubble_fills_missing_simplified_chinese(self):
+        with_missing = VocabularyEntry.create("Focus", "v. 集中", [
+            ExampleSentence("Use focus here.", "在这里集中。"),
+            ExampleSentence("Keep focus alive.", ""),
+            ExampleSentence("Focus matters today.", "今天专注很重要。"),
+        ])
+        definition = resolve_bubble_definition([with_missing], "focus")
+        self.assertTrue(definition.known)
+        self.assertEqual(
+            [chinese for _english, chinese in definition.example_pairs],
+            ["在这里集中。", FALLBACK_EXAMPLE_ZH, "今天专注很重要。"],
+        )
 
     def test_dismiss_closes_current_bubble_and_descendants(self):
         definitions = [resolve_bubble_definition([entry(word)], word) for word in ("root", "child", "sibling")]

@@ -210,9 +210,18 @@ class WordClickableText(tk.Text):
         self.tag_configure("align", justify=self._justify)
         self.tag_add("align", "1.0", "end-1c")
         self.update_idletasks()
-        counted = self.count("1.0", "end", "displaylines")
-        lines = counted[0] if counted else 1
-        self.configure(height=max(1, int(lines)))
+        # Wrap by the widget's character width measured with its own font. This
+        # is stable whether or not the widget is mapped yet, unlike
+        # `count(..., "displaylines")`, which only agrees after a real layout.
+        try:
+            font = tkfont.Font(font=self.cget("font"))
+            char_width = max(1.0, font.measure("0"))
+            width_chars = max(1, int(float(self.cget("width"))))
+            wrapped = _wrapped_text_lines(text, int(width_chars * char_width), font.measure)
+            line_count = max(1, len(wrapped))
+        except tk.TclError:
+            line_count = 1
+        self.configure(height=line_count)
         self.configure(state="disabled")
 
     def word_regions(self) -> tuple[WordRegion, ...]:
@@ -393,15 +402,22 @@ class WordBubbleManager:
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
         popup.transient(self.root.winfo_toplevel())
-        popup.minsize(600, 460)
-        popup.geometry("760x620")
+        popup.minsize(360, 240)
+        popup.geometry("640x480")
 
         header = tk.Frame(popup, bg="#17212B")
         header.pack(fill=tk.X)
         tk.Label(header, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(anchor="w", padx=24, pady=(16, 2))
         tk.Label(header, text="点击例句中的英文单词可继续查看", bg="#17212B", fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=24, pady=(0, 14))
 
-        wrap_width = 700
+        wrap_width = 600
+        example_char_width = 40
+        try:
+            example_char_width = max(
+                1, int(wrap_width / max(1.0, tkfont.Font(font="LexiSmall").measure("0")))
+            )
+        except tk.TclError:
+            pass
         body = tk.Frame(popup, bg="#FFFFFF")
         body.pack(fill=tk.BOTH, expand=True, padx=20, pady=14)
         body.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
@@ -437,6 +453,7 @@ class WordBubbleManager:
                 padx=0,
                 pady=2,
                 cursor="hand2",
+                width=example_char_width,
             )
             sentence.set_sentence(english)
             sentence.pack(fill=tk.X)
@@ -471,8 +488,8 @@ class WordBubbleManager:
         screen_height = self.root.winfo_screenheight()
         natural_width = popup.winfo_reqwidth()
         natural_height = popup.winfo_reqheight()
-        width = max(600, min(natural_width, screen_width - 16))
-        height = max(460, min(natural_height, screen_height - 60))
+        width = max(360, min(natural_width, screen_width - 16))
+        height = max(240, min(natural_height, screen_height - 60))
         popup.geometry(f"{width}x{height}")
         popup.update_idletasks()
         width, height = popup.winfo_width(), popup.winfo_height()

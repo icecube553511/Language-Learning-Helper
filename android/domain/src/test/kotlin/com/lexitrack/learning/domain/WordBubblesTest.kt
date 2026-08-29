@@ -125,10 +125,10 @@ class WordBubblesTest {
         }
     }
 
-    @Test fun `unknown word bubble has no invented chinese`() {
+    @Test fun `unknown word bubble pads simplified chinese`() {
         val definition = resolveBubbleDefinition(emptyList(), "unknown", "Unknown appears here.")
         assertFalse(definition.known)
-        assertEquals(listOf("Unknown appears here." to ""), definition.examplePairs)
+        assertEquals(listOf("Unknown appears here." to FALLBACK_EXAMPLE_ZH), definition.examplePairs)
     }
 
     @Test fun `dismiss closes current bubble and descendants`() {

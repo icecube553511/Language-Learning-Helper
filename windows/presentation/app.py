@@ -2394,7 +2394,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     if bubble_windows:
         popup = bubble_windows[-1]
         label_texts = [label.cget("text") for label in _descendant_labels(popup)]
-        word_bubble_size_ready = popup.winfo_width() >= 600 and popup.winfo_height() >= 460
+        word_bubble_size_ready = (
+            abs(popup.winfo_width() - popup.winfo_reqwidth()) <= 8
+            and abs(popup.winfo_height() - popup.winfo_reqheight()) <= 8
+        )
         word_bubble_known_ready = sum(
             1 for text in label_texts if re.search(r"[\u3400-\u9fff]", str(text))
         ) >= 3

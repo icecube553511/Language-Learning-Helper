@@ -10,6 +10,7 @@ from .models import VocabularyEntry, normalize_word_id
 
 
 MAX_BUBBLE_DEPTH = 9
+FALLBACK_EXAMPLE_ZH = "（暂无中文释义）"
 _TOKEN_PATTERN = re.compile(r"[A-Za-z]+(?:['\u2019][A-Za-z]+|['\u2019])?")
 
 
@@ -56,7 +57,7 @@ def resolve_bubble_definition(
             meaning="词库暂无中文释义",
             examples=(context,) if context else (),
             known=False,
-            example_pairs=((context, ""),) if context else (),
+            example_pairs=((context, FALLBACK_EXAMPLE_ZH),) if context else (),
         )
     part_of_speech, chinese_meaning = parse_meaning(entry.meaning)
     return BubbleDefinition(
@@ -67,7 +68,10 @@ def resolve_bubble_definition(
         examples=tuple(example.english for example in entry.examples[:3]),
         known=True,
         phonetic=entry.phonetic,
-        example_pairs=tuple((example.english, example.chinese) for example in entry.examples[:3]),
+        example_pairs=tuple(
+            (example.english, example.chinese.strip() or FALLBACK_EXAMPLE_ZH)
+            for example in entry.examples[:3]
+        ),
     )
 
 

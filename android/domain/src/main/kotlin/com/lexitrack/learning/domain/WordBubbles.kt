@@ -3,6 +3,7 @@ package com.lexitrack.learning.domain
 import kotlin.math.min
 
 const val MAX_BUBBLE_DEPTH = 9
+const val FALLBACK_EXAMPLE_ZH = "（暂无中文释义）"
 
 data class WordToken(val text: String, val start: Int, val end: Int) {
     val wordId: String get() = normalizeWordId(text)
@@ -40,7 +41,7 @@ fun resolveBubbleDefinition(
             partOfSpeech = "未收录",
             meaning = "词库暂无中文释义",
             examples = if (context.isEmpty()) emptyList() else listOf(context),
-            examplePairs = if (context.isEmpty()) emptyList() else listOf(context to ""),
+            examplePairs = if (context.isEmpty()) emptyList() else listOf(context to FALLBACK_EXAMPLE_ZH),
             known = false,
         )
     }
@@ -52,7 +53,9 @@ fun resolveBubbleDefinition(
         partOfSpeech = parsed.partOfSpeech.ifBlank { "未标注" },
         meaning = parsed.chineseMeaning.ifBlank { entry.meaning },
         examples = entry.examples.take(3).map { it.english },
-        examplePairs = entry.examples.take(3).map { it.english to it.chinese },
+        examplePairs = entry.examples.take(3).map {
+            it.english to it.chinese.ifBlank { FALLBACK_EXAMPLE_ZH }
+        },
     )
 }
 

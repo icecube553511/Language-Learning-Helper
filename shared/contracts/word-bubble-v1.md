@@ -22,7 +22,10 @@ English example rendered by the Windows and Android clients.
 - A known token must surface the entry's bilingual example pairs so the bubble
   never renders a known word's examples as English-only. For each visible
   example the platform renders the English sentence together with its stored
-  Chinese translation (`zh`). Unknown words may show only the source context.
+  Chinese translation (`zh`). When an example has no Simplified-Chinese
+  translation, the platform must render a Simplified-Chinese fallback line
+  (“（暂无中文释义）”) rather than an English-only example. The same rule applies
+  to the source context shown for an unknown token.
 
 ## Stack behavior
 
@@ -45,9 +48,10 @@ English example rendered by the Windows and Android clients.
 The platform UI may position a bubble above or below its token anchor, but it
 must preserve these state transitions and reuse the same token/lookup rules.
 
-The bubble surface must be sized or scrollable so the word, phonetic, part of
-speech, meaning, and every rendered bilingual example remain visible without
-manual resizing on common layouts.
+The bubble surface must be sized just enough to fully show the word, phonetic,
+part of speech, meaning, and every rendered bilingual example — no larger than
+its content requires and never clipping it. On common layouts the bubble fits
+its content without manual resizing.
 
 The scope is the learning card, review card, and runtime word-reminder
 examples. Printable dictation output is a document preview, not an interactive

@@ -35,7 +35,7 @@ Presentation  --->  Application  --->  Domain
 
 默写导出必须先生成平台无关的 `Document` 模型；preview 与 DOCX/PDF 输出共享该模型，不能由各 writer 重复实现业务规则。内置 catalog 只读，evaluated 只能写入本地 tag override。
 
-例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约：已知词必须同时展示中文释义与至少三组双语例句，弹窗尺寸必须足以完整展示单词信息，九层上限、显式关闭（当前气泡及其子级）与外部点击关闭规则不得由单端自行变更。
+例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约：已知词必须同时展示中文释义与至少三组双语例句，例句必须是“英文+简体中文”双语搭配，缺少简体中文时以“（暂无中文释义）”占位补全；弹窗尺寸必须恰好足以完整展示单词信息（不得过大或裁剪）；九层上限、显式关闭（当前气泡及其子级）与外部点击关闭规则不得由单端自行变更。
 
 ## 数据与隐私
 
