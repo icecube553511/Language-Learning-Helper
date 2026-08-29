@@ -102,8 +102,40 @@ class WordBubblesTest {
             withSibling.closeAfter(0).frames.map { it.definition.word },
         )
         assertEquals(
+            expected.getValue("dismissChild").jsonArray.map { it.jsonPrimitive.content },
+            withSibling.closeBubble(1).frames.map { it.definition.word },
+        )
+        assertEquals(
+            expected.getValue("dismissRoot").jsonArray.map { it.jsonPrimitive.content },
+            withSibling.closeBubble(0).frames.map { it.definition.word },
+        )
+        assertEquals(
             expected.getValue("outside").jsonArray.map { it.jsonPrimitive.content },
             withSibling.closeAll().frames.map { it.definition.word },
         )
+    }
+
+    @Test fun `known word bubble carries bilingual example pairs`() {
+        val definition = resolveBubbleDefinition(listOf(entry("Focus", "v. 集中 n. 焦点")), "focus")
+        assertTrue(definition.known)
+        assertEquals(3, definition.examplePairs.size)
+        definition.examplePairs.forEach { (english, chinese) ->
+            assertTrue(english.isNotBlank())
+            assertTrue(chinese.isNotBlank())
+        }
+    }
+
+    @Test fun `unknown word bubble has no invented chinese`() {
+        val definition = resolveBubbleDefinition(emptyList(), "unknown", "Unknown appears here.")
+        assertFalse(definition.known)
+        assertEquals(listOf("Unknown appears here." to ""), definition.examplePairs)
+    }
+
+    @Test fun `dismiss closes current bubble and descendants`() {
+        val definitions = listOf("root", "child", "sibling").map { resolveBubbleDefinition(listOf(entry(it)), it) }
+        val stack = BubbleStack().openRoot(definitions[0]).openChild(0, definitions[1])
+        val sibling = stack.openChild(0, definitions[2])
+        assertEquals(listOf("root"), sibling.closeBubble(1).frames.map { it.definition.word })
+        assertTrue(sibling.closeBubble(0).frames.isEmpty())
     }
 }

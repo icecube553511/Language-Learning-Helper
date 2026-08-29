@@ -77,5 +77,15 @@ data class BubbleStack(val frames: List<BubbleFrame> = emptyList()) {
         else -> BubbleStack(frames.take(min(depth + 1, frames.size)))
     }
 
+    /** Remove the bubble at [depth] and all descendants, keeping ancestors.
+     *
+     * This is the explicit-dismiss transition: a non-root bubble returns to its
+     * parent, while dismissing the root clears the whole stack.
+     */
+    fun closeBubble(depth: Int): BubbleStack = when {
+        depth <= 0 -> BubbleStack()
+        else -> BubbleStack(frames.take(depth))
+    }
+
     fun closeAll(): BubbleStack = BubbleStack()
 }

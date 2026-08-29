@@ -112,4 +112,6 @@ Android 构建需要 JDK 17、Android SDK 35；Windows 打包还需要 windows/r
 
 ### Agent Team 协同（新增）
 
-跨端功能由 `win_fix`（Windows）与 `android_fix`（Android）并发完成，`grill_plan` 负责规划/质疑，根 agent 负责共享契约、`tools/verify_sync.py`、文档与 Git/GitHub 留痕。两平台互不重叠，共享资源只读。每个行为变更必须同时落地 Windows 与 Android，附带两端测试，并提交并推送 GitHub PR。已确认的跨端行为：完成后复习提醒自动清除、复习开始按钮居中放大、默写手选整行点选与拖拽范围多选、默写预览滚轮翻页。
+跨端功能由 `win_fix`（Windows）与 `android_fix`（Android）并发完成，`grill_plan` 负责规划/质疑，根 agent 负责共享契约、`tools/verify_sync.py`、文档与 Git/GitHub 留痕。两平台互不重叠，共享资源只读。每个行为变更必须同时落地 Windows 与 Android，附带两端测试，并提交并推送 GitHub PR。团队结构与职责详见 `docs/agent-team.md`。
+
+已确认的跨端行为：完成后复习提醒自动清除、复习开始按钮居中放大、默写手选整行点选与拖拽范围多选、默写预览滚轮翻页，以及单词气泡：已知词弹窗必须同时展示中文释义与至少三组双语例句、弹窗放大到能完整展示单词信息、点击关闭按钮或标题栏叉号会关闭当前气泡（含其子级）而非保持打开。

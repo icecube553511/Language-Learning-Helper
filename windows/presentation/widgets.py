@@ -393,14 +393,15 @@ class WordBubbleManager:
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
         popup.transient(self.root.winfo_toplevel())
-        popup.minsize(460, 320)
-        popup.geometry("580x460")
+        popup.minsize(600, 460)
+        popup.geometry("760x620")
 
         header = tk.Frame(popup, bg="#17212B")
         header.pack(fill=tk.X)
         tk.Label(header, text="单词释义", bg="#17212B", fg="#FFFFFF", font="LexiBodyBold").pack(anchor="w", padx=24, pady=(16, 2))
         tk.Label(header, text="点击例句中的英文单词可继续查看", bg="#17212B", fg="#92A0AD", font="LexiSmall").pack(anchor="w", padx=24, pady=(0, 14))
 
+        wrap_width = 700
         body = tk.Frame(popup, bg="#FFFFFF")
         body.pack(fill=tk.BOTH, expand=True, padx=20, pady=14)
         body.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
@@ -415,7 +416,7 @@ class WordBubbleManager:
         part_of_speech = tk.Label(body, text=definition.part_of_speech, bg="#FFFFFF", fg="#16866F", font="LexiSmall", anchor="w")
         part_of_speech.pack(fill=tk.X, anchor="w")
         part_of_speech.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
-        meaning = tk.Label(body, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBodyBold", wraplength=520, justify="left", anchor="w")
+        meaning = tk.Label(body, text=definition.meaning, bg="#FFFFFF", fg="#1B2733", font="LexiBodyBold", wraplength=wrap_width, justify="left", anchor="w")
         meaning.pack(fill=tk.X, anchor="w", pady=(4, 10))
         meaning.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
         tk.Label(body, text="双语例句", bg="#FFFFFF", fg="#65727E", font="LexiSmall", anchor="w").pack(anchor="w", pady=(0, 2))
@@ -440,7 +441,7 @@ class WordBubbleManager:
             sentence.set_sentence(english)
             sentence.pack(fill=tk.X)
             if chinese:
-                translation = tk.Label(body, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=520, justify="left", anchor="w")
+                translation = tk.Label(body, text=chinese, bg="#FFFFFF", fg="#65727E", font="LexiSmall", wraplength=wrap_width, justify="left", anchor="w")
                 translation.pack(fill=tk.X, anchor="w", pady=(0, 3))
                 translation.bind("<Button-1>", lambda _event, d=depth: self._close_after(d), add="+")
 
@@ -451,7 +452,7 @@ class WordBubbleManager:
         close = tk.Button(
             actions_inner,
             text="知道了",
-            command=lambda d=depth: self._close_after(d),
+            command=lambda d=depth: self._close_current(d),
             bg="#16866F",
             fg="#FFFFFF",
             activebackground="#12705C",
@@ -464,14 +465,23 @@ class WordBubbleManager:
         )
         close.pack(side=tk.RIGHT)
         popup.update_idletasks()
+        # Auto-fit to the content so the meaning and every bilingual example are
+        # fully visible; clamp to the screen and never go below the minimum.
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        natural_width = popup.winfo_reqwidth()
+        natural_height = popup.winfo_reqheight()
+        width = max(600, min(natural_width, screen_width - 16))
+        height = max(460, min(natural_height, screen_height - 60))
+        popup.geometry(f"{width}x{height}")
+        popup.update_idletasks()
         width, height = popup.winfo_width(), popup.winfo_height()
         above = y_root - height - 8
         below = y_root + 22
-        screen_height = self.root.winfo_screenheight()
         y = above if above >= 4 else min(below, screen_height - height - 4)
-        x = max(4, min(x_root - width // 2, self.root.winfo_screenwidth() - width - 8))
+        x = max(4, min(x_root - width // 2, screen_width - width - 8))
         popup.geometry(f"+{x}+{max(4, y)}")
-        popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_after(d))
+        popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_current(d))
         self._windows.append(popup)
 
     def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
@@ -487,6 +497,11 @@ class WordBubbleManager:
     def _close_after(self, depth: int) -> None:
         self.stack = self.stack.close_after(depth)
         self._destroy_from(depth + 1)
+
+    def _close_current(self, depth: int) -> None:
+        """Close the bubble at `depth` (and its descendants) via its dismiss control."""
+        self.stack = self.stack.close_bubble(depth)
+        self._destroy_from(depth)
 
 
 def draw_icon(canvas: tk.Canvas, name: str, color: str) -> None:

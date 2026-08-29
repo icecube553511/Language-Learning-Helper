@@ -423,6 +423,10 @@ fun LexiTrackApp(
                 bubbleStack = bubbleStack.closeAfter(depth)
                 while (bubbles.size > depth + 1) bubbles.removeAt(bubbles.lastIndex)
             },
+            onDismissCurrent = { depth ->
+                bubbleStack = bubbleStack.closeBubble(depth)
+                while (bubbles.size > depth) bubbles.removeAt(bubbles.lastIndex)
+            },
         )
             }
         }
@@ -502,6 +506,7 @@ private fun WordBubbleOverlay(
     bubbles: MutableList<WordBubbleState>,
     onDismissAll: () -> Unit,
     onCloseAfter: (Int) -> Unit,
+    onDismissCurrent: (Int) -> Unit,
 ) {
     bubbles.toList().forEachIndexed { index, bubble ->
         val positionProvider: PopupPositionProvider = remember(bubble.anchor) {
@@ -533,7 +538,7 @@ private fun WordBubbleOverlay(
             ) {
                 Surface(
                     modifier = Modifier
-                        .widthIn(min = 220.dp, max = 360.dp)
+                        .widthIn(min = 260.dp, max = 440.dp)
                         .pointerInput(index) {
                             awaitPointerEventScope {
                                 while (true) {
@@ -550,10 +555,29 @@ private fun WordBubbleOverlay(
                     border = CardDefaults.outlinedCardBorder(),
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
-                        Text(bubble.data.word, style = MaterialTheme.typography.titleLarge, color = Ink)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                bubble.data.word,
+                                style = MaterialTheme.typography.titleLarge,
+                                color = Ink,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = { onDismissCurrent(index) },
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Text("✕", color = MutedInk)
+                            }
+                        }
                         if (bubble.data.phonetic.isNotBlank()) {
                             Text(bubble.data.phonetic, style = MaterialTheme.typography.labelMedium, color = BrandTeal)
                         }

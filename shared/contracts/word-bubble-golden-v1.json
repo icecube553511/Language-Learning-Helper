@@ -9,6 +9,8 @@
   "stackVectors": {
     "rootThenChildThenSibling": ["root", "sibling"],
     "blankAtRoot": ["root"],
+    "dismissChild": ["root"],
+    "dismissRoot": [],
     "outside": []
   }
 }

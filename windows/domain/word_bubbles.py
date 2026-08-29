@@ -100,6 +100,16 @@ class BubbleStack:
             return BubbleStack()
         return BubbleStack(self.frames[: min(depth + 1, len(self.frames))])
 
+    def close_bubble(self, depth: int) -> "BubbleStack":
+        """Remove the bubble at `depth` and all descendants, keeping ancestors.
+
+        This is the explicit-dismiss transition: a non-root bubble returns to
+        its parent, while dismissing the root clears the whole stack.
+        """
+        if depth <= 0:
+            return BubbleStack()
+        return BubbleStack(self.frames[: depth])
+
     def close_all(self) -> "BubbleStack":
         return BubbleStack()
 

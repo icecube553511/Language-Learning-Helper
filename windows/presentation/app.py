@@ -4,6 +4,7 @@ from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
 import random
+import re
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -2057,6 +2058,7 @@ class LexiTrackApp(tk.Tk):
                 font="LexiExample",
                 justify="left",
                 anchor="w",
+                wraplength=REMINDER_EXAMPLES_WIDTH - 28,
             )
             chinese.pack(anchor="w", fill=tk.X, padx=(8, 4), pady=(0, 4))
             examples_view.bind_mousewheel(english, chinese)
@@ -2279,6 +2281,14 @@ class LexiTrackApp(tk.Tk):
             self.review_batch_text.configure(text="暂无已学词")
 
 
+def _descendant_labels(widget: tk.Misc) -> list[tk.Label]:
+    return [
+        label
+        for child in widget.winfo_children()
+        for label in ([child] if isinstance(child, tk.Label) else []) + _descendant_labels(child)
+    ]
+
+
 def run_gui_smoke(app: LexiTrackApp) -> dict:
     def example_stack_metrics(labels: list[tk.Label], area: tk.Frame) -> tuple[list[list[int]], list[int], bool]:
         bounds = [
@@ -2372,6 +2382,28 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     )
     app.show_page("study")
     app.update()
+    # Word-definition bubble: bilingual examples, enlarged surface, dismiss control.
+    word_bubble_known_ready = False
+    word_bubble_size_ready = False
+    word_bubble_close_ready = False
+    app.word_bubbles.open_from_token(-1, "a", "A conference in Tokyo.", 400, 300)
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+    bubble_windows = [window for window in app.word_bubbles._windows if window.winfo_exists()]
+    if bubble_windows:
+        popup = bubble_windows[-1]
+        label_texts = [label.cget("text") for label in _descendant_labels(popup)]
+        word_bubble_size_ready = popup.winfo_width() >= 600 and popup.winfo_height() >= 460
+        word_bubble_known_ready = sum(
+            1 for text in label_texts if re.search(r"[\u3400-\u9fff]", str(text))
+        ) >= 3
+        app.word_bubbles._close_current(0)
+        for _ in range(2):
+            app.update_idletasks()
+            app.update()
+        word_bubble_close_ready = not any(window.winfo_exists() for window in app.word_bubbles._windows)
+        app.word_bubbles.clear()
     app.change_font_scale("140")
     for _ in range(3):
         app.update_idletasks()
@@ -2742,6 +2774,9 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "maxScaleExampleGaps": max_scale_example_gaps,
         "maxScaleExamplesCompact": max_scale_examples_compact,
         "maxScaleExamplesFit": max_scale_examples_fit,
+        "wordBubbleKnownReady": word_bubble_known_ready,
+        "wordBubbleSizeReady": word_bubble_size_ready,
+        "wordBubbleCloseReady": word_bubble_close_ready,
         "reviewHeaderReady": review_header_ready,
         "reminderFiltersReady": reminder_filters_ready,
         "reminderPopupReady": reminder_popup_ready,

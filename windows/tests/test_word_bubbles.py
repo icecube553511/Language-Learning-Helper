@@ -43,6 +43,8 @@ class WordBubbleTests(unittest.TestCase):
         actual = {
             "rootThenChildThenSibling": [frame.definition.word for frame in with_sibling.frames],
             "blankAtRoot": [frame.definition.word for frame in with_sibling.close_after(0).frames],
+            "dismissChild": [frame.definition.word for frame in with_sibling.close_bubble(1).frames],
+            "dismissRoot": [frame.definition.word for frame in with_sibling.close_bubble(0).frames],
             "outside": [frame.definition.word for frame in with_sibling.close_all().frames],
         }
         self.assertEqual(actual, golden["stackVectors"])
@@ -58,6 +60,26 @@ class WordBubbleTests(unittest.TestCase):
         self.assertFalse(definition.known)
         self.assertEqual(definition.meaning, "词库暂无中文释义")
         self.assertEqual(definition.examples, ("Unknown appears here.",))
+
+    def test_known_word_bubble_carries_bilingual_example_pairs(self):
+        definition = resolve_bubble_definition([entry("Focus", "v. 集中 n. 焦点")], "focus")
+        self.assertTrue(definition.known)
+        self.assertEqual(len(definition.example_pairs), 3)
+        for english, chinese in definition.example_pairs:
+            self.assertTrue(english)
+            self.assertTrue(chinese)
+
+    def test_unknown_word_bubble_has_no_invented_chinese(self):
+        definition = resolve_bubble_definition([], "unknown", "Unknown appears here.")
+        self.assertFalse(definition.known)
+        self.assertEqual(definition.example_pairs, (("Unknown appears here.", ""),))
+
+    def test_dismiss_closes_current_bubble_and_descendants(self):
+        definitions = [resolve_bubble_definition([entry(word)], word) for word in ("root", "child", "sibling")]
+        stack = BubbleStack().open_root(definitions[0]).open_child(0, definitions[1])
+        sibling = stack.open_child(0, definitions[2])
+        self.assertEqual([frame.definition.word for frame in sibling.close_bubble(1).frames], ["root"])
+        self.assertEqual(len(sibling.close_bubble(0).frames), 0)
 
     def test_stack_truncates_descendants_and_closes_at_depth(self):
         definitions = [resolve_bubble_definition([entry(word)], word) for word in ("root", "child", "sibling")]

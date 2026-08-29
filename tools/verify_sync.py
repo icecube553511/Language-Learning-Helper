@@ -144,6 +144,11 @@ def verify_word_bubble_contract() -> None:
     payload = json.loads(golden_path.read_text(encoding="utf-8"))
     if payload.get("contractVersion") != "word-bubble-v1" or payload.get("maxDepth") != 9:
         fail("Word bubble contract version or max depth differs")
+    stack_vectors = payload.get("stackVectors", {})
+    if stack_vectors.get("dismissChild") != ["root"] or stack_vectors.get("dismissRoot") != []:
+        fail("Word bubble dismiss semantics differ from the shared golden")
+    if "bilingual example" not in contract_path.read_text(encoding="utf-8"):
+        fail("Word bubble contract must require bilingual example rendering")
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     if parity.get("wordBubbleVersion") != "word-bubble-v1":
         fail("Parity manifest does not declare word-bubble-v1")
