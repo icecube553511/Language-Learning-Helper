@@ -19,8 +19,16 @@ class DictationUseCasesTest {
 
     @Test fun `random selection is without replacement and filters evaluated`() {
         val result = SelectDictationCandidatesUseCase(FakeVocabulary(entries), randomUnit = { 0.0 })
-            .random(10, setOf("CET4"))
+            .random(10, "cet4")
         assertEquals(listOf("z"), result.map { it.id })
+    }
+
+    @Test fun `random selection respects the group scope`() {
+        val vocab = FakeVocabulary(entries + entry("w", setOf("CUSTOM"), emptySet()))
+        val cet4 = SelectDictationCandidatesUseCase(vocab, randomUnit = { 0.0 }).random(20, "cet4")
+        assertEquals(setOf("z"), cet4.map { it.id }.toSet())
+        val custom = SelectDictationCandidatesUseCase(vocab, randomUnit = { 0.0 }).random(20, "custom")
+        assertEquals(setOf("w"), custom.map { it.id }.toSet())
     }
 
     @Test fun `selected ids are sorted and can include evaluated`() {

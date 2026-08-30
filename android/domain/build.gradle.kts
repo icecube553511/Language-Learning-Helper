@@ -29,4 +29,8 @@ tasks.test {
         "word.bubble.golden.path",
         rootProject.file("../shared/contracts/word-bubble-golden-v1.json").absolutePath,
     )
+    systemProperty(
+        "vocabulary.groups.golden.path",
+        rootProject.file("../shared/contracts/vocabulary-groups-golden-v1.json").absolutePath,
+    )
 }

@@ -258,6 +258,86 @@ class LearningServiceTests(unittest.TestCase):
         document = service.build_dictation_document(DictationOptions(missing_fields={DictationField.MEANING}), word_ids={"built"}, include_evaluated=True)
         self.assertEqual(len(document.rows), 1)
 
+    def test_library_groups_ordering_and_counts(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4", tags=("gk",)),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6", tags=("zk",)),
+            VocabularyEntry.create("zephyr", "和风", examples, level="CET4|CET6"),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+        groups = service.library_groups()
+        self.assertEqual([group.key for group in groups], ["all", "cet4", "cet6", "zk", "gk", "custom"])
+        counts = {group.key: group.count for group in groups}
+        self.assertEqual(counts, {"all": 4, "cet4": 2, "cet6": 2, "zk": 1, "gk": 1, "custom": 1})
+        labels = {group.key: group.label for group in groups}
+        self.assertEqual(labels["cet4"], "CET-4（四级）")
+        self.assertEqual(labels["custom"], "自定义")
+
+    def test_words_in_group_and_search_within_group(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4", tags=("gk",)),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6", tags=("zk",)),
+            VocabularyEntry.create("zephyr", "和风", examples, level="CET4|CET6"),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+
+        self.assertEqual(len(service.words_in_group("all")), 4)
+        self.assertEqual({entry.word for entry in service.words_in_group("cet4")}, {"adapt", "zephyr"})
+        self.assertEqual([entry.word for entry in service.words_in_group("gk")], ["adapt"])
+        self.assertEqual([entry.word for entry in service.words_in_group("custom")], ["myword"])
+        self.assertEqual([entry.word for entry in service.words_in_group("zk", "aband")], ["abandon"])
+        self.assertEqual([entry.word for entry in service.words_in_group("all", "zeph")], ["zephyr"])
+        self.assertEqual(service.words_in_group("missing"), [])
+
+    def test_dictation_groups_and_words_in_group(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4", tags=("gk",)),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6", tags=("zk",)),
+            VocabularyEntry.create("examined", "已考察", examples, level="CET4", tags=("evaluated",)),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+
+        groups = service.dictation_groups()
+        self.assertEqual([group.key for group in groups], ["all", "cet4", "cet6", "zk", "gk", "custom"])
+        self.assertEqual(
+            {group.key: group.count for group in groups},
+            {"all": 3, "cet4": 1, "cet6": 1, "zk": 1, "gk": 1, "custom": 1},
+        )
+        self.assertEqual({entry.word for entry in service.dictation_words_in_group("cet4")}, {"adapt"})
+        self.assertEqual({entry.word for entry in service.dictation_words_in_group("gk")}, {"adapt"})
+        self.assertEqual({entry.word for entry in service.dictation_words_in_group("custom")}, {"myword"})
+        self.assertEqual(len(service.dictation_words_in_group("all")), 3)
+
+        groups_eval = service.dictation_groups(include_evaluated=True)
+        self.assertEqual({group.key: group.count for group in groups_eval}, {"all": 4, "cet4": 2, "cet6": 1, "zk": 1, "gk": 1, "custom": 1})
+        self.assertEqual(
+            {entry.word for entry in service.dictation_words_in_group("cet4", include_evaluated=True)},
+            {"adapt", "examined"},
+        )
+
+    def test_dictation_random_scope_by_group(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4"),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6"),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+
+        # Random sampling scoped to a single group only draws from that group.
+        self.assertEqual(service.dictation_candidates(3, group="cet4", rng=random.Random(0))[0].word_id, "adapt")
+        self.assertEqual(service.dictation_candidates(3, group="custom", rng=random.Random(0))[0].word_id, "myword")
+        self.assertEqual(len(service.dictation_candidates(3, group="all", rng=random.Random(0))), 3)
+        self.assertEqual(len(service.dictation_pool(group="cet4")), 1)
+        self.assertEqual(len(service.dictation_pool(group="cet6")), 1)
+        self.assertEqual(len(service.dictation_pool(group="all")), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

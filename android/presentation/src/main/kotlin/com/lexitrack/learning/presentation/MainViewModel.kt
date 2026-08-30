@@ -8,6 +8,7 @@ import com.lexitrack.learning.application.CatalogStatus
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ForecastDay
 import com.lexitrack.learning.application.UserSettings
+import com.lexitrack.learning.application.LibraryGroup
 import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.domain.ImportReport
 import com.lexitrack.learning.domain.DictationDocument
@@ -67,6 +68,8 @@ data class MainUiState(
     val searchResults: List<VocabularyEntry> = emptyList(),
     val totalSearchResults: Int = 0,
     val selectedVocabularyIds: Set<String> = emptySet(),
+    val libraryGroup: String? = null,
+    val libraryGroups: List<LibraryGroup> = emptyList(),
     val fontScale: Float = 1.0f,
     val importInProgress: Boolean = false,
     val importReport: ImportReport? = null,
@@ -202,7 +205,7 @@ class MainViewModel(
     fun buildDictation(
         options: DictationDocumentOptions,
         count: Int,
-        levels: Set<String>,
+        group: String,
         includeEvaluated: Boolean,
         manual: Boolean,
         customExample: String,
@@ -220,11 +223,10 @@ class MainViewModel(
         val entries = if (manual) {
             useCases.selectDictationCandidates.selected(
                 _uiState.value.dictationSelectedIds,
-                levels,
                 includeEvaluated,
             )
         } else {
-            useCases.selectDictationCandidates.random(count, levels, includeEvaluated)
+            useCases.selectDictationCandidates.random(count, group, includeEvaluated)
         }
         if (entries.isEmpty()) {
             _uiState.value = _uiState.value.copy(transientMessage = "没有符合当前条件的词条")
@@ -285,13 +287,23 @@ class MainViewModel(
         }
     }
 
+    private fun resolveLibraryMatches(query: String): List<VocabularyEntry> {
+        val group = _uiState.value.libraryGroup
+        return if (group != null) useCases.wordsInGroup(group, query) else useCases.search(query)
+    }
+
     fun updateSearch(query: String) {
-        val matches = useCases.search(query)
+        val matches = resolveLibraryMatches(query)
         _uiState.value = _uiState.value.copy(
             searchQuery = query,
             searchResults = matches.take(MAX_VISIBLE_SEARCH_RESULTS),
             totalSearchResults = matches.size,
         )
+    }
+
+    fun selectLibraryGroup(groupKey: String?) {
+        _uiState.value = _uiState.value.copy(libraryGroup = groupKey, searchQuery = "")
+        updateSearch("")
     }
 
     fun toggleVocabularySelection(wordId: String) {
@@ -475,7 +487,7 @@ class MainViewModel(
     }
 
     private fun refreshDerived(status: CatalogStatus, settings: UserSettings) {
-        val matches = useCases.search(_uiState.value.searchQuery)
+        val matches = resolveLibraryMatches(_uiState.value.searchQuery)
         val learntCount = useCases.learntWords.value.size
         val current = _uiState.value.currentCard?.id?.let { id ->
             useCases.words.value.firstOrNull { it.id == id }
@@ -492,6 +504,7 @@ class MainViewModel(
             dashboard = dashboard,
             forecast = useCases.forecast(),
             currentCard = current,
+            libraryGroups = useCases.libraryGroups(),
             searchResults = matches.take(MAX_VISIBLE_SEARCH_RESULTS),
             totalSearchResults = matches.size,
             fontScale = settings.fontScale,

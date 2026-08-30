@@ -1,6 +1,7 @@
 package com.lexitrack.learning.presentation
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -116,6 +117,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.application.ForecastDay
+import com.lexitrack.learning.application.LibraryGroup
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
 import com.lexitrack.learning.domain.DictationFormat
@@ -271,8 +273,8 @@ fun LexiTrackApp(
                                 state = state,
                                 onToggleSelection = viewModel::toggleDictationSelection,
                                 onSetSelection = viewModel::setDictationSelection,
-                                onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
-                                    viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
+                                onBuild = { options, count, group, includeEvaluated, manual, customExample ->
+                                    viewModel.buildDictation(options, count, group, includeEvaluated, manual, customExample)
                                     dictationPreviewOpen = true
                                 },
                             )
@@ -284,6 +286,7 @@ fun LexiTrackApp(
                         onChooseCsv = onChooseCsv,
                         onToggleSelection = viewModel::toggleVocabularySelection,
                         onEditLabels = { labelEditorOpen = true },
+                        onSelectGroup = viewModel::selectLibraryGroup,
                     )
                     MainSection.INSIGHTS -> InsightsScreen(state.forecast)
                     MainSection.SETTINGS -> SettingsScreen(
@@ -1192,7 +1195,7 @@ private fun DictationScreen(
     state: MainUiState,
     onToggleSelection: (String) -> Unit,
     onSetSelection: (Collection<String>, Boolean) -> Unit,
-    onBuild: (DictationDocumentOptions, Int, Set<String>, Boolean, Boolean, String) -> Unit,
+    onBuild: (DictationDocumentOptions, Int, String, Boolean, Boolean, String) -> Unit,
 ) {
     var formats by remember { mutableStateOf(setOf(DictationFormat.DOCX, DictationFormat.PDF)) }
     var fontSizeText by remember { mutableStateOf("12") }
@@ -1201,20 +1204,21 @@ private fun DictationScreen(
     var includeExamples by remember { mutableStateOf(false) }
     var includeExampleChinese by remember { mutableStateOf(false) }
     var customExample by remember { mutableStateOf("") }
-    var selectedLevels by remember { mutableStateOf(setOf("CET4", "CET6", "CUSTOM")) }
     var includeEvaluated by remember { mutableStateOf(false) }
     var countText by remember { mutableStateOf("10") }
     var manual by remember { mutableStateOf(false) }
+    var dictationScope by remember { mutableStateOf("all") }
+    var dictationGroup by remember { mutableStateOf<String?>(null) }
     var countError by remember { mutableStateOf(false) }
     var confirmationRequested by remember { mutableStateOf<Int?>(null) }
 
-    val effectiveLevels = if (selectedLevels.isEmpty()) state.availableLevels.toSet() else selectedLevels
     val candidateEntries = state.dictationEntries.filter { entry ->
-        (effectiveLevels.isEmpty() || entry.levels.any { it.uppercase() in effectiveLevels }) &&
-            (includeEvaluated || entry.tags.none { it.equals("evaluated", ignoreCase = true) })
+        includeEvaluated || entry.tags.none { it.equals("evaluated", ignoreCase = true) }
     }
     val selectedCandidateIds = state.dictationSelectedIds.intersect(candidateEntries.mapTo(mutableSetOf()) { it.id })
     val selectedCount = selectedCandidateIds.size
+    val scopeGroupLabel = dictationGroupSummaries(candidateEntries)
+        .firstOrNull { it.key == dictationScope }?.label ?: dictationScope
 
     fun submit() {
         val count = countText.toIntOrNull()
@@ -1227,6 +1231,7 @@ private fun DictationScreen(
             confirmationRequested = count
             return
         }
+        val buildGroup = if (manual) "all" else dictationScope
         onBuild(
             DictationDocumentOptions(
                 formats = formats,
@@ -1237,7 +1242,7 @@ private fun DictationScreen(
                 includeExampleChinese = includeExampleChinese,
             ),
             count,
-            effectiveLevels,
+            buildGroup,
             includeEvaluated,
             manual,
             customExample,
@@ -1266,16 +1271,13 @@ private fun DictationScreen(
                 onIncludeExampleChineseChange = { includeExampleChinese = it },
                 customExample = customExample,
                 onCustomExampleChange = { customExample = it },
-                selectedLevels = selectedLevels,
-                availableLevels = state.availableLevels,
-                onLevelsChange = { selectedLevels = it },
                 includeEvaluated = includeEvaluated,
                 onIncludeEvaluatedChange = { includeEvaluated = it },
                 countText = countText,
                 onCountChange = { countText = it.filter(Char::isDigit); countError = false },
                 countError = countError,
                 manual = manual,
-                onManualChange = { manual = it },
+                onManualChange = { manual = it; if (!it) dictationGroup = null },
                 preparing = state.dictationPreparing,
                 onSubmit = ::submit,
             )
@@ -1291,23 +1293,47 @@ private fun DictationScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("手选词条", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
                         Text(
-                            if (manual) "$selectedCount / ${countText.toIntOrNull() ?: 0}" else "随机模式",
+                            if (manual) "$selectedCount / ${countText.toIntOrNull() ?: 0}" else "随机范围：$scopeGroupLabel",
                             style = MaterialTheme.typography.labelLarge,
                             color = BrandTeal,
                         )
                     }
                     Text(
-                        if (manual) "仅使用勾选的词条；数量不足时会再次确认。" else "随机模式会在筛选结果中无重复取样。",
+                        if (manual) "仅使用勾选的词条；数量不足时会再次确认。" else "点击词书分组设置随机范围；取样时无重复。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MutedInk,
                     )
-                    if (manual) {
+                    val groups = remember(candidateEntries) { dictationGroupSummaries(candidateEntries) }
+                    val activeGroup = dictationGroup
+                    if (manual && activeGroup != null) {
+                        val activeLabel = remember(candidateEntries, activeGroup) {
+                            dictationGroupSummaries(candidateEntries)
+                                .firstOrNull { it.key == activeGroup }?.label ?: activeGroup
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { dictationGroup = null }) { Text("← 返回词书") }
+                            Spacer(Modifier.width(8.dp))
+                            Text(activeLabel, style = MaterialTheme.typography.labelLarge, color = Ink)
+                        }
+                        Spacer(Modifier.height(4.dp))
                         DictationSelectionTable(
-                            entries = candidateEntries,
+                            entries = dictationEntriesInGroup(candidateEntries, activeGroup),
                             selectedIds = state.dictationSelectedIds,
                             onToggleSelection = onToggleSelection,
                             onSetSelection = onSetSelection,
                         )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            groups.forEach { group ->
+                                VocabularyGroupCard(
+                                    group = group,
+                                    selected = !manual && group.key == dictationScope,
+                                    onClick = {
+                                        if (manual) dictationGroup = group.key else dictationScope = group.key
+                                    },
+                                )
+                            }
+                        }
                     }
                     if (candidateEntries.isEmpty()) {
                         Text("当前筛选没有可用词条。", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
@@ -1337,7 +1363,7 @@ private fun DictationScreen(
                                 includeExampleChinese = includeExampleChinese,
                             ),
                             count,
-                            effectiveLevels,
+                            "all",
                             includeEvaluated,
                             true,
                             customExample,
@@ -1517,9 +1543,6 @@ private fun DictationOptionsPanel(
     onIncludeExampleChineseChange: (Boolean) -> Unit,
     customExample: String,
     onCustomExampleChange: (String) -> Unit,
-    selectedLevels: Set<String>,
-    availableLevels: List<String>,
-    onLevelsChange: (Set<String>) -> Unit,
     includeEvaluated: Boolean,
     onIncludeEvaluatedChange: (Boolean) -> Unit,
     countText: String,
@@ -1568,10 +1591,6 @@ private fun DictationOptionsPanel(
                     onMissingFieldsChange(if (field in missingFields && missingFields.size > 1) missingFields - field else missingFields + field)
                 },
             )
-            Row(modifier = Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                Text("词库", modifier = Modifier.width(64.dp), style = MaterialTheme.typography.labelLarge, color = MutedInk)
-                LevelFilterRow("", selectedLevels, availableLevels) { onLevelsChange(it) }
-            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("默写数量", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
                 OutlinedTextField(
@@ -1737,10 +1756,26 @@ private fun LibraryScreen(
     onChooseCsv: () -> Unit,
     onToggleSelection: (String) -> Unit,
     onEditLabels: () -> Unit,
+    onSelectGroup: (String?) -> Unit,
 ) {
+    val browsingGroups = state.libraryGroup == null && state.searchQuery.isEmpty()
+    val activeGroupLabel = state.libraryGroups.firstOrNull { it.key == state.libraryGroup }?.label
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(20.dp))
-        PageHeader("词库", "${state.totalSearchResults} 个匹配词条")
+        if (state.libraryGroup != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onSelectGroup(null) }) { Text("← 返回词书") }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    activeGroupLabel ?: "词库",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Ink,
+                )
+            }
+        } else {
+            val total = state.libraryGroups.firstOrNull { it.key == "all" }?.count ?: 0
+            PageHeader("词库", "$total 条词条 · 先选择词书分组")
+        }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -1774,13 +1809,24 @@ private fun LibraryScreen(
             ) { Text("标签 (${state.selectedVocabularyIds.size})") }
         }
         Text(
-            "CSV 的 level 支持 CET4、CET6、custom（多个用 | 分隔），tags 也用 | 分隔；勾选导入词条可批量修改。",
+            "CSV 的 level 支持 CET4、CET6、custom（多个用 | 分隔），tags 也用 | 分隔；点击分组进入该组，可批量修改。",
             style = MaterialTheme.typography.labelMedium,
             color = MutedInk,
         )
         Spacer(Modifier.height(12.dp))
-        if (state.searchResults.isEmpty()) {
-            EmptyState(Icons.AutoMirrored.Outlined.List, "没有匹配词条", "可调整搜索条件或导入 CSV 词库")
+        if (browsingGroups) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.libraryGroups, key = { it.key }) { group ->
+                    VocabularyGroupCard(group = group, onClick = { onSelectGroup(group.key) })
+                }
+            }
+        } else if (state.searchResults.isEmpty()) {
+            val emptyMessage = if (state.libraryGroup != null) "该分组暂无词条" else "可调整搜索条件或导入 CSV 词库"
+            EmptyState(Icons.AutoMirrored.Outlined.List, "没有匹配词条", emptyMessage)
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -1805,6 +1851,29 @@ private fun LibraryScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VocabularyGroupCard(group: LibraryGroup, selected: Boolean = false, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else CardDefaults.outlinedCardBorder(),
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp, 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(group.label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
+            Text(
+                "${group.count} 词" + if (selected) " · 已选" else "",
+                style = MaterialTheme.typography.labelMedium,
+                color = MutedInk,
+            )
         }
     }
 }

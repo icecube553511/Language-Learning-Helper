@@ -12,6 +12,11 @@ import com.lexitrack.learning.domain.BubbleDefinition
 import com.lexitrack.learning.domain.resolveBubbleDefinition
 import com.lexitrack.learning.domain.initialWeightFor
 import com.lexitrack.learning.domain.updatedWeightForReview
+import com.lexitrack.learning.domain.GROUP_ORDER
+import com.lexitrack.learning.domain.canonicalMemberships
+import com.lexitrack.learning.domain.classifyGroups
+import com.lexitrack.learning.domain.groupLabel
+import com.lexitrack.learning.domain.normalizeGroupMembership
 import java.io.ByteArrayInputStream
 import java.time.LocalDate
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +32,12 @@ data class DashboardSnapshot(
 
 data class ForecastDay(
     val date: LocalDate,
+    val count: Int,
+)
+
+data class LibraryGroup(
+    val key: String,
+    val label: String,
     val count: Int,
 )
 
@@ -206,6 +217,59 @@ class SearchVocabularyUseCase(
     }
 }
 
+class LibraryGroupsUseCase(
+    private val vocabulary: VocabularyRepository,
+) {
+    operator fun invoke(): List<LibraryGroup> {
+        val entries = vocabulary.words.value
+        val canonicalCounts = GROUP_ORDER.associateWith { 0 }.toMutableMap()
+        val extraCounts = linkedMapOf<String, Int>()
+        for (entry in entries) {
+            val memberships = entry.levels.mapTo(mutableSetOf()) { normalizeGroupMembership(it) }
+            val groupKeys = classifyGroups(entry.levels, entry.tags)
+            for (key in groupKeys) {
+                if (key in canonicalCounts) canonicalCounts[key] = canonicalCounts.getValue(key) + 1
+            }
+            for (code in memberships) {
+                if (code !in canonicalMemberships()) {
+                    extraCounts[code] = extraCounts.getOrDefault(code, 0) + 1
+                }
+            }
+        }
+        val result = mutableListOf(LibraryGroup("all", groupLabel("all"), canonicalCounts.getValue("all")))
+        for (key in GROUP_ORDER.drop(1)) {
+            result.add(LibraryGroup(key, groupLabel(key), canonicalCounts.getValue(key)))
+        }
+        for ((code, count) in extraCounts.toSortedMap()) {
+            result.add(LibraryGroup(code, code, count))
+        }
+        return result
+    }
+}
+
+class WordsInGroupUseCase(
+    private val vocabulary: VocabularyRepository,
+) {
+    operator fun invoke(key: String, query: String = ""): List<VocabularyEntry> {
+        val entries = vocabulary.words.value
+        val selected = when {
+            key == "all" -> entries
+            key in GROUP_ORDER -> entries.filter { key in classifyGroups(it.levels, it.tags) }
+            else -> {
+                val code = normalizeGroupMembership(key)
+                entries.filter { entry -> entry.levels.any { normalizeGroupMembership(it) == code } }
+            }
+        }
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) return selected
+        return selected.filter { entry ->
+            entry.word.lowercase().contains(needle) ||
+                entry.meaning.lowercase().contains(needle) ||
+                entry.tags.any { it.lowercase().contains(needle) }
+        }
+    }
+}
+
 class LookupVocabularyWordUseCase(
     private val vocabulary: VocabularyRepository,
 ) {
@@ -375,6 +439,8 @@ data class AppUseCases(
     val startReviewSession: BuildReviewSessionUseCase,
     val rateReviewWord: RateReviewWordUseCase,
     val search: SearchVocabularyUseCase,
+    val libraryGroups: LibraryGroupsUseCase,
+    val wordsInGroup: WordsInGroupUseCase,
     val lookupWord: LookupVocabularyWordUseCase,
     val importVocabulary: ImportVocabularyUseCase,
     val updateVocabularyLabels: UpdateVocabularyLabelsUseCase,

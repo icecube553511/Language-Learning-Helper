@@ -106,6 +106,37 @@ class DictationPresentationTest {
         assertEquals(null to 0, cleared)
     }
 
+    @Test
+    fun `dictation group summaries respect the candidate pool`() {
+        val base = entry(tags = emptySet())
+        val pool = listOf(
+            base.copy(id = "adapt", word = "adapt", levels = setOf("CET4"), tags = setOf("gk")),
+            base.copy(id = "abandon", word = "abandon", levels = setOf("CET6"), tags = setOf("zk")),
+            base.copy(id = "examined", word = "examined", levels = setOf("CET4"), tags = setOf("evaluated")),
+            base.copy(id = "myword", word = "myword", levels = setOf("CUSTOM"), tags = emptySet()),
+        )
+        val groups = dictationGroupSummaries(pool)
+        assertEquals(listOf("all", "cet4", "cet6", "zk", "gk", "custom"), groups.map { it.key })
+        assertEquals(
+            mapOf("all" to 4, "cet4" to 2, "cet6" to 1, "zk" to 1, "gk" to 1, "custom" to 1),
+            groups.associate { it.key to it.count },
+        )
+    }
+
+    @Test
+    fun `dictation entries in a group filter by level or recognized tag`() {
+        val base = entry(tags = emptySet())
+        val pool = listOf(
+            base.copy(id = "adapt", word = "adapt", levels = setOf("CET4"), tags = setOf("gk")),
+            base.copy(id = "abandon", word = "abandon", levels = setOf("CET6"), tags = setOf("zk")),
+            base.copy(id = "myword", word = "myword", levels = setOf("CUSTOM"), tags = emptySet()),
+        )
+        assertEquals(setOf("adapt"), dictationEntriesInGroup(pool, "cet4").map { it.id }.toSet())
+        assertEquals(setOf("adapt"), dictationEntriesInGroup(pool, "gk").map { it.id }.toSet())
+        assertEquals(setOf("myword"), dictationEntriesInGroup(pool, "custom").map { it.id }.toSet())
+        assertEquals(3, dictationEntriesInGroup(pool, "all").size)
+    }
+
     private fun entry(tags: Set<String>) = VocabularyEntry(
         id = "ability",
         word = "ability",

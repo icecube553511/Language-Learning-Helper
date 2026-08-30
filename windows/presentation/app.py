@@ -607,19 +607,6 @@ class LexiTrackApp(tk.Tk):
             activebackground=SURFACE, selectcolor=SURFACE, font="LexiSmall",
         ).pack(side=tk.LEFT, padx=(16, 0))
 
-        level_row = tk.Frame(inner, bg=SURFACE)
-        level_row.pack(fill=tk.X, pady=(0, 9))
-        tk.Label(level_row, text="词库", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 8))
-        self.dictation_level_vars: dict[str, tk.BooleanVar] = {}
-        for value, label in (("CET4", "四级"), ("CET6", "六级"), ("CUSTOM", "自定义")):
-            variable = tk.BooleanVar(value=True)
-            self.dictation_level_vars[value] = variable
-            tk.Checkbutton(
-                level_row, text=label, variable=variable, command=self._refresh_dictation_candidates,
-                bg=SURFACE, fg=TEXT, activebackground=SURFACE, selectcolor=SURFACE,
-                font="LexiSmall", padx=0,
-            ).pack(side=tk.LEFT, padx=(0, 8))
-
         format_row = tk.Frame(inner, bg=SURFACE)
         format_row.pack(fill=tk.X, pady=(0, 9))
         tk.Label(format_row, text="输出格式", bg=SURFACE, fg=MUTED, font="LexiSmall").pack(side=tk.LEFT, padx=(0, 8))
@@ -688,8 +675,29 @@ class LexiTrackApp(tk.Tk):
         selection = self._card(body)
         selection.pack(fill=tk.BOTH, expand=True)
         tk.Label(selection, text="手选词条", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=16, pady=(13, 2))
+        self.dictation_group: str | None = None
+        self.dictation_scope_group: str = "all"
+        self.dictation_back_button = self._outline_button(selection, "← 返回词书", self._back_to_dictation_groups, width=12)
         self.dictation_selection_count = tk.Label(selection, text="随机模式不需要手选", bg=SURFACE, fg=MUTED, font="LexiSmall")
         self.dictation_selection_count.pack(anchor="w", padx=16, pady=(0, 8))
+        self.dictation_groups_frame = tk.Frame(selection, bg=SURFACE)
+        self.dictation_groups_header = tk.Label(self.dictation_groups_frame, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
+        self.dictation_groups_header.pack(anchor="w", padx=16, pady=(0, 8))
+        groups_canvas = tk.Canvas(self.dictation_groups_frame, bg=SURFACE, highlightthickness=0)
+        groups_scrollbar = ttk.Scrollbar(self.dictation_groups_frame, orient=tk.VERTICAL, command=groups_canvas.yview)
+        self.dictation_groups_inner = tk.Frame(groups_canvas, bg=SURFACE)
+        self.dictation_groups_inner.bind(
+            "<Configure>",
+            lambda _e: groups_canvas.configure(scrollregion=groups_canvas.bbox("all")),
+        )
+        dictation_group_window = groups_canvas.create_window((0, 0), window=self.dictation_groups_inner, anchor="nw")
+        groups_canvas.bind(
+            "<Configure>",
+            lambda e: groups_canvas.itemconfigure(dictation_group_window, width=e.width),
+        )
+        groups_canvas.configure(yscrollcommand=groups_scrollbar.set)
+        groups_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        groups_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, 12))
         table = tk.Frame(selection, bg=SURFACE)
         table.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
         self.dictation_table_frame = table
@@ -743,23 +751,83 @@ class LexiTrackApp(tk.Tk):
         self._dictation_drag_anchor_id: str | None = None
         self._dictation_drag_anchor_selected: bool | None = None
 
-    def _dictation_levels(self) -> set[str]:
-        selected = {level for level, variable in self.dictation_level_vars.items() if variable.get()}
-        return selected or set(self.dictation_level_vars)
-
     def _refresh_dictation_candidates(self):
         if not hasattr(self, "dictation_table_canvas"):
             return
-        self.dictation_candidates = self.service.dictation_pool(
-            self._dictation_levels(),
-            self.dictation_include_evaluated_var.get(),
-        )[:2000]
-        self.dictation_selected_ids = visible_dictation_selection(
-            self.dictation_selected_ids,
-            self.dictation_candidates,
-        )
-        self._render_dictation_candidates()
+        if self.dictation_mode_var.get() != "manual":
+            self.dictation_group = None
+        include = self.dictation_include_evaluated_var.get()
+        pool = self.service.dictation_pool(include)
+        self.dictation_selected_ids = visible_dictation_selection(self.dictation_selected_ids, pool)
+        if self.dictation_mode_var.get() == "manual" and self.dictation_group is not None:
+            pool = self.service.dictation_words_in_group(self.dictation_group, include)
+            self.dictation_candidates = pool[:2000]
+            self._show_dictation_sel_view("words")
+            self._render_dictation_candidates()
+        else:
+            self._show_dictation_sel_view("groups")
+            self._render_dictation_groups()
         self._update_dictation_selection_count()
+
+    def _show_dictation_sel_view(self, view: str):
+        if view == "groups":
+            self.dictation_table_frame.pack_forget()
+            self.dictation_back_button.pack_forget()
+            self.dictation_groups_frame.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.dictation_groups_frame.pack_forget()
+            self.dictation_table_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+            if self.dictation_mode_var.get() == "manual" and self.dictation_group is not None:
+                self.dictation_back_button.pack(anchor="w", padx=16, pady=(0, 8))
+            else:
+                self.dictation_back_button.pack_forget()
+
+    def _render_dictation_groups(self):
+        for child in self.dictation_groups_inner.winfo_children():
+            child.destroy()
+        include = self.dictation_include_evaluated_var.get()
+        manual = self.dictation_mode_var.get() == "manual"
+        groups = self.service.dictation_groups(include)
+        total = next((group.count for group in groups if group.key == "all"), 0)
+        scope_label = next((group.label for group in groups if group.key == self.dictation_scope_group), self.dictation_scope_group)
+        header = f"手选词书分组（共 {total:,} 个候选词条，点击进入分组勾选）" if manual else f"随机范围：点击词书分组设置（当前：{scope_label}）"
+        self.dictation_groups_header.configure(text=header)
+        for group in groups:
+            is_selected_scope = (not manual) and group.key == self.dictation_scope_group
+            row_color = "#E2F1EC" if is_selected_scope else SURFACE
+            card = tk.Frame(
+                self.dictation_groups_inner,
+                bg=row_color,
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#54C8AA" if is_selected_scope else "#DDE6E4",
+                cursor="hand2",
+            )
+            card.pack(fill=tk.X, pady=(0, 8))
+            label = tk.Label(card, text=group.label, bg=row_color, fg=TEXT, font="LexiBody", anchor="w")
+            label.pack(side=tk.LEFT, padx=16, pady=14)
+            suffix = " · 已选" if is_selected_scope else ""
+            count = tk.Label(card, text=f"{group.count:,} 词{suffix}", bg=row_color, fg=MUTED, font="LexiSmall")
+            count.pack(side=tk.RIGHT, padx=16, pady=14)
+            for widget in (card, label, count):
+                widget.bind("<Button-1>", lambda _e, key=group.key: self._click_dictation_group(key))
+
+    def _click_dictation_group(self, key: str):
+        if self.dictation_mode_var.get() == "manual":
+            self.dictation_group = key
+        else:
+            self.dictation_scope_group = key
+        self._refresh_dictation_candidates()
+
+    def _back_to_dictation_groups(self):
+        self.dictation_group = None
+        self._refresh_dictation_candidates()
+
+    def _dictation_scope_label(self) -> str:
+        for group in self.service.dictation_groups(self.dictation_include_evaluated_var.get()):
+            if group.key == self.dictation_scope_group:
+                return group.label
+        return self.dictation_scope_group
 
     def _render_dictation_candidates(self):
         if not hasattr(self, "dictation_table_canvas"):
@@ -1134,7 +1202,7 @@ class LexiTrackApp(tk.Tk):
         if self.dictation_mode_var.get() == "manual":
             self.dictation_selection_count.configure(text=f"已选择 {len(self.dictation_selected_ids)} 个词条")
         else:
-            self.dictation_selection_count.configure(text="随机模式不需要手选")
+            self.dictation_selection_count.configure(text=f"随机范围：{self._dictation_scope_label()}")
 
     def _dictation_options(self) -> DictationOptions:
         formats = frozenset(value for value, variable in self.dictation_format_vars.items() if variable.get())
@@ -1165,18 +1233,14 @@ class LexiTrackApp(tk.Tk):
                     return
                 selected_entries = self.service.selected_dictation_candidates(
                     self.dictation_selected_ids,
-                    self._dictation_levels(),
                     self.dictation_include_evaluated_var.get(),
                 )
                 document = self.service.build_dictation_document(
-                    options, word_ids=self.dictation_selected_ids,
-                    levels=self._dictation_levels(),
-                    include_evaluated=self.dictation_include_evaluated_var.get(),
-                    entries=selected_entries,
+                    options, entries=selected_entries,
                 )
             else:
                 selected_entries = self.service.dictation_candidates(
-                    count, self._dictation_levels(), self.dictation_include_evaluated_var.get(),
+                    count, self.dictation_include_evaluated_var.get(), group=self.dictation_scope_group,
                 )
                 document = self.service.build_dictation_document(
                     options, entries=selected_entries,
@@ -1442,7 +1506,7 @@ class LexiTrackApp(tk.Tk):
             label.configure(text=chinese, wraplength=example_width)
 
     def _build_library_page(self):
-        _, body = self._new_page("library", "词库", "CET-4、CET-6 与自定义词条")
+        _, body = self._new_page("library", "词库", "先选择词书分组，再查看该组的单词")
         toolbar = tk.Frame(body, bg=BG)
         toolbar.pack(fill=tk.X, pady=(0, 12))
         icon = tk.Canvas(toolbar, width=28, height=28, bg=BG, bd=0, highlightthickness=0)
@@ -1457,10 +1521,41 @@ class LexiTrackApp(tk.Tk):
         draw_icon(upload_icon, "upload", ACCENT)
         self._outline_button(toolbar, "导入 CSV", self.choose_csv, width=10).pack(side=tk.LEFT)
         self._outline_button(toolbar, "批量标签", self.batch_edit_labels, width=10).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Label(body, text="导入 CSV 时填写 level（CET4/CET6/custom，可用 | 分隔）和 tags（用 | 分隔）；词库列表支持批量修改自定义词条。", bg=BG, fg=MUTED, font="LexiSmall", anchor="w").pack(fill=tk.X, pady=(0, 7))
-        self.library_count = tk.Label(body, text="", bg=BG, fg=MUTED, font="LexiSmall")
+        tk.Label(body, text="导入 CSV 时填写 level（CET4/CET6/custom，可用 | 分隔）和 tags（用 | 分隔）；点击分组进入该组单词，可批量修改。", bg=BG, fg=MUTED, font="LexiSmall", anchor="w").pack(fill=tk.X, pady=(0, 7))
+
+        self.library_stack = tk.Frame(body, bg=BG)
+        self.library_stack.pack(fill=tk.BOTH, expand=True)
+
+        # Group browser sub-view.
+        self.library_groups_view = tk.Frame(self.library_stack, bg=BG)
+        self.library_groups_header = tk.Label(self.library_groups_view, text="", bg=BG, fg=MUTED, font="LexiSmall")
+        self.library_groups_header.pack(anchor="w", pady=(0, 10))
+        groups_canvas = tk.Canvas(self.library_groups_view, bg=BG, highlightthickness=0)
+        groups_scrollbar = ttk.Scrollbar(self.library_groups_view, orient=tk.VERTICAL, command=groups_canvas.yview)
+        self.library_groups_inner = tk.Frame(groups_canvas, bg=BG)
+        self.library_groups_inner.bind(
+            "<Configure>",
+            lambda _e: groups_canvas.configure(scrollregion=groups_canvas.bbox("all")),
+        )
+        group_window = groups_canvas.create_window((0, 0), window=self.library_groups_inner, anchor="nw")
+        groups_canvas.bind(
+            "<Configure>",
+            lambda e: groups_canvas.itemconfigure(group_window, width=e.width),
+        )
+        groups_canvas.configure(yscrollcommand=groups_scrollbar.set)
+        groups_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        groups_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Words sub-view (the existing word table).
+        self.library_words_view = tk.Frame(self.library_stack, bg=BG)
+        words_header = tk.Frame(self.library_words_view, bg=BG)
+        words_header.pack(fill=tk.X, pady=(0, 7))
+        self._outline_button(words_header, "← 返回词书", self._back_to_groups, width=12).pack(side=tk.LEFT)
+        self.library_group_title = tk.Label(words_header, text="", bg=BG, fg=TEXT, font="LexiHeading")
+        self.library_group_title.pack(side=tk.LEFT, padx=(16, 0))
+        self.library_count = tk.Label(self.library_words_view, text="", bg=BG, fg=MUTED, font="LexiSmall")
         self.library_count.pack(anchor="w", pady=(0, 7))
-        table = self._card(body)
+        table = self._card(self.library_words_view)
         table.pack(fill=tk.BOTH, expand=True)
         columns = ("word", "meaning", "level", "review")
         self.library_tree = ttk.Treeview(table, columns=columns, show="headings", selectmode="extended")
@@ -1472,6 +1567,49 @@ class LexiTrackApp(tk.Tk):
         self.library_tree.configure(yscrollcommand=scrollbar.set)
         self.library_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.library_group: str | None = None
+        self._show_library_view("groups")
+
+    def _show_library_view(self, view: str):
+        if view == "groups":
+            self.library_words_view.pack_forget()
+            self.library_groups_view.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.library_groups_view.pack_forget()
+            self.library_words_view.pack(fill=tk.BOTH, expand=True)
+
+    def _refresh_group_cards(self):
+        for child in self.library_groups_inner.winfo_children():
+            child.destroy()
+        groups = self.service.library_groups()
+        total = next((group.count for group in groups if group.key == "all"), 0)
+        self.library_groups_header.configure(text=f"词书分组（共 {total:,} 条词条，点击进入分组查看单词）")
+        for group in groups:
+            card = tk.Frame(
+                self.library_groups_inner,
+                bg=SURFACE,
+                bd=0,
+                highlightthickness=1,
+                highlightbackground="#DDE6E4",
+                cursor="hand2",
+            )
+            card.pack(fill=tk.X, pady=(0, 8))
+            label = tk.Label(card, text=group.label, bg=SURFACE, fg=TEXT, font="LexiBody", anchor="w")
+            label.pack(side=tk.LEFT, padx=16, pady=14)
+            count = tk.Label(card, text=f"{group.count:,} 词", bg=SURFACE, fg=MUTED, font="LexiSmall")
+            count.pack(side=tk.RIGHT, padx=16, pady=14)
+            for widget in (card, label, count):
+                widget.bind("<Button-1>", lambda _e, key=group.key: self._open_library_group(key))
+
+    def _open_library_group(self, key: str):
+        self.library_group = key
+        self.search_var.set("")
+        self.refresh_library()
+
+    def _back_to_groups(self):
+        self.library_group = None
+        self.search_var.set("")
+        self.refresh_library()
 
     def _build_analytics_page(self):
         _, body = self._new_page("analytics", "记忆分析", "复习负载与平均保持率")
@@ -2111,7 +2249,17 @@ class LexiTrackApp(tk.Tk):
         self.lift()
 
     def refresh_library(self):
-        entries = self.service.search(self.search_var.get())
+        query = self.search_var.get().strip()
+        if not query and self.library_group is None:
+            self._show_library_view("groups")
+            self._refresh_group_cards()
+            return
+        group = self.library_group if self.library_group is not None else "all"
+        self._show_library_view("words")
+        self._fill_library_words(group, query)
+
+    def _fill_library_words(self, group: str, query: str):
+        entries = self.service.words_in_group(group, query)
         for item in self.library_tree.get_children():
             self.library_tree.delete(item)
         states = {state.word_id: state for state in self.service.repository.all_review_states()}
@@ -2123,6 +2271,11 @@ class LexiTrackApp(tk.Tk):
             item_id = self.library_tree.insert("", tk.END, values=(entry.word, entry.meaning.replace("\\r", " ")[:90], entry.level, due))
             self.library_item_ids[item_id] = entry.word_id
         suffix = "（仅显示前 1,000 条）" if len(entries) > 1000 else ""
+        if group == "all":
+            title = "全部词条"
+        else:
+            title = next((item.label for item in self.service.library_groups() if item.key == group), group)
+        self.library_group_title.configure(text=title)
         self.library_count.configure(text=f"找到 {len(entries):,} 条 {suffix}")
 
     def choose_csv(self):
@@ -2163,6 +2316,10 @@ class LexiTrackApp(tk.Tk):
         self._primary_button(dialog, "关闭", dialog.destroy, width=9).pack(anchor="e", padx=24, pady=(0, 20))
 
     def batch_edit_labels(self):
+        if self.library_group is None:
+            self.library_group = "all"
+            self.search_var.set("")
+            self.refresh_library()
         selected = self.library_tree.selection()
         word_ids = {self.library_item_ids[item_id] for item_id in selected if item_id in self.library_item_ids}
         if not word_ids:
@@ -2335,6 +2492,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         visited.append(page)
         if page == "dictation":
             app.dictation_mode_var.set("manual")
+            app.dictation_group = "all"
+            app._refresh_dictation_candidates()
             app._refresh_visible_dictation_checkboxes()
             app.update_idletasks()
             app.update()
