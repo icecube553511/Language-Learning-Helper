@@ -49,7 +49,8 @@ def default_data_dir() -> Path:
 
 
 def build_app(data_dir: Path) -> LexiTrackApp:
-    loader = CatalogLoader(resource_root() / "shared" / "content" / "catalog.json")
+    resources = resource_root()
+    loader = CatalogLoader(resources / "shared" / "content" / "catalog.json")
     catalog = loader.load()
     repository = JsonLearningRepository(data_dir, catalog)
     words_learnt_repository = JsonWordsLearntRepository(data_dir)
@@ -65,6 +66,7 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         catalog_count=len(catalog),
         catalog_rejected=loader.rejected_count,
         catalog_error=loader.error,
+        pet_asset_path=resources / "shared" / "assets" / "pets" / "bingzi.png",
     )
 
 

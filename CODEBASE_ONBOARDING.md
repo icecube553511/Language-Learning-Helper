@@ -45,6 +45,7 @@ Android app (composition root) -> presentation -> application -> domain
 - **共享单一事实来源**：`shared/contracts/parity.json`、调度/复习/CSV 契约及 `shared/content/catalog.json`。
 - **默写导出契约**：`shared/contracts/dictation-export-v1.md` 与 `shared/contracts/dictation-export-golden-v1.json`；preview 与 DOCX/PDF 必须消费同一个平台无关 `Document` model。
 - **例句气泡契约**：`shared/contracts/word-bubble-v1.md` 与 `shared/contracts/word-bubble-golden-v1.json`；token、查词与九层栈由两端共同遵守。
+- **冰子宠物契约**：`shared/contracts/pet-companion-v1.md` 与 `shared/contracts/pet-companion-golden-v1.json`；源图在 `shared/assets/branding/`，透明运行资源由 `tools/prepare_pet_asset.py` 派生，UI 目标几何与拖拽状态只在 presentation。
 
 ## 目录结构
 

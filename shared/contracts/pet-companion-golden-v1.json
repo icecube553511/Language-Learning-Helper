@@ -1,0 +1,96 @@
+{
+  "contractVersion": "pet-companion-v1",
+  "name": "冰子",
+  "sourceAsset": "shared/assets/branding/pet_image.png",
+  "runtimeAsset": "shared/assets/pets/bingzi.png",
+  "tickMs": 50,
+  "rectangleFormat": "x-y-width-height",
+  "petSizeMeaning": "half-size",
+  "targetKinds": ["control", "surface", "chart", "edge"],
+  "modes": ["idle", "slide", "roll", "fly", "fall", "dragging"],
+  "navigationTransition": "drop-to-nearest",
+  "windowScope": "application-owned-window",
+  "singleActivePet": true,
+  "platformManagedUiExcluded": true,
+  "drag": {
+    "enabled": true,
+    "clampToViewport": true,
+    "releaseKeepsPosition": true,
+    "preserveGrabOffset": true
+  },
+  "transientOnly": true,
+  "vectors": [
+    {
+      "name": "nearest-control",
+      "position": [100, 100],
+      "targets": [
+        { "id": "far", "kind": "control", "rect": [300, 300, 40, 40] },
+        { "id": "near", "kind": "control", "rect": [120, 120, 40, 40] }
+      ],
+      "expectedTarget": "near"
+    },
+    {
+      "name": "navigation-drop",
+      "modeBefore": "slide",
+      "expectedMode": "fall"
+    },
+    {
+      "name": "drag-release",
+      "position": [40, 50],
+      "release": [500, 600],
+      "viewport": [800, 700],
+      "expectedPosition": [500, 600]
+    }
+  ],
+  "behaviorVectors": [
+    {
+      "name": "surface-inside-moves-to-border",
+      "position": [50, 40],
+      "target": { "id": "panel", "kind": "surface", "rect": [0, 0, 100, 80] },
+      "step": 5,
+      "expectedPosition": [50, 35],
+      "expectedMode": "fly"
+    },
+    {
+      "name": "border-rolls-clockwise",
+      "position": [40, 20],
+      "target": { "id": "control", "kind": "control", "rect": [20, 20, 60, 30] },
+      "step": 5,
+      "expectedMode": "roll"
+    },
+    {
+      "name": "chart-path-reverses",
+      "position": [10, 10],
+      "target": {
+        "id": "curve",
+        "kind": "chart",
+        "rect": [0, 0, 40, 40],
+        "path": [[10, 10], [20, 20], [30, 10]]
+      },
+      "step": 30,
+      "ticks": 10,
+      "expectedMode": "slide",
+      "mustReverse": true
+    },
+    {
+      "name": "flight-is-vertical-first",
+      "position": [10, 10],
+      "mode": "fall",
+      "target": { "id": "button", "kind": "control", "rect": [80, 70, 20, 20] },
+      "step": 5,
+      "expectedPosition": [10, 15],
+      "expectedMode": "fall"
+    },
+    {
+      "name": "navigation-prefers-below",
+      "position": [50, 50],
+      "targets": [
+        { "id": "above", "kind": "control", "rect": [40, 0, 20, 10] },
+        { "id": "below", "kind": "control", "rect": [40, 80, 20, 10] }
+      ],
+      "step": 5,
+      "expectedTarget": "below",
+      "expectedPosition": [50, 55]
+    }
+  ]
+}

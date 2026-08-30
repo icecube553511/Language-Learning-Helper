@@ -3,8 +3,24 @@
   "schemaVersion": 4,
   "algorithmVersion": "lexi-sm2-v1",
   "wordBubbleVersion": "word-bubble-v1",
+  "petCompanionVersion": "pet-companion-v1",
   "contentVersion": "cet-2026.08-v2",
-  "branding": { "appImage": "shared/assets/branding/app_image.png" },
+  "branding": {
+    "appImage": "shared/assets/branding/app_image.png",
+    "petImage": "shared/assets/branding/pet_image.png",
+    "petRuntimeImage": "shared/assets/pets/bingzi.png"
+  },
+  "petCompanion": {
+    "name": "冰子",
+    "tickMs": 50,
+    "targetKinds": ["control", "surface", "chart", "edge"],
+    "navigationTransition": "drop-to-nearest",
+    "windowScope": "application-owned-window",
+    "singleActivePet": true,
+    "platformManagedUiExcluded": true,
+    "dragPlacement": "preserve-grab-offset",
+    "transientOnly": true
+  },
   "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
   "learningReminder": { "minimumMinutes": 0.5, "maximumMinutes": 120.0, "defaultMinutes": 30.0 },
   "studyOrder": { "default": "random", "allowed": ["random", "alphabetical"] },
@@ -32,7 +48,8 @@
     "dictationDownload": "ready",
     "dictationManualSelectionTable": "ready",
     "programTagOverrides": "ready",
-    "wordBubbleInteraction": "ready"
+    "wordBubbleInteraction": "ready",
+    "petCompanionInteraction": "ready"
   },
   "platforms": ["windows", "android"]
 }

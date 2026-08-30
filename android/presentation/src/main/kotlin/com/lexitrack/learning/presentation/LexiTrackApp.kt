@@ -1,8 +1,10 @@
 package com.lexitrack.learning.presentation
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -44,7 +47,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -60,6 +62,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -68,19 +71,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -99,6 +106,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -107,11 +115,15 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lexitrack.learning.application.DashboardSnapshot
 import com.lexitrack.learning.application.ExportedDictation
@@ -127,10 +139,25 @@ import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.VocabularyEntry
 import com.lexitrack.learning.domain.BubbleDefinition
 import com.lexitrack.learning.domain.BubbleStack
+import com.lexitrack.learning.domain.PetMode
+import com.lexitrack.learning.domain.PetPoint
+import com.lexitrack.learning.domain.PetRect
+import com.lexitrack.learning.domain.PetState
+import com.lexitrack.learning.domain.PetTarget
+import com.lexitrack.learning.domain.PetTargetKind
+import com.lexitrack.learning.domain.beginDrag
+import com.lexitrack.learning.domain.advancePet
+import com.lexitrack.learning.domain.moveDrag
+import com.lexitrack.learning.domain.nearestPetTarget
+import com.lexitrack.learning.domain.onNavigation
+import com.lexitrack.learning.domain.releaseDrag
 import com.lexitrack.learning.domain.tokenizeEnglish
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 private data class WordBubbleState(val data: BubbleDefinition, val anchor: IntRect)
 
@@ -161,6 +188,236 @@ private val DictationTableWidth = DictationWordColumnWidth + DictationMeaningCol
 private val LocalOpenWordBubble = staticCompositionLocalOf<(String, String, Int, IntRect) -> Unit> { { _, _, _, _ -> } }
 private val LocalBubbleDepth = staticCompositionLocalOf { -1 }
 private val LocalDismissWordBubbles = staticCompositionLocalOf<() -> Unit> { {} }
+private val LocalRegisterPetTarget = staticCompositionLocalOf<(PetTarget) -> Unit> { {} }
+private val LocalRegisterPetWindow = staticCompositionLocalOf<(Any, Boolean) -> Unit> { { _, _ -> } }
+private val LocalActivePetWindowKey = staticCompositionLocalOf<Any?> { null }
+
+private fun Rect.toPetRect(): PetRect = PetRect(left, top, width, height)
+
+private fun Modifier.petTarget(
+    register: (PetTarget) -> Unit,
+    id: String,
+    kind: PetTargetKind,
+    path: (Rect) -> List<PetPoint> = { emptyList() },
+): Modifier = composed {
+    DisposableEffect(register, id, kind) {
+        onDispose {
+            register(PetTarget(id, kind, PetRect(0f, 0f, 0f, 0f), visible = false))
+        }
+    }
+    Modifier.onGloballyPositioned { coordinates ->
+        val bounds = coordinates.boundsInRoot()
+        register(PetTarget(id, kind, bounds.toPetRect(), path(bounds)))
+    }
+}
+
+internal fun updatePetTargetRegistry(
+    registry: MutableMap<String, PetTarget>,
+    prefix: String,
+    target: PetTarget,
+) {
+    val key = "$prefix:${target.id}"
+    if (!target.visible || !target.rect.valid) {
+        registry.remove(key)
+    } else {
+        registry[key] = target.copy(id = key)
+    }
+}
+
+internal fun <T> updatePetWindowStack(
+    stack: MutableList<T>,
+    key: T,
+    active: Boolean,
+) {
+    stack.removeAll { it == key }
+    if (active) stack.add(key)
+}
+
+@Composable
+private fun PetOverlay(
+    viewport: PetRect,
+    targets: List<PetTarget>,
+    navigationKey: Any,
+    onPointerActiveChange: (Boolean) -> Unit,
+    visible: Boolean = true,
+) {
+    val petSize = 82.dp
+    val halfSize = with(LocalDensity.current) { petSize.toPx() / 2f }
+    var state by remember {
+        mutableStateOf(PetState(PetPoint(halfSize + 12f, halfSize + 96f)))
+    }
+    var completedDrag by remember { mutableStateOf(0) }
+    val edgeTargets = remember(viewport) {
+        if (viewport.width <= 0f || viewport.height <= 0f) {
+            emptyList()
+        } else {
+            listOf(
+                PetTarget("edge:top", PetTargetKind.EDGE, PetRect(0f, 0f, viewport.width, 1f)),
+                PetTarget("edge:right", PetTargetKind.EDGE, PetRect(viewport.right - 1f, 0f, 1f, viewport.height)),
+                PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0f, viewport.bottom - 1f, viewport.width, 1f)),
+                PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0f, 0f, 1f, viewport.height)),
+            )
+        }
+    }
+    val activeTargets = targets + edgeTargets
+    LaunchedEffect(navigationKey) {
+        state = onNavigation(state)
+    }
+    LaunchedEffect(completedDrag) {
+        if (completedDrag > 0) {
+            delay(100)
+            onPointerActiveChange(false)
+        }
+    }
+    LaunchedEffect(viewport, activeTargets, halfSize) {
+        while (true) {
+            delay(50)
+            if (viewport.width > 0f && viewport.height > 0f) {
+                state = advancePet(
+                    state = state,
+                    targets = activeTargets,
+                    viewport = viewport,
+                    halfSize = halfSize,
+                    step = 6f,
+                )
+            }
+        }
+    }
+    if (!visible) return
+    Image(
+        painter = painterResource(R.drawable.bingzi),
+        contentDescription = "冰子",
+        modifier = Modifier
+            .zIndex(20f)
+            .offset {
+                IntOffset(
+                    (state.position.x - halfSize).roundToInt(),
+                    (state.position.y - halfSize).roundToInt(),
+                )
+            }
+            .size(petSize)
+            .scale(if (state.mode == PetMode.FALL) 0.96f else 1f)
+            .pointerInput(viewport, halfSize) {
+                detectDragGestures(
+                    onDragStart = {
+                        onPointerActiveChange(true)
+                        state = beginDrag(state, state.position)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        state = moveDrag(
+                            state,
+                            PetPoint(state.position.x + dragAmount.x, state.position.y + dragAmount.y),
+                            viewport,
+                            halfSize,
+                        )
+                    },
+                    onDragEnd = {
+                        state = releaseDrag(state)
+                        completedDrag += 1
+                    },
+                    onDragCancel = {
+                        state = releaseDrag(state)
+                        completedDrag += 1
+                    },
+                )
+            },
+    )
+}
+
+@Composable
+private fun PetAlertDialog(
+    petId: String,
+    onDismissRequest: () -> Unit,
+    title: @Composable () -> Unit,
+    text: @Composable () -> Unit,
+    confirmButton: @Composable () -> Unit,
+    dismissButton: (@Composable () -> Unit)? = null,
+    icon: (@Composable () -> Unit)? = null,
+    shape: Shape = RoundedCornerShape(8.dp),
+) {
+    val registerPetWindow = LocalRegisterPetWindow.current
+    val activePetWindowKey = LocalActivePetWindowKey.current
+    val petWindowKey = remember { Any() }
+    val targets = remember { mutableStateMapOf<String, PetTarget>() }
+    var viewport by remember { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
+    val registerTarget: (PetTarget) -> Unit = remember(petId) {
+        { target -> updatePetTargetRegistry(targets, petId, target) }
+    }
+    DisposableEffect(registerPetWindow, petWindowKey) {
+        registerPetWindow(petWindowKey, true)
+        onDispose { registerPetWindow(petWindowKey, false) }
+    }
+    Dialog(onDismissRequest = onDismissRequest) {
+        CompositionLocalProvider(LocalRegisterPetTarget provides registerTarget) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(min = 280.dp, max = 560.dp)
+                    .onGloballyPositioned { coordinates ->
+                        viewport = PetRect(
+                            0f,
+                            0f,
+                            coordinates.size.width.toFloat(),
+                            coordinates.size.height.toFloat(),
+                        )
+                    },
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .petTarget(registerTarget, "$petId-frame", PetTargetKind.SURFACE),
+                    shape = shape,
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        icon?.let { content ->
+                            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { content() }
+                        }
+                        ProvideTextStyle(MaterialTheme.typography.headlineSmall) { title() }
+                        Box(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+                            ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            dismissButton?.let { content ->
+                                Box(
+                                    modifier = Modifier.petTarget(
+                                        registerTarget,
+                                        "$petId-dismiss",
+                                        PetTargetKind.CONTROL,
+                                    ),
+                                ) { content() }
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Box(
+                                modifier = Modifier.petTarget(
+                                    registerTarget,
+                                    "$petId-confirm",
+                                    PetTargetKind.CONTROL,
+                                ),
+                            ) { confirmButton() }
+                        }
+                    }
+                }
+                PetOverlay(
+                    viewport = viewport,
+                    targets = targets.values.toList(),
+                    navigationKey = petWindowKey,
+                    onPointerActiveChange = {},
+                    visible = activePetWindowKey === petWindowKey,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun LexiTrackApp(
@@ -174,6 +431,10 @@ fun LexiTrackApp(
     var dictationPreviewOpen by remember { mutableStateOf(false) }
     var dictationMarkOpen by remember { mutableStateOf(false) }
     val bubbles = remember { mutableStateListOf<WordBubbleState>() }
+    val petTargets = remember { mutableStateMapOf<String, PetTarget>() }
+    val petWindows = remember { mutableStateListOf<Any>() }
+    var petViewport by remember { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
+    var petPointerActive by remember { mutableStateOf(false) }
     var bubbleStack by remember { mutableStateOf(BubbleStack()) }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
@@ -198,6 +459,22 @@ fun LexiTrackApp(
         bubbleStack = BubbleStack()
         bubbles.clear()
     }
+    LaunchedEffect(state.section) {
+        petTargets.clear()
+    }
+    val registerPetTarget: (PetTarget) -> Unit = remember(state.section) {
+        val prefix = state.section.name.lowercase()
+        val register: (PetTarget) -> Unit = { target ->
+            updatePetTargetRegistry(petTargets, prefix, target)
+        }
+        register
+    }
+    val registerPetWindow: (Any, Boolean) -> Unit = remember {
+        { key, active ->
+            updatePetWindowStack(petWindows, key, active)
+        }
+    }
+    val activePetWindowKey = petWindows.lastOrNull()
     LexiTrackTheme(state.fontScale) {
         CompositionLocalProvider(
             LocalOpenWordBubble provides openBubble,
@@ -205,15 +482,21 @@ fun LexiTrackApp(
                 bubbles.clear()
                 bubbleStack = BubbleStack()
             },
+            LocalRegisterPetTarget provides registerPetTarget,
+            LocalRegisterPetWindow provides registerPetWindow,
+            LocalActivePetWindowKey provides activePetWindowKey,
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .onGloballyPositioned { coordinates ->
+                        petViewport = PetRect(0f, 0f, coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
+                    }
                     .pointerInput(Unit) {
                         awaitPointerEventScope {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Final)
-                                if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
+                                if (!petPointerActive && event.changes.any { it.changedToUp() && !it.isConsumed }) {
                                     bubbles.clear()
                                     bubbleStack = BubbleStack()
                                 }
@@ -311,6 +594,14 @@ fun LexiTrackApp(
             }
         }
 
+        PetOverlay(
+            viewport = petViewport,
+            targets = petTargets.values.toList(),
+            navigationKey = state.section,
+            onPointerActiveChange = { petPointerActive = it },
+            visible = activePetWindowKey == null,
+        )
+
         state.importReport?.let { report ->
             ImportReportDialog(report, viewModel::dismissImportReport)
         }
@@ -361,7 +652,8 @@ fun LexiTrackApp(
             MessageDialog(message, viewModel::dismissMessage)
         }
         state.reviewReminderMessage?.let { message ->
-            AlertDialog(
+            PetAlertDialog(
+                petId = "review-reminder",
                 onDismissRequest = viewModel::dismissReviewReminder,
                 icon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
                 title = { Text("复习提醒") },
@@ -379,7 +671,8 @@ fun LexiTrackApp(
                 },
             )
         } ?: state.wordReminderCard?.let { card ->
-            AlertDialog(
+            PetAlertDialog(
+                petId = "word-reminder",
                 onDismissRequest = viewModel::dismissWordReminder,
                 icon = { Icon(Icons.Outlined.School, contentDescription = null) },
                 title = { Text("单词学习提醒") },
@@ -508,7 +801,20 @@ private fun WordBubbleOverlay(
     onCloseAfter: (Int) -> Unit,
     onDismissCurrent: (Int) -> Unit,
 ) {
+    val registerPetWindow = LocalRegisterPetWindow.current
+    val activePetWindowKey = LocalActivePetWindowKey.current
     bubbles.toList().forEachIndexed { index, bubble ->
+        val petId = "word-bubble-$index-${bubble.data.word.hashCode()}"
+        val petWindowKey = remember(petId) { Any() }
+        val petTargets = remember(petId) { mutableStateMapOf<String, PetTarget>() }
+        var petViewport by remember(petId) { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
+        val registerPetTarget: (PetTarget) -> Unit = remember(petId) {
+            { target -> updatePetTargetRegistry(petTargets, petId, target) }
+        }
+        DisposableEffect(registerPetWindow, petWindowKey) {
+            registerPetWindow(petWindowKey, true)
+            onDispose { registerPetWindow(petWindowKey, false) }
+        }
         val positionProvider: PopupPositionProvider = remember(bubble.anchor) {
             object : PopupPositionProvider {
                 override fun calculatePosition(
@@ -535,76 +841,100 @@ private fun WordBubbleOverlay(
             CompositionLocalProvider(
                 LocalBubbleDepth provides index,
                 LocalDismissWordBubbles provides { onCloseAfter(index) },
+                LocalRegisterPetTarget provides registerPetTarget,
             ) {
-                Surface(
+                Box(
                     modifier = Modifier
                         .widthIn(min = 260.dp, max = 440.dp)
-                        .pointerInput(index) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Final)
-                                    if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
-                                        onCloseAfter(index)
+                        .onGloballyPositioned { coordinates ->
+                            petViewport = PetRect(
+                                0f,
+                                0f,
+                                coordinates.size.width.toFloat(),
+                                coordinates.size.height.toFloat(),
+                            )
+                        },
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .petTarget(registerPetTarget, "$petId-frame", PetTargetKind.SURFACE)
+                            .pointerInput(index) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Final)
+                                        if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
+                                            onCloseAfter(index)
+                                        }
                                     }
                                 }
-                            }
-                        },
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(8.dp),
-                    shadowElevation = 8.dp,
-                    border = CardDefaults.outlinedCardBorder(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .padding(12.dp)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                            },
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(8.dp),
+                        shadowElevation = 8.dp,
+                        border = CardDefaults.outlinedCardBorder(),
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
+                        Column(
+                            modifier = Modifier
+                                .padding(12.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
-                            Text(
-                                bubble.data.word,
-                                style = MaterialTheme.typography.titleLarge,
-                                color = Ink,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(
-                                onClick = { onDismissCurrent(index) },
-                                contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.size(30.dp),
-                            ) {
-                                Text("✕", color = MutedInk)
-                            }
-                        }
-                        if (bubble.data.phonetic.isNotBlank()) {
-                            Text(bubble.data.phonetic, style = MaterialTheme.typography.labelMedium, color = BrandTeal)
-                        }
-                        if (bubble.data.partOfSpeech.isNotBlank()) {
-                            Text(bubble.data.partOfSpeech, style = MaterialTheme.typography.labelMedium, color = BusinessAmber)
-                        }
-                        Text(bubble.data.meaning, style = MaterialTheme.typography.bodyMedium, color = Ink)
-                        val examplePairs = bubble.data.examplePairs.ifEmpty {
-                            bubble.data.examples.map { it to "" }
-                        }
-                        examplePairs.forEach { (english, chinese) ->
-                            InteractiveSentence(
-                                text = english,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MutedInk,
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                            )
-                            if (chinese.isNotBlank()) {
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 Text(
-                                    text = chinese,
-                                    style = MaterialTheme.typography.labelMedium,
+                                    bubble.data.word,
+                                    style = MaterialTheme.typography.titleLarge,
                                     color = Ink,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(
+                                    onClick = { onDismissCurrent(index) },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .petTarget(registerPetTarget, "$petId-close", PetTargetKind.CONTROL),
+                                ) {
+                                    Text("✕", color = MutedInk)
+                                }
+                            }
+                            if (bubble.data.phonetic.isNotBlank()) {
+                                Text(bubble.data.phonetic, style = MaterialTheme.typography.labelMedium, color = BrandTeal)
+                            }
+                            if (bubble.data.partOfSpeech.isNotBlank()) {
+                                Text(bubble.data.partOfSpeech, style = MaterialTheme.typography.labelMedium, color = BusinessAmber)
+                            }
+                            Text(bubble.data.meaning, style = MaterialTheme.typography.bodyMedium, color = Ink)
+                            val examplePairs = bubble.data.examplePairs.ifEmpty {
+                                bubble.data.examples.map { it to "" }
+                            }
+                            examplePairs.forEach { (english, chinese) ->
+                                InteractiveSentence(
+                                    text = english,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MutedInk,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
+                                if (chinese.isNotBlank()) {
+                                    Text(
+                                        text = chinese,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = Ink,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                }
                             }
                         }
                     }
+                    PetOverlay(
+                        viewport = petViewport,
+                        targets = petTargets.values.toList(),
+                        navigationKey = petWindowKey,
+                        onPointerActiveChange = {},
+                        visible = activePetWindowKey === petWindowKey,
+                    )
                 }
             }
         }
@@ -613,8 +943,11 @@ private fun WordBubbleOverlay(
 
 @Composable
 private fun AppHeader() {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Surface(
-        modifier = Modifier.statusBarsPadding(),
+        modifier = Modifier
+            .statusBarsPadding()
+            .petTarget(registerPetTarget, "app-header", PetTargetKind.SURFACE),
         color = MaterialTheme.colorScheme.surface,
     ) {
         Row(
@@ -625,7 +958,9 @@ private fun AppHeader() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Surface(
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier
+                    .size(44.dp)
+                    .petTarget(registerPetTarget, "app-logo", PetTargetKind.SURFACE),
                 color = BrandNavy,
                 shape = RoundedCornerShape(8.dp),
             ) {
@@ -644,6 +979,7 @@ private fun AppHeader() {
 
 @Composable
 private fun AppNavigation(selected: MainSection, dueCount: Int, onSelected: (MainSection) -> Unit) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     val items = listOf(
         NavigationItem(MainSection.DASHBOARD, "总览", Icons.Outlined.Home),
         NavigationItem(MainSection.STUDY, "学习", Icons.Outlined.School),
@@ -654,12 +990,19 @@ private fun AppNavigation(selected: MainSection, dueCount: Int, onSelected: (Mai
         NavigationItem(MainSection.SETTINGS, "设置", Icons.Outlined.Settings),
     )
     NavigationBar(
-        modifier = Modifier.navigationBarsPadding(),
+        modifier = Modifier
+            .navigationBarsPadding()
+            .petTarget(registerPetTarget, "navigation", PetTargetKind.SURFACE),
         containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,
     ) {
         items.forEach { item ->
             NavigationBarItem(
+                modifier = Modifier.petTarget(
+                    registerPetTarget,
+                    "nav-${item.section.name.lowercase()}",
+                    PetTargetKind.CONTROL,
+                ),
                 selected = selected == item.section,
                 onClick = { onSelected(item.section) },
                 icon = {
@@ -692,6 +1035,7 @@ private data class NavigationItem(
 
 @Composable
 private fun DashboardScreen(state: MainUiState, onStudy: () -> Unit, onReview: () -> Unit) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -701,9 +1045,17 @@ private fun DashboardScreen(state: MainUiState, onStudy: () -> Unit, onReview: (
         item { CatalogStatusStrip(state) }
         item { DashboardStats(state.dashboard) }
         item {
+            SectionTitle("记忆保持率", "以 3 天稳定间隔展示")
+            Spacer(Modifier.height(12.dp))
+            MemoryCurve()
+        }
+        item {
             Button(
                 onClick = if (state.dashboard.dueNow > 0) onReview else onStudy,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .petTarget(registerPetTarget, "dashboard-action", PetTargetKind.CONTROL),
             ) {
                 Icon(Icons.Outlined.School, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -726,8 +1078,11 @@ private fun DashboardScreen(state: MainUiState, onStudy: () -> Unit, onReview: (
 
 @Composable
 private fun CatalogStatusStrip(state: MainUiState) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .petTarget(registerPetTarget, "catalog-status", PetTargetKind.SURFACE),
         color = if (state.catalogStatus.acceptedEntries > 0) {
             MaterialTheme.colorScheme.primaryContainer
         } else {
@@ -774,8 +1129,11 @@ private fun DashboardStats(snapshot: DashboardSnapshot) {
 
 @Composable
 private fun StatTile(label: String, value: String, accent: Color, modifier: Modifier = Modifier) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Surface(
-        modifier = modifier.heightIn(min = 108.dp),
+        modifier = modifier
+            .heightIn(min = 108.dp)
+            .petTarget(registerPetTarget, "stat-${label.hashCode()}", PetTargetKind.SURFACE),
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surface,
         border = CardDefaults.outlinedCardBorder(),
@@ -805,6 +1163,7 @@ private fun StudyScreen(
     availableLevels: List<String> = emptyList(),
     onLevelsChange: (Set<String>) -> Unit = {},
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     if (card == null) {
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
             if (filterTitle.isNotBlank()) {
@@ -825,7 +1184,10 @@ private fun StudyScreen(
         }
         Spacer(Modifier.height(12.dp))
         Surface(
-            modifier = Modifier.fillMaxWidth().weight(1f),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .petTarget(registerPetTarget, "study-card", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -842,7 +1204,10 @@ private fun StudyScreen(
                 if (!revealed) {
                     Button(
                         onClick = onReveal,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 50.dp)
+                            .petTarget(registerPetTarget, "study-reveal", PetTargetKind.CONTROL),
                     ) {
                         Icon(Icons.Outlined.Visibility, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
@@ -868,6 +1233,7 @@ private fun ReviewScreen(
     onRate: (ReviewRating) -> Unit,
     onLevelsChange: (Set<String>) -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     if (!state.reviewSessionStarted) {
         Column(
             modifier = Modifier.fillMaxSize().padding(20.dp),
@@ -876,7 +1242,9 @@ private fun ReviewScreen(
             PageHeader("复习", "按掌握权重抽取已学单词")
             LevelFilterRow("复习词汇组", state.reviewLevels, state.availableLevels, onLevelsChange)
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .petTarget(registerPetTarget, "review-summary", PetTargetKind.SURFACE),
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(8.dp),
                 border = CardDefaults.outlinedCardBorder(),
@@ -894,7 +1262,10 @@ private fun ReviewScreen(
                     Button(
                         onClick = onStart,
                         enabled = state.learntWordCount > 0,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .petTarget(registerPetTarget, "review-start", PetTargetKind.CONTROL),
                     ) {
                         Icon(Icons.Outlined.Refresh, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
@@ -923,7 +1294,11 @@ private fun ReviewScreen(
                 color = MutedInk,
             )
             Spacer(Modifier.height(18.dp))
-            Button(onClick = onStart, enabled = state.learntWordCount > 0) {
+            Button(
+                onClick = onStart,
+                enabled = state.learntWordCount > 0,
+                modifier = Modifier.petTarget(registerPetTarget, "review-restart", PetTargetKind.CONTROL),
+            ) {
                 Icon(Icons.Outlined.Refresh, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("再复习一轮")
@@ -954,6 +1329,7 @@ private fun LevelFilterRow(
     available: List<String>,
     onChange: (Set<String>) -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     val effectiveSelection = if (selected.isEmpty()) available.toSet() else selected
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(title, style = MaterialTheme.typography.labelLarge, color = MutedInk)
@@ -964,6 +1340,11 @@ private fun LevelFilterRow(
                     selected = level in effectiveSelection,
                     onClick = { onChange(if (level in effectiveSelection) effectiveSelection - level else effectiveSelection + level) },
                     label = { Text(label) },
+                    modifier = Modifier.petTarget(
+                        registerPetTarget,
+                        "level-${title.hashCode()}-${level.lowercase()}",
+                        PetTargetKind.CONTROL,
+                    ),
                 )
             }
         }
@@ -1050,9 +1431,12 @@ private fun RevealedCardContent(
 
 @Composable
 private fun RatingButton(label: String, color: Color, modifier: Modifier, onClick: () -> Unit) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Button(
         onClick = onClick,
-        modifier = modifier.heightIn(min = 58.dp),
+        modifier = modifier
+            .heightIn(min = 58.dp)
+            .petTarget(registerPetTarget, "rating-${label.hashCode()}", PetTargetKind.CONTROL),
         colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.White),
         shape = RoundedCornerShape(8.dp),
         contentPadding = PaddingValues(horizontal = 5.dp, vertical = 10.dp),
@@ -1063,6 +1447,7 @@ private fun RatingButton(label: String, color: Color, modifier: Modifier, onClic
 
 @Composable
 private fun DictationLoadingOverlay() {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1070,6 +1455,7 @@ private fun DictationLoadingOverlay() {
         contentAlignment = Alignment.Center,
     ) {
         Surface(
+            modifier = Modifier.petTarget(registerPetTarget, "dictation-loading", PetTargetKind.SURFACE),
             shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.surface,
             border = CardDefaults.outlinedCardBorder(),
@@ -1194,6 +1580,7 @@ private fun DictationScreen(
     onSetSelection: (Collection<String>, Boolean) -> Unit,
     onBuild: (DictationDocumentOptions, Int, Set<String>, Boolean, Boolean, String) -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     var formats by remember { mutableStateOf(setOf(DictationFormat.DOCX, DictationFormat.PDF)) }
     var fontSizeText by remember { mutableStateOf("12") }
     var missingFields by remember { mutableStateOf(setOf(DictationMissingField.WORD)) }
@@ -1282,7 +1669,9 @@ private fun DictationScreen(
         }
         item {
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .petTarget(registerPetTarget, "dictation-selection", PetTargetKind.SURFACE),
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(8.dp),
                 border = CardDefaults.outlinedCardBorder(),
@@ -1318,7 +1707,8 @@ private fun DictationScreen(
     }
 
     confirmationRequested?.let { requestedCount ->
-        AlertDialog(
+        PetAlertDialog(
+            petId = "dictation-selection-confirmation",
             onDismissRequest = { confirmationRequested = null },
             title = { Text("确认选择") },
             text = { Text("当前仅选择了$selectedCount/$requestedCount，是否确定选择") },
@@ -1452,6 +1842,7 @@ private fun DictationSelectionTableRow(
     onToggleSelection: () -> Unit,
     onBounds: (String, Rect) -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Row(
         modifier = Modifier
             .width(DictationTableWidth)
@@ -1477,7 +1868,10 @@ private fun DictationSelectionTableRow(
             Checkbox(
                 checked = selected,
                 onCheckedChange = null,
-                modifier = Modifier.size(48.dp).scale(1.25f),
+                modifier = Modifier
+                    .size(48.dp)
+                    .scale(1.25f)
+                    .petTarget(registerPetTarget, "dictation-select-${row.id}", PetTargetKind.CONTROL),
             )
         }
     }
@@ -1530,8 +1924,11 @@ private fun DictationOptionsPanel(
     preparing: Boolean,
     onSubmit: () -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .petTarget(registerPetTarget, "dictation-options", PetTargetKind.SURFACE),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(8.dp),
         border = CardDefaults.outlinedCardBorder(),
@@ -1549,7 +1946,9 @@ private fun DictationOptionsPanel(
                 OutlinedTextField(
                     value = fontSizeText,
                     onValueChange = onFontSizeChange,
-                    modifier = Modifier.width(92.dp),
+                    modifier = Modifier
+                        .width(92.dp)
+                        .petTarget(registerPetTarget, "dictation-font-size", PetTargetKind.CONTROL),
                     singleLine = true,
                     suffix = { Text("pt") },
                     isError = fontSizeText.toIntOrNull()?.let { it !in 8..24 } ?: true,
@@ -1577,7 +1976,9 @@ private fun DictationOptionsPanel(
                 OutlinedTextField(
                     value = countText,
                     onValueChange = onCountChange,
-                    modifier = Modifier.width(120.dp),
+                    modifier = Modifier
+                        .width(120.dp)
+                        .petTarget(registerPetTarget, "dictation-count", PetTargetKind.CONTROL),
                     singleLine = true,
                     isError = countError,
                     supportingText = if (countError) ({ Text("请输入大于 0 的数量") }) else null,
@@ -1591,25 +1992,43 @@ private fun DictationOptionsPanel(
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("包含已考察词", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
-                Switch(checked = includeEvaluated, onCheckedChange = onIncludeEvaluatedChange)
+                Switch(
+                    checked = includeEvaluated,
+                    onCheckedChange = onIncludeEvaluatedChange,
+                    modifier = Modifier.petTarget(registerPetTarget, "dictation-evaluated", PetTargetKind.CONTROL),
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("显示单词首字母", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
-                Switch(checked = showInitial, onCheckedChange = onShowInitialChange)
+                Switch(
+                    checked = showInitial,
+                    onCheckedChange = onShowInitialChange,
+                    modifier = Modifier.petTarget(registerPetTarget, "dictation-initial", PetTargetKind.CONTROL),
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("添加例句", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
-                Switch(checked = includeExamples, onCheckedChange = onIncludeExamplesChange)
+                Switch(
+                    checked = includeExamples,
+                    onCheckedChange = onIncludeExamplesChange,
+                    modifier = Modifier.petTarget(registerPetTarget, "dictation-examples", PetTargetKind.CONTROL),
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("例句含中文释义", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
-                Switch(checked = includeExampleChinese, onCheckedChange = onIncludeExampleChineseChange)
+                Switch(
+                    checked = includeExampleChinese,
+                    onCheckedChange = onIncludeExampleChineseChange,
+                    modifier = Modifier.petTarget(registerPetTarget, "dictation-example-chinese", PetTargetKind.CONTROL),
+                )
             }
             if (includeExamples) {
                 OutlinedTextField(
                     value = customExample,
                     onValueChange = onCustomExampleChange,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .petTarget(registerPetTarget, "dictation-custom-example", PetTargetKind.CONTROL),
                     label = { Text("自填例句（可选，应用于本次所有词条）") },
                     minLines = 2,
                 )
@@ -1618,7 +2037,10 @@ private fun DictationOptionsPanel(
                 onClick = onSubmit,
                 enabled = !preparing && formats.isNotEmpty() && missingFields.isNotEmpty() &&
                     fontSizeText.toIntOrNull()?.let { it in 8..24 } == true,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .petTarget(registerPetTarget, "dictation-generate", PetTargetKind.CONTROL),
             ) {
                 if (preparing) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                 else Icon(Icons.Outlined.Visibility, contentDescription = null)
@@ -1636,6 +2058,7 @@ private fun <T> ChoiceRow(
     selected: Set<T>,
     onChange: (T) -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         verticalAlignment = Alignment.CenterVertically,
@@ -1646,7 +2069,13 @@ private fun <T> ChoiceRow(
                 selected = value in selected,
                 onClick = { onChange(value) },
                 label = { Text(label) },
-                modifier = Modifier.padding(end = 6.dp),
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .petTarget(
+                        registerPetTarget,
+                        "choice-${title.hashCode()}-${label.hashCode()}",
+                        PetTargetKind.CONTROL,
+                    ),
             )
         }
     }
@@ -1663,10 +2092,12 @@ private fun DictationPreviewDialog(
     val lines = remember(document) { dictationPreviewLines(document) }
     val linesPerPage = (842f / (document.options.fontSizePt * 1.9f)).toInt().coerceIn(12, 42)
     val pages = lines.chunked(linesPerPage).ifEmpty { listOf(emptyList()) }
-    AlertDialog(
+    PetAlertDialog(
+        petId = "dictation-preview",
         onDismissRequest = onDismiss,
         title = { Text("默写预览 · A4") },
         text = {
+            val registerPetTarget = LocalRegisterPetTarget.current
             Column(
                 modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1674,7 +2105,14 @@ private fun DictationPreviewDialog(
                 Text("${document.rows.size} 个词条 · ${document.options.fontSizePt} pt · ${pages.size} 页", color = MutedInk)
                 pages.forEachIndexed { pageIndex, pageLines ->
                     Surface(
-                        modifier = Modifier.fillMaxWidth().aspectRatio(210f / 297f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(210f / 297f)
+                            .petTarget(
+                                registerPetTarget,
+                                "dictation-preview-page-$pageIndex",
+                                PetTargetKind.SURFACE,
+                            ),
                         color = Color.White,
                         border = CardDefaults.outlinedCardBorder(),
                     ) {
@@ -1712,14 +2150,20 @@ private fun DictationMarkDialog(
     onFinish: (Boolean, Boolean) -> Unit,
 ) {
     var dontAskAgain by remember { mutableStateOf(false) }
-    AlertDialog(
+    PetAlertDialog(
+        petId = "dictation-mark",
         onDismissRequest = onDismiss,
         title = { Text("标记默写词条") },
         text = {
+            val registerPetTarget = LocalRegisterPetTarget.current
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("是否将本次导出的词条标记为 evaluated？")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = dontAskAgain, onCheckedChange = { dontAskAgain = it })
+                    Checkbox(
+                        checked = dontAskAgain,
+                        onCheckedChange = { dontAskAgain = it },
+                        modifier = Modifier.petTarget(registerPetTarget, "dictation-mark-dont-ask", PetTargetKind.CONTROL),
+                    )
                     Text("不再提示")
                 }
             }
@@ -1738,6 +2182,7 @@ private fun LibraryScreen(
     onToggleSelection: (String) -> Unit,
     onEditLabels: () -> Unit,
 ) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(20.dp))
         PageHeader("词库", "${state.totalSearchResults} 个匹配词条")
@@ -1746,7 +2191,9 @@ private fun LibraryScreen(
             OutlinedTextField(
                 value = state.searchQuery,
                 onValueChange = onQueryChange,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .petTarget(registerPetTarget, "library-search", PetTargetKind.CONTROL),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                 placeholder = { Text("搜索单词、释义或标签") },
@@ -1754,7 +2201,9 @@ private fun LibraryScreen(
             Button(
                 onClick = onChooseCsv,
                 enabled = !state.importInProgress,
-                modifier = Modifier.heightIn(min = 56.dp),
+                modifier = Modifier
+                    .heightIn(min = 56.dp)
+                    .petTarget(registerPetTarget, "library-import", PetTargetKind.CONTROL),
                 contentPadding = PaddingValues(horizontal = 14.dp),
             ) {
                 if (state.importInProgress) {
@@ -1770,7 +2219,9 @@ private fun LibraryScreen(
             Button(
                 onClick = onEditLabels,
                 enabled = state.selectedVocabularyIds.isNotEmpty(),
-                modifier = Modifier.heightIn(min = 56.dp),
+                modifier = Modifier
+                    .heightIn(min = 56.dp)
+                    .petTarget(registerPetTarget, "library-labels", PetTargetKind.CONTROL),
             ) { Text("标签 (${state.selectedVocabularyIds.size})") }
         }
         Text(
@@ -1811,15 +2262,22 @@ private fun LibraryScreen(
 
 @Composable
 private fun VocabularyRow(entry: VocabularyEntry, selected: Boolean, onToggleSelection: () -> Unit) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .petTarget(registerPetTarget, "word-${entry.id}", PetTargetKind.SURFACE),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(8.dp),
         border = CardDefaults.outlinedCardBorder(),
     ) {
         Column(modifier = Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onToggleSelection() },
+                    modifier = Modifier.petTarget(registerPetTarget, "word-select-${entry.id}", PetTargetKind.CONTROL),
+                )
                 Text(
                     entry.word,
                     modifier = Modifier.weight(1f),
@@ -1855,10 +2313,12 @@ private fun VocabularyLabelDialog(
     val availableTags = listOf("cet4", "cet6", "gk", "zk", "evaluated")
     var addTags by remember { mutableStateOf(emptySet<String>()) }
     var removeTags by remember { mutableStateOf(emptySet<String>()) }
-    AlertDialog(
+    PetAlertDialog(
+        petId = "vocabulary-labels",
         onDismissRequest = onDismiss,
         title = { Text("添加或删除标签") },
         text = {
+            val registerPetTarget = LocalRegisterPetTarget.current
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("已选择 $selectionCount 个词条；只能操作程序内置标签。")
                 Text("添加标签", style = MaterialTheme.typography.labelLarge, color = MutedInk)
@@ -1871,7 +2331,9 @@ private fun VocabularyLabelDialog(
                                 removeTags = removeTags - tag
                             },
                             label = { Text(tag) },
-                            modifier = Modifier.padding(end = 6.dp),
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .petTarget(registerPetTarget, "labels-add-$tag", PetTargetKind.CONTROL),
                         )
                     }
                 }
@@ -1885,7 +2347,9 @@ private fun VocabularyLabelDialog(
                                 addTags = addTags - tag
                             },
                             label = { Text(tag) },
-                            modifier = Modifier.padding(end = 6.dp),
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .petTarget(registerPetTarget, "labels-remove-$tag", PetTargetKind.CONTROL),
                         )
                     }
                 }
@@ -1924,14 +2388,44 @@ private fun InsightsScreen(forecast: List<ForecastDay>) {
 
 @Composable
 private fun MemoryCurve() {
+    val registerPetTarget = LocalRegisterPetTarget.current
+    val density = LocalDensity.current
+    val curveLeftInset = with(density) { 12.dp.toPx() }
+    val curveRightInset = with(density) { 8.dp.toPx() }
+    val curveTopInset = with(density) { 10.dp.toPx() }
+    val curveBottomInset = with(density) { 12.dp.toPx() }
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .petTarget(registerPetTarget, "memory-curve-frame", PetTargetKind.SURFACE),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(8.dp),
         border = CardDefaults.outlinedCardBorder(),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Canvas(modifier = Modifier.fillMaxWidth().height(210.dp)) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(210.dp)
+                    .petTarget(
+                        registerPetTarget,
+                        "memory-curve",
+                        PetTargetKind.CHART,
+                    ) { bounds ->
+                        val left = bounds.left + curveLeftInset
+                        val right = bounds.right - curveRightInset
+                        val top = bounds.top + curveTopInset
+                        val bottom = bounds.bottom - curveBottomInset
+                        (0..70).map { step ->
+                            val day = step / 10f
+                            val retention = exp(-day / 3f)
+                            PetPoint(
+                                left + (right - left) * (day / 7f),
+                                bottom - (bottom - top) * retention,
+                            )
+                        }
+                    },
+            ) {
                 val left = 12.dp.toPx()
                 val right = size.width - 8.dp.toPx()
                 val top = 10.dp.toPx()
@@ -1965,10 +2459,13 @@ private fun MemoryCurve() {
 
 @Composable
 private fun ForecastBars(forecast: List<ForecastDay>) {
+    val registerPetTarget = LocalRegisterPetTarget.current
     val formatter = DateTimeFormatter.ofPattern("M/d")
     val maximum = max(1, forecast.maxOfOrNull { it.count } ?: 1)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .petTarget(registerPetTarget, "forecast-bars", PetTargetKind.CHART),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(8.dp),
         border = CardDefaults.outlinedCardBorder(),
@@ -2024,6 +2521,7 @@ private fun SettingsScreen(
     onMarkModeChange: (MarkMode) -> Unit,
 ) {
     var reminderEnabledDraft by remember(reminderEnabled) { mutableStateOf(reminderEnabled) }
+    val registerPetTarget = LocalRegisterPetTarget.current
     var reminderIntervalDraft by remember(reminderIntervalMinutes) {
         mutableStateOf(reminderIntervalMinutes.toString().removeSuffix(".0"))
     }
@@ -2034,7 +2532,9 @@ private fun SettingsScreen(
     ) {
         PageHeader("设置", "阅读与数据")
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-font", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -2049,6 +2549,7 @@ private fun SettingsScreen(
                     onValueChange = onFontScaleChange,
                     valueRange = 0.9f..1.4f,
                     steps = 4,
+                    modifier = Modifier.petTarget(registerPetTarget, "settings-font-slider", PetTargetKind.CONTROL),
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("90%", style = MaterialTheme.typography.labelMedium, color = MutedInk)
@@ -2057,7 +2558,9 @@ private fun SettingsScreen(
             }
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-mark", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -2066,14 +2569,16 @@ private fun SettingsScreen(
                 Text("默写后的标记", style = MaterialTheme.typography.titleMedium, color = Ink)
                 Text("控制导出成功后是否给本次词条添加 evaluated 标签。", style = MaterialTheme.typography.bodyMedium, color = MutedInk)
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = markMode == MarkMode.ALWAYS, onClick = { onMarkModeChange(MarkMode.ALWAYS) }, label = { Text("默认标记") })
-                    FilterChip(selected = markMode == MarkMode.NEVER, onClick = { onMarkModeChange(MarkMode.NEVER) }, label = { Text("默认不标记") })
-                    FilterChip(selected = markMode == MarkMode.ASK, onClick = { onMarkModeChange(MarkMode.ASK) }, label = { Text("每次询问") })
+                    FilterChip(selected = markMode == MarkMode.ALWAYS, onClick = { onMarkModeChange(MarkMode.ALWAYS) }, label = { Text("默认标记") }, modifier = Modifier.petTarget(registerPetTarget, "settings-mark-always", PetTargetKind.CONTROL))
+                    FilterChip(selected = markMode == MarkMode.NEVER, onClick = { onMarkModeChange(MarkMode.NEVER) }, label = { Text("默认不标记") }, modifier = Modifier.petTarget(registerPetTarget, "settings-mark-never", PetTargetKind.CONTROL))
+                    FilterChip(selected = markMode == MarkMode.ASK, onClick = { onMarkModeChange(MarkMode.ASK) }, label = { Text("每次询问") }, modifier = Modifier.petTarget(registerPetTarget, "settings-mark-ask", PetTargetKind.CONTROL))
                 }
             }
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-order", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -2082,13 +2587,15 @@ private fun SettingsScreen(
                 Text("学习顺序", style = MaterialTheme.typography.titleMedium, color = Ink)
                 Text("默认随机，也可按字母顺序学习。", style = MaterialTheme.typography.bodyMedium, color = MutedInk)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = studyOrder == "random", onClick = { onStudyOrderChange("random") }, label = { Text("随机顺序") })
-                    FilterChip(selected = studyOrder == "alphabetical", onClick = { onStudyOrderChange("alphabetical") }, label = { Text("按字母排序") })
+                    FilterChip(selected = studyOrder == "random", onClick = { onStudyOrderChange("random") }, label = { Text("随机顺序") }, modifier = Modifier.petTarget(registerPetTarget, "settings-order-random", PetTargetKind.CONTROL))
+                    FilterChip(selected = studyOrder == "alphabetical", onClick = { onStudyOrderChange("alphabetical") }, label = { Text("按字母排序") }, modifier = Modifier.petTarget(registerPetTarget, "settings-order-alphabetical", PetTargetKind.CONTROL))
                 }
             }
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-review-batch", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -2108,11 +2615,14 @@ private fun SettingsScreen(
                     enabled = learntWordCount > 0,
                     valueRange = 1f..maxOf(1, learntWordCount).toFloat(),
                     steps = maxOf(0, learntWordCount - 2),
+                    modifier = Modifier.petTarget(registerPetTarget, "settings-review-slider", PetTargetKind.CONTROL),
                 )
             }
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-preview", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.secondaryContainer,
             shape = RoundedCornerShape(8.dp),
         ) {
@@ -2123,7 +2633,9 @@ private fun SettingsScreen(
             }
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-reminder", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -2137,6 +2649,7 @@ private fun SettingsScreen(
                     Switch(
                         checked = reminderEnabledDraft,
                         onCheckedChange = { reminderEnabledDraft = it },
+                        modifier = Modifier.petTarget(registerPetTarget, "settings-reminder-switch", PetTargetKind.CONTROL),
                     )
                 }
                 LevelFilterRow(
@@ -2151,7 +2664,9 @@ private fun SettingsScreen(
                         reminderIntervalDraft = it
                         reminderIntervalError = false
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .petTarget(registerPetTarget, "settings-reminder-interval", PetTargetKind.CONTROL),
                     label = { Text("弹窗间隔") },
                     suffix = { Text("min") },
                     singleLine = true,
@@ -2172,13 +2687,19 @@ private fun SettingsScreen(
                                 onReminderSettingsChange(reminderEnabledDraft, interval)
                             }
                         },
+                        modifier = Modifier.petTarget(registerPetTarget, "settings-reminder-save", PetTargetKind.CONTROL),
                     ) { Text("保存设置") }
-                    TextButton(onClick = onPreviewReminder) { Text("立即预览") }
+                    TextButton(
+                        onClick = onPreviewReminder,
+                        modifier = Modifier.petTarget(registerPetTarget, "settings-reminder-preview", PetTargetKind.CONTROL),
+                    ) { Text("立即预览") }
                 }
             }
         }
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .petTarget(registerPetTarget, "settings-local-data", PetTargetKind.SURFACE),
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(8.dp),
             border = CardDefaults.outlinedCardBorder(),
@@ -2224,7 +2745,8 @@ private fun EmptyState(icon: ImageVector, title: String, detail: String) {
 
 @Composable
 private fun ImportReportDialog(report: ImportReport, onDismiss: () -> Unit) {
-    AlertDialog(
+    PetAlertDialog(
+        petId = "import-report",
         onDismissRequest = onDismiss,
         title = { Text("CSV 导入结果") },
         text = {
@@ -2272,7 +2794,8 @@ private fun ImportReportDialog(report: ImportReport, onDismiss: () -> Unit) {
 
 @Composable
 private fun MessageDialog(message: String, onDismiss: () -> Unit) {
-    AlertDialog(
+    PetAlertDialog(
+        petId = "message",
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = BusinessRed) },
         title = { Text("无法完成操作") },

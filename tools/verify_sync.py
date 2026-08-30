@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from opencc import OpenCC
+
+from prepare_pet_asset import prepare as prepare_pet_asset
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -154,6 +158,83 @@ def verify_word_bubble_contract() -> None:
         fail("Parity manifest does not declare word-bubble-v1")
 
 
+def verify_pet_contract() -> None:
+    contract_path = CONTRACTS / "pet-companion-v1.md"
+    golden_path = CONTRACTS / "pet-companion-golden-v1.json"
+    if not contract_path.is_file() or "pet-companion-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet companion contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Pet companion golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "pet-companion-v1" or payload.get("name") != "冰子":
+        fail("Pet companion identity differs from the shared contract")
+    if payload.get("sourceAsset") != "shared/assets/branding/pet_image.png" or payload.get("runtimeAsset") != "shared/assets/pets/bingzi.png":
+        fail("Pet companion asset paths differ")
+    if payload.get("tickMs") != 50 or payload.get("navigationTransition") != "drop-to-nearest":
+        fail("Pet companion timing or navigation transition differs")
+    if (
+        payload.get("windowScope") != "application-owned-window"
+        or payload.get("singleActivePet") is not True
+        or payload.get("platformManagedUiExcluded") is not True
+    ):
+        fail("Pet companion window scope differs")
+    if payload.get("rectangleFormat") != "x-y-width-height" or payload.get("petSizeMeaning") != "half-size":
+        fail("Pet companion geometry semantics differ")
+    if payload.get("targetKinds") != ["control", "surface", "chart", "edge"]:
+        fail("Pet companion target kinds differ")
+    if payload.get("modes") != ["idle", "slide", "roll", "fly", "fall", "dragging"]:
+        fail("Pet companion modes differ")
+    drag = payload.get("drag", {})
+    if drag != {
+        "enabled": True,
+        "clampToViewport": True,
+        "releaseKeepsPosition": True,
+        "preserveGrabOffset": True,
+    }:
+        fail("Pet companion drag semantics differ")
+    if payload.get("transientOnly") is not True:
+        fail("Pet companion state must be transient")
+    expected_behaviors = {
+        "surface-inside-moves-to-border",
+        "border-rolls-clockwise",
+        "chart-path-reverses",
+        "flight-is-vertical-first",
+        "navigation-prefers-below",
+    }
+    observed_behaviors = {item.get("name") for item in payload.get("behaviorVectors", [])}
+    if observed_behaviors != expected_behaviors:
+        fail("Pet companion behavior vectors differ")
+    behavior_fields = {
+        "surface-inside-moves-to-border": {"position", "target", "step", "expectedPosition", "expectedMode"},
+        "border-rolls-clockwise": {"position", "target", "step", "expectedMode"},
+        "chart-path-reverses": {"position", "target", "step", "ticks", "expectedMode", "mustReverse"},
+        "flight-is-vertical-first": {"position", "mode", "target", "step", "expectedPosition", "expectedMode"},
+        "navigation-prefers-below": {"position", "targets", "step", "expectedTarget", "expectedPosition"},
+    }
+    for behavior in payload.get("behaviorVectors", []):
+        name = behavior.get("name")
+        missing = behavior_fields.get(name, set()) - behavior.keys()
+        if missing:
+            fail(f"Pet companion behavior vector {name} is missing fields: {sorted(missing)}")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("petCompanionVersion") != "pet-companion-v1":
+        fail("Parity manifest does not declare pet-companion-v1")
+    pet = parity.get("petCompanion", {})
+    if (
+        pet.get("name") != "冰子"
+        or pet.get("transientOnly") is not True
+        or pet.get("tickMs") != 50
+        or pet.get("windowScope") != "application-owned-window"
+        or pet.get("singleActivePet") is not True
+        or pet.get("platformManagedUiExcluded") is not True
+        or pet.get("dragPlacement") != "preserve-grab-offset"
+    ):
+        fail("Parity manifest does not declare transient Bingzi state")
+    branding = parity.get("branding", {})
+    if branding.get("petImage") != payload.get("sourceAsset") or branding.get("petRuntimeImage") != payload.get("runtimeAsset"):
+        fail("Parity and pet golden asset paths differ")
+
+
 def verify_catalog() -> None:
     catalog_path = CONTENT / "catalog.json"
     manifest_path = CONTENT / "catalog-manifest.json"
@@ -215,6 +296,32 @@ def verify_branding() -> None:
         signature = image_file.read(8)
     if signature != b"\x89PNG\r\n\x1a\n":
         fail(f"Shared app image is not a PNG: {relative_path}")
+    pet_paths = parity.get("branding", {})
+    expected_hashes = {
+        "petImage": "ff8ce536c8ebf69f9f8990c94115842ac7c6fe3fac867265b031c396d18ec124",
+        "petRuntimeImage": "eea2733972136eca55c20fa58d86add1e5378422028f72d2f1209d396c2a5fb7",
+    }
+    for key in ("petImage", "petRuntimeImage"):
+        pet_relative = pet_paths.get(key)
+        if not pet_relative:
+            fail(f"Shared {key} is not declared")
+        pet_path = ROOT / pet_relative
+        if not pet_path.is_file():
+            fail(f"Shared pet image is missing: {pet_relative}")
+        with pet_path.open("rb") as pet_file:
+            pet_signature = pet_file.read(8)
+        if pet_signature != b"\x89PNG\r\n\x1a\n":
+            fail(f"Shared pet image is not a PNG: {pet_relative}")
+        observed_hash = hashlib.sha256(pet_path.read_bytes()).hexdigest()
+        if observed_hash != expected_hashes[key]:
+            fail(f"Shared pet image hash differs: {pet_relative}")
+    source_path = ROOT / pet_paths["petImage"]
+    runtime_path = ROOT / pet_paths["petRuntimeImage"]
+    with TemporaryDirectory(prefix="lexitrack-pet-") as temp_dir:
+        generated_path = Path(temp_dir) / "bingzi.png"
+        prepare_pet_asset(source_path, generated_path)
+        if generated_path.read_bytes() != runtime_path.read_bytes():
+            fail("Shared pet runtime image is not reproducible from the canonical source")
 
 
 def verify_platform_markers() -> None:
@@ -224,10 +331,10 @@ def verify_platform_markers() -> None:
         if not marker_path.exists():
             fail(f"Missing platform marker: {marker_path.relative_to(ROOT)}")
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "wordBubbleVersion", "contentVersion"):
+        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "wordBubbleVersion", "petCompanionVersion", "contentVersion"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
-        for key in ("branding", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+        for key in ("branding", "petCompanion", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
@@ -239,6 +346,7 @@ def main() -> int:
     verify_weighted_review()
     verify_dictation_contract()
     verify_word_bubble_contract()
+    verify_pet_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()

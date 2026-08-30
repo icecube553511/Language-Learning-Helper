@@ -1,8 +1,19 @@
+import org.gradle.api.tasks.Copy
+
 plugins {
     id("com.android.library")
     kotlin("android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val preparePetAsset by tasks.registering(Copy::class) {
+    from(rootProject.file("../shared/assets/pets/bingzi.png"))
+    into(layout.buildDirectory.dir("generated/pet-res/drawable"))
+    rename { "bingzi.png" }
+}
+
+android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/pet-res"))
+tasks.named("preBuild").configure { dependsOn(preparePetAsset) }
 
 android {
     namespace = "com.lexitrack.learning.presentation"

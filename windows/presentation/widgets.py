@@ -5,6 +5,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from typing import Callable
 
+from domain.pet_companion import PetPoint
 from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken, normalize_token, tokenize_english
 
 
@@ -260,9 +261,15 @@ class WordClickableText(tk.Text):
 class WordBubbleManager:
     """Presentation-only controller for transient recursive vocabulary bubbles."""
 
-    def __init__(self, root: tk.Misc, service):
+    def __init__(
+        self,
+        root: tk.Misc,
+        service,
+        on_popup_created: Callable[[tk.Toplevel, str], None] | None = None,
+    ):
         self.root = root
         self.service = service
+        self._on_popup_created = on_popup_created
         self.stack = BubbleStack()
         self._windows: list[tk.Toplevel] = []
         self._bound_widgets: set[tk.Widget] = set()
@@ -510,6 +517,8 @@ class WordBubbleManager:
         popup.geometry(f"+{x}+{max(4, y)}")
         popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_current(d))
         self._windows.append(popup)
+        if self._on_popup_created is not None:
+            self._on_popup_created(popup, f"word-bubble-{depth}")
 
     def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
         token = self._token_at(widget, example, event.x, event.y)
@@ -698,6 +707,19 @@ class MemoryChart(tk.Canvas):
         self.curve = curve
         self.redraw()
 
+    def pet_curve_points(self) -> tuple[PetPoint, ...]:
+        """Return the rendered memory curve in this widget's local coordinates."""
+        if len(self.curve) < 2:
+            return ()
+        width = max(320, self.winfo_width())
+        height = max(220, self.winfo_height())
+        left, right, top, bottom = 48, width - 20, 24, height - 38
+        curve_step = (right - left) / max(1, len(self.curve) - 1)
+        return tuple(
+            PetPoint(left + index * curve_step, bottom - retention * (bottom - top))
+            for index, retention in enumerate(self.curve)
+        )
+
     def redraw(self):
         self.delete("all")
         width = max(320, self.winfo_width())
@@ -823,3 +845,64 @@ class DictationLoadingOverlay(tk.Frame):
     def destroy(self) -> None:
         self.stop()
         super().destroy()
+
+
+class PetOverlay(tk.Toplevel):
+    """A stable-size transparent sprite window reporting drag gestures."""
+
+    TRANSPARENT_KEY = "#ff00ff"
+
+    def __init__(self, parent: tk.Misc, image: tk.PhotoImage, on_press, on_move, on_release):
+        self._pet_image = image
+        super().__init__(parent)
+        self.withdraw()
+        self.overrideredirect(True)
+        self.transient(parent)
+        self.configure(bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
+        try:
+            self.wm_attributes("-transparentcolor", self.TRANSPARENT_KEY)
+        except tk.TclError:
+            pass
+        self._sprite = tk.Label(
+            self,
+            image=image,
+            bg=self.TRANSPARENT_KEY,
+            bd=0,
+            highlightthickness=0,
+            relief=tk.FLAT,
+            padx=0,
+            pady=0,
+            cursor="hand2",
+        )
+        self._sprite.pack(fill=tk.BOTH, expand=True)
+        self._on_pet_press = on_press
+        self._on_pet_move = on_move
+        self._on_pet_release = on_release
+        self._sprite.bind("<ButtonPress-1>", self._on_press, add="+")
+        self._sprite.bind("<B1-Motion>", self._on_move, add="+")
+        self._sprite.bind("<ButtonRelease-1>", self._on_release, add="+")
+
+    @property
+    def sprite_size(self) -> tuple[int, int]:
+        return self._pet_image.width(), self._pet_image.height()
+
+    def place(self, *, x: int, y: int, width: int | None = None, height: int | None = None) -> None:
+        width = width or self._pet_image.width()
+        height = height or self._pet_image.height()
+        root_x = self.master.winfo_rootx() + x
+        root_y = self.master.winfo_rooty() + y
+        self.geometry(f"{width}x{height}+{root_x}+{root_y}")
+        if self.state() == "withdrawn":
+            self.deiconify()
+
+    def _on_press(self, event):
+        self._on_pet_press(event)
+        return "break"
+
+    def _on_move(self, event):
+        self._on_pet_move(event)
+        return "break"
+
+    def _on_release(self, event):
+        self._on_pet_release(event)
+        return "break"

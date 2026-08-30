@@ -19,6 +19,11 @@ Presentation  --->  Application  --->  Domain
 
 跨端品牌源资产位于 `shared/assets/branding/`。平台最外层的图标资源由此派生，不得由 `domain` 或 `application` 直接引用。
 
+冰子陪伴宠物遵循同一边界：`shared/contracts/pet-companion-v1.md` 定义目标
+区域、状态转换和拖放语义；两端 domain 只实现几何/状态纯函数，presentation
+采集当前页面的控件、面板、图表曲线和窗口边界并负责动画、手势与资源渲染。
+宠物位置是瞬态状态，切页由 presentation 触发 `drop-to-nearest`，不得持久化。
+
 ## 一致性边界
 
 双端必须共享以下语义：

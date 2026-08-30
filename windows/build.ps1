@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $windowsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $windowsDir
 $catalogDir = Join-Path $rootDir "shared\content"
+$petAssetsDir = Join-Path $rootDir "shared\assets\pets"
 
 Set-Location -LiteralPath $rootDir
 
@@ -29,6 +30,10 @@ $arguments = @(
 
 if (Test-Path -LiteralPath $catalogDir) {
     $arguments += @("--add-data", "$catalogDir;shared\content")
+}
+
+if (Test-Path -LiteralPath $petAssetsDir) {
+    $arguments += @("--add-data", "$petAssetsDir;shared\assets\pets")
 }
 
 python @arguments

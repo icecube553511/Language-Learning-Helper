@@ -17,6 +17,7 @@
 - 内置词条 memberships 只读；CSV 导入和批量标签编辑可更新用户词条，程序标签编辑对内置词条也只写本地 tag override。
 - 默写是可打印 worksheet，不是交互答题；preview 必须与 DOCX/PDF 输出共享同一 `Document` model。`dictation-export-v1` 中的 A4 portrait、字段挖空、词性、例句边界替换、随机无放回选择和 evaluated 规则是单一事实来源。
 - 例句英文词语气泡遵循 `word-bubble-v1`：token 归一化、词性/中文解析、九层栈、祖先保留和外部点击关闭由共享契约约束；栈状态仅存在 presentation，不得持久化。
+- 冰子宠物遵循 `shared/contracts/pet-companion-v1.md`：源图在 `shared/assets/branding/pet_image.png`，运行 sprite 由 `tools/prepare_pet_asset.py` 生成；目标几何、动画、拖拽和切页掉落均为 presentation 瞬态，domain 只提供平台无关的目标选择/状态 reducer。
 - 导出后的 `evaluated` 只能作为本地 tag override；UI 仅允许 `cet4`、`cet6`、`gk`、`zk`、`evaluated`，不得创建其他 tag，且不得修改内置 catalog。
 - Android 后台提醒由 AlarmManager/Receiver/Notification 外层适配器负责，application/domain 不得依赖 Android SDK。
 - 保留工作区中已有的用户修改；不要使用破坏性还原命令覆盖它们。

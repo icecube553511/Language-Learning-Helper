@@ -13,10 +13,20 @@ import tkinter.font as tkfont
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
+from domain.pet_companion import (
+    PetCompanion,
+    PetMode,
+    PetPoint,
+    PetRect,
+    PetState,
+    PetTarget,
+    PetTargetKind,
+)
 from presentation.widgets import (
     DictationLoadingOverlay,
     MemoryChart,
     NavItem,
+    PetOverlay,
     ScrollableExamplePanel,
     WordBubbleManager,
     WordClickableText,
@@ -35,6 +45,11 @@ BLUE = "#3973C6"
 ORANGE = "#D9822B"
 RED = "#C94B50"
 BORDER = "#DDE3E8"
+PET_CONTROL_CLASSES = {
+    "Button", "TButton", "Entry", "TEntry", "Checkbutton", "TCheckbutton",
+    "Radiobutton", "TRadiobutton", "Scale", "TScale", "Spinbox", "TSpinbox",
+    "Scrollbar", "TScrollbar", "Treeview", "TCombobox", "Listbox", "Text",
+}
 REMINDER_POPUP_WIDTH = 680
 REMINDER_POPUP_HEIGHT = 760
 REMINDER_EXAMPLES_WIDTH = 624
@@ -64,6 +79,15 @@ class DictationCandidateDisplay:
     tags: str
     evaluation_status: str
     evaluation_color: str
+
+
+@dataclass
+class DialogPetRuntime:
+    key: str
+    companion: PetCompanion
+    overlay: PetOverlay
+    drag_offset: PetPoint = PetPoint(0.0, 0.0)
+    tick_after_id: str | None = None
 
 
 def dictation_candidate_display(entry: VocabularyEntry) -> DictationCandidateDisplay:
@@ -213,6 +237,7 @@ class LexiTrackApp(tk.Tk):
         catalog_count: int,
         catalog_rejected: int = 0,
         catalog_error: str = "",
+        pet_asset_path: Path | None = None,
     ):
         super().__init__()
         self.service = service
@@ -220,6 +245,7 @@ class LexiTrackApp(tk.Tk):
         self.catalog_count = catalog_count
         self.catalog_rejected = catalog_rejected
         self.catalog_error = catalog_error
+        self.pet_asset_path = pet_asset_path
         self.title("LexiTrack 词程")
         self.geometry("1220x800")
         self.minsize(960, 700)
@@ -243,18 +269,486 @@ class LexiTrackApp(tk.Tk):
         self._word_reminder_next_at = 0.0
         self.answer_visible = False
         self.forecast_days = 7
-        self.word_bubbles = WordBubbleManager(self, self.service)
+        self._dialog_pet_runtimes: dict[tk.Toplevel, DialogPetRuntime] = {}
+        self._dialog_pet_stack: list[tk.Toplevel] = []
+        self.word_bubbles = WordBubbleManager(self, self.service, self._attach_pet_to_dialog)
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()
         self._dictation_loading: DictationLoadingOverlay | None = None
         self._dictation_loading_after_id: str | None = None
+        self.pet_companion = PetCompanion(PetState(PetPoint(120.0, 120.0)), speed=7.0, pet_size=28.0)
+        self._pet_image_source: tk.PhotoImage | None = None
+        self._pet_image: tk.PhotoImage | None = None
+        self._pet_overlay: PetOverlay | None = None
+        self._pet_targets: tuple[PetTarget, ...] = ()
+        self._pet_refresh_after_id: str | None = None
+        self._pet_tick_after_id: str | None = None
+        self._pet_drag_offset = PetPoint(0.0, 0.0)
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
+        self._setup_pet_overlay()
         self.show_page("dashboard")
         self.after(1_000, self._check_review_reminder)
         self.after(250, self._schedule_word_reminder)
+
+    def _setup_pet_overlay(self) -> None:
+        """Load the injected runtime sprite and start the transient UI companion."""
+        path = self.pet_asset_path
+        if path is None or not path.is_file():
+            return
+        try:
+            source = tk.PhotoImage(file=str(path))
+            # The source sheet is intentionally high resolution; keep a stable
+            # hit box around a small display sprite regardless of DPI scaling.
+            divisor = max(1, (max(source.width(), source.height()) + 63) // 64)
+            image = source.subsample(divisor, divisor)
+        except (tk.TclError, OSError):
+            return
+        self._pet_image_source = source
+        self._pet_image = image
+        self.pet_companion.pet_size = max(image.width(), image.height()) / 2.0
+        self._pet_overlay = PetOverlay(
+            self,
+            image,
+            self._pet_press,
+            self._pet_move,
+            self._pet_release,
+        )
+        self._pet_overlay.place(x=0, y=0)
+        self.bind("<Configure>", lambda _event: self._schedule_pet_target_refresh(), add="+")
+        self._schedule_pet_target_refresh()
+        self._pet_tick_after_id = self.after(50, self._pet_tick)
+
+    def destroy(self) -> None:
+        """Stop the transient pet window before tearing down the Tk root."""
+        for dialog in tuple(self._dialog_pet_runtimes):
+            self._detach_pet_from_dialog(dialog)
+        for callback_id in (self._pet_refresh_after_id, self._pet_tick_after_id):
+            if callback_id is not None:
+                try:
+                    self.after_cancel(callback_id)
+                except tk.TclError:
+                    pass
+        self._pet_refresh_after_id = None
+        self._pet_tick_after_id = None
+        if self._pet_overlay is not None:
+            try:
+                self._pet_overlay.destroy()
+            except tk.TclError:
+                pass
+            self._pet_overlay = None
+        super().destroy()
+
+    @staticmethod
+    def _pet_viewport_for(root: tk.Misc) -> PetRect:
+        return PetRect(
+            0.0,
+            0.0,
+            float(max(1, root.winfo_width())),
+            float(max(1, root.winfo_height())),
+        )
+
+    def _pet_viewport(self) -> PetRect:
+        return self._pet_viewport_for(self)
+
+    def _pet_widget_target(
+        self,
+        widget: tk.Widget,
+        page_key: str,
+        root: tk.Misc | None = None,
+    ) -> PetTarget | None:
+        root = root or self
+        if isinstance(widget, PetOverlay) or not widget.winfo_ismapped():
+            return None
+        try:
+            width, height = widget.winfo_width(), widget.winfo_height()
+            x = widget.winfo_rootx() - root.winfo_rootx()
+            y = widget.winfo_rooty() - root.winfo_rooty()
+        except tk.TclError:
+            return None
+        if width < 8 or height < 8:
+            return None
+        kind: PetTargetKind
+        path: tuple[PetPoint, ...] = ()
+        if isinstance(widget, MemoryChart):
+            kind = PetTargetKind.CHART
+            local_path = widget.pet_curve_points()
+            path = tuple(PetPoint(x + point.x, y + point.y) for point in local_path)
+        elif isinstance(widget, NavItem):
+            kind = PetTargetKind.CONTROL
+        elif widget.winfo_class() in PET_CONTROL_CLASSES:
+            kind = PetTargetKind.CONTROL
+        elif widget.winfo_class() in {"Frame", "TFrame", "Labelframe", "TLabelframe", "Canvas"}:
+            try:
+                border_width = int(float(widget.cget("borderwidth")))
+            except (tk.TclError, ValueError):
+                border_width = 0
+            try:
+                highlight_width = int(float(widget.cget("highlightthickness")))
+            except (tk.TclError, ValueError):
+                highlight_width = 0
+            if border_width <= 0 and highlight_width <= 0:
+                return None
+            kind = PetTargetKind.SURFACE
+        else:
+            # Plain labels and borderless layout frames are not surfaces. This
+            # avoids treating a full-page container as a zero-distance target.
+            return None
+        viewport = self._pet_viewport_for(root)
+        left = max(viewport.left, float(x))
+        top = max(viewport.top, float(y))
+        right = min(viewport.right, float(x + width))
+        bottom = min(viewport.bottom, float(y + height))
+        ancestor = widget.master
+        while ancestor is not None and ancestor is not root:
+            try:
+                if not ancestor.winfo_ismapped():
+                    return None
+                ancestor_left = float(ancestor.winfo_rootx() - root.winfo_rootx())
+                ancestor_top = float(ancestor.winfo_rooty() - root.winfo_rooty())
+                left = max(left, ancestor_left)
+                top = max(top, ancestor_top)
+                right = min(right, ancestor_left + ancestor.winfo_width())
+                bottom = min(bottom, ancestor_top + ancestor.winfo_height())
+            except tk.TclError:
+                return None
+            ancestor = ancestor.master
+        if right <= left or bottom <= top:
+            return None
+        return PetTarget(
+            id=self._pet_widget_id(widget, page_key),
+            kind=kind,
+            rect=PetRect(left, top, right - left, bottom - top),
+            path=tuple(point for point in path if left <= point.x <= right and top <= point.y <= bottom),
+        )
+
+    def _pet_widget_id(self, widget: tk.Widget, page_key: str) -> str:
+        """Return a semantic widget id, falling back to its structural path."""
+        semantic_id = getattr(widget, "pet_target_id", None)
+        if isinstance(semantic_id, str) and semantic_id.strip():
+            return f"{page_key}:{semantic_id.strip()}"
+        parts: list[str] = []
+        current: tk.Misc | None = widget
+        while current is not None and current is not self:
+            parent = current.master
+            if parent is None:
+                break
+            try:
+                sibling_index = parent.winfo_children().index(current)
+                widget_class = current.winfo_class().lower()
+            except (tk.TclError, ValueError):
+                break
+            parts.append(f"{widget_class}-{sibling_index}")
+            current = parent
+        return f"{page_key}:{'/'.join(reversed(parts))}"
+
+    def _walk_pet_widgets(self, widget: tk.Misc):
+        for child in widget.winfo_children():
+            if isinstance(child, PetOverlay):
+                continue
+            yield child
+            yield from self._walk_pet_widgets(child)
+
+    def _collect_dialog_pet_targets(self, dialog: tk.Toplevel, key: str) -> tuple[PetTarget, ...]:
+        viewport = self._pet_viewport_for(dialog)
+        targets = [
+            PetTarget(f"dialog:{key}:surface", PetTargetKind.SURFACE, viewport),
+        ]
+        for widget in self._walk_pet_widgets(dialog):
+            target = self._pet_widget_target(widget, f"dialog:{key}", dialog)
+            if target is not None:
+                targets.append(target)
+        edge_size = 3.0
+        targets.extend((
+            PetTarget(f"dialog:{key}:edge:top", PetTargetKind.EDGE, PetRect(0, 0, viewport.width, edge_size)),
+            PetTarget(f"dialog:{key}:edge:right", PetTargetKind.EDGE, PetRect(max(0, viewport.width - edge_size), 0, edge_size, viewport.height)),
+            PetTarget(f"dialog:{key}:edge:bottom", PetTargetKind.EDGE, PetRect(0, max(0, viewport.height - edge_size), viewport.width, edge_size)),
+            PetTarget(f"dialog:{key}:edge:left", PetTargetKind.EDGE, PetRect(0, 0, edge_size, viewport.height)),
+        ))
+        return tuple(targets)
+
+    def _sync_pet_overlay_visibility(self) -> None:
+        """Show exactly one companion: the newest dialog, or the main window."""
+        active_dialog = self._dialog_pet_stack[-1] if self._dialog_pet_stack else None
+        if self._pet_overlay is not None:
+            try:
+                if active_dialog is None:
+                    state = self.pet_companion.state
+                    width, height = self._pet_overlay.sprite_size
+                    self._pet_overlay.place(
+                        x=round(state.position.x - width / 2),
+                        y=round(state.position.y - height / 2),
+                        width=width,
+                        height=height,
+                    )
+                    self._pet_overlay.lift()
+                else:
+                    self._pet_overlay.withdraw()
+            except tk.TclError:
+                pass
+        for dialog, runtime in tuple(self._dialog_pet_runtimes.items()):
+            try:
+                if dialog is active_dialog:
+                    state = runtime.companion.state
+                    width, height = runtime.overlay.sprite_size
+                    runtime.overlay.place(
+                        x=round(state.position.x - width / 2),
+                        y=round(state.position.y - height / 2),
+                        width=width,
+                        height=height,
+                    )
+                    runtime.overlay.lift()
+                else:
+                    runtime.overlay.withdraw()
+            except tk.TclError:
+                pass
+
+    def _attach_pet_to_dialog(self, dialog: tk.Toplevel, key: str) -> None:
+        """Attach a transient companion that uses only this dialog's coordinates."""
+        if dialog in self._dialog_pet_runtimes or self._pet_image is None:
+            return
+        dialog.update_idletasks()
+        half_size = max(self._pet_image.width(), self._pet_image.height()) / 2.0
+        viewport = self._pet_viewport_for(dialog)
+        start = viewport.clamp(PetPoint(half_size + 12.0, half_size + 12.0), half_size)
+        companion = PetCompanion(PetState(start), speed=7.0, pet_size=half_size)
+        runtime_holder: dict[str, DialogPetRuntime] = {}
+
+        def pointer(event) -> PetPoint:
+            return PetPoint(
+                float(event.x_root - dialog.winfo_rootx()),
+                float(event.y_root - dialog.winfo_rooty()),
+            )
+
+        def press(event) -> None:
+            runtime = runtime_holder["runtime"]
+            event_point = pointer(event)
+            state = runtime.companion.state
+            runtime.drag_offset = PetPoint(
+                state.position.x - event_point.x,
+                state.position.y - event_point.y,
+            )
+            runtime.companion.drag_start(state.position)
+
+        def move(event) -> None:
+            runtime = runtime_holder["runtime"]
+            event_point = pointer(event)
+            runtime.companion.drag_move(
+                PetPoint(
+                    event_point.x + runtime.drag_offset.x,
+                    event_point.y + runtime.drag_offset.y,
+                ),
+                self._pet_viewport_for(dialog),
+            )
+
+        def release(event) -> None:
+            move(event)
+            runtime_holder["runtime"].companion.drag_release()
+
+        overlay = PetOverlay(dialog, self._pet_image, press, move, release)
+        runtime = DialogPetRuntime(key=key, companion=companion, overlay=overlay)
+        runtime_holder["runtime"] = runtime
+        self._dialog_pet_runtimes[dialog] = runtime
+        self._dialog_pet_stack.append(dialog)
+        self._sync_pet_overlay_visibility()
+
+        def tick() -> None:
+            runtime.tick_after_id = None
+            try:
+                if not dialog.winfo_exists():
+                    self._detach_pet_from_dialog(dialog)
+                    return
+                if self._dialog_pet_stack and self._dialog_pet_stack[-1] is dialog:
+                    viewport_now = self._pet_viewport_for(dialog)
+                    targets = self._collect_dialog_pet_targets(dialog, key)
+                    state = companion.tick(targets, viewport_now)
+                    width, height = overlay.sprite_size
+                    overlay.place(
+                        x=round(state.position.x - width / 2),
+                        y=round(state.position.y - height / 2),
+                        width=width,
+                        height=height,
+                    )
+                    overlay.lift()
+                else:
+                    overlay.withdraw()
+                runtime.tick_after_id = dialog.after(50, tick)
+            except tk.TclError:
+                self._detach_pet_from_dialog(dialog)
+
+        def on_destroy(event) -> None:
+            if event.widget is dialog:
+                self._detach_pet_from_dialog(dialog)
+
+        dialog.bind("<Destroy>", on_destroy, add="+")
+        runtime.tick_after_id = dialog.after(50, tick)
+
+    def _detach_pet_from_dialog(self, dialog: tk.Toplevel) -> None:
+        runtime = self._dialog_pet_runtimes.pop(dialog, None)
+        if runtime is None:
+            return
+        self._dialog_pet_stack = [item for item in self._dialog_pet_stack if item is not dialog]
+        if runtime.tick_after_id is not None:
+            try:
+                dialog.after_cancel(runtime.tick_after_id)
+            except tk.TclError:
+                pass
+            runtime.tick_after_id = None
+        try:
+            if runtime.overlay.winfo_exists():
+                runtime.overlay.destroy()
+        except tk.TclError:
+            pass
+        self._sync_pet_overlay_visibility()
+
+    def _collect_pet_targets(self) -> tuple[PetTarget, ...]:
+        if not self.current_page or self.current_page not in self.pages:
+            return ()
+        page = self.pages[self.current_page]
+        targets: list[PetTarget] = []
+        for widget in (self.nav_items.get(key) for key in self.nav_items):
+            if widget is not None:
+                target = self._pet_widget_target(widget, "navigation")
+                if target is not None:
+                    targets.append(target)
+        for widget in self._walk_pet_widgets(page):
+            target = self._pet_widget_target(widget, self.current_page)
+            if target is not None:
+                targets.append(target)
+                if isinstance(widget, MemoryChart):
+                    # Keep the rendered curve target and expose the chart border
+                    # as a separate surface so both paths are traversable.
+                    targets.append(
+                        PetTarget(
+                            id=f"{target.id}:border",
+                            kind=PetTargetKind.SURFACE,
+                            rect=target.rect,
+                        )
+                    )
+        if self.current_page == "dictation":
+            existing_ids = {target.id for target in targets}
+            targets.extend(
+                target for target in self._dictation_pet_targets()
+                if target.id not in existing_ids
+            )
+        viewport = self._pet_viewport()
+        edge_size = 3.0
+        targets.extend((
+            PetTarget("edge:top", PetTargetKind.EDGE, PetRect(0, 0, viewport.width, edge_size)),
+            PetTarget("edge:right", PetTargetKind.EDGE, PetRect(max(0, viewport.width - edge_size), 0, edge_size, viewport.height)),
+            PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0, max(0, viewport.height - edge_size), viewport.width, edge_size)),
+            PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0, 0, edge_size, viewport.height)),
+        ))
+        return tuple(targets)
+
+    def _dictation_pet_targets(self) -> tuple[PetTarget, ...]:
+        """Project visible virtualized rows from canvas space into window space."""
+        if not hasattr(self, "dictation_table_canvas") or not self.dictation_candidates:
+            return ()
+        canvas = self.dictation_table_canvas
+        if not canvas.winfo_ismapped() or not self._dictation_table_column_lefts:
+            return ()
+        viewport = self._pet_viewport()
+        canvas_left = max(viewport.left, float(canvas.winfo_rootx() - self.winfo_rootx()))
+        canvas_top = max(viewport.top, float(canvas.winfo_rooty() - self.winfo_rooty()))
+        canvas_right = min(viewport.right, canvas_left + canvas.winfo_width())
+        canvas_bottom = min(viewport.bottom, canvas_top + canvas.winfo_height())
+        if canvas_right <= canvas_left or canvas_bottom <= canvas_top:
+            return ()
+        content_left = float(canvas.canvasx(0))
+        content_top = float(canvas.canvasy(0))
+        selection_left = float(self._dictation_table_column_lefts[4])
+        selection_width = float(self._dictation_table_column_widths[4])
+        targets: list[PetTarget] = []
+        for index, row_top in enumerate(self._dictation_table_row_tops):
+            row_height = self._dictation_table_row_heights[index]
+            top = max(canvas_top, canvas_top + row_top - content_top)
+            bottom = min(canvas_bottom, canvas_top + row_top + row_height - content_top)
+            if bottom <= top:
+                continue
+            word_id = self.dictation_candidates[index].word_id
+            targets.append(PetTarget(
+                id=f"dictation:dictation-row:{word_id}",
+                kind=PetTargetKind.SURFACE,
+                rect=PetRect(canvas_left, top, canvas_right - canvas_left, bottom - top),
+            ))
+            left = max(canvas_left, canvas_left + selection_left - content_left)
+            right = min(canvas_right, canvas_left + selection_left + selection_width - content_left)
+            if right > left:
+                targets.append(PetTarget(
+                    id=f"dictation:dictation-selection:{word_id}",
+                    kind=PetTargetKind.CONTROL,
+                    rect=PetRect(left, top, right - left, bottom - top),
+                ))
+        return tuple(targets)
+
+    def _schedule_pet_target_refresh(self) -> None:
+        if self._pet_refresh_after_id is not None:
+            return
+        try:
+            self._pet_refresh_after_id = self.after_idle(self._refresh_pet_targets)
+        except tk.TclError:
+            self._pet_refresh_after_id = None
+
+    def _refresh_pet_targets(self) -> None:
+        self._pet_refresh_after_id = None
+        if self._pet_overlay is not None:
+            self._pet_targets = self._collect_pet_targets()
+
+    def _pet_tick(self) -> None:
+        self._pet_tick_after_id = None
+        overlay = self._pet_overlay
+        if overlay is None:
+            return
+        try:
+            if self._dialog_pet_stack:
+                overlay.withdraw()
+                self._pet_tick_after_id = self.after(50, self._pet_tick)
+                return
+            # Geometry can change without resizing the root (scrolling, lazy rows,
+            # pack/forget), so animation consumes a fresh visible target snapshot.
+            self._pet_targets = self._collect_pet_targets()
+            state = self.pet_companion.tick(self._pet_targets, self._pet_viewport())
+            width, height = overlay.sprite_size
+            overlay.place(
+                x=round(state.position.x - width / 2),
+                y=round(state.position.y - height / 2),
+                width=width,
+                height=height,
+            )
+            overlay.lift()
+            self._pet_tick_after_id = self.after(50, self._pet_tick)
+        except tk.TclError:
+            self._pet_tick_after_id = None
+
+    def _pet_pointer(self, event) -> PetPoint:
+        return PetPoint(
+            float(event.x_root - self.winfo_rootx()),
+            float(event.y_root - self.winfo_rooty()),
+        )
+
+    def _pet_press(self, event) -> None:
+        pointer = self._pet_pointer(event)
+        state = self.pet_companion.state
+        self._pet_drag_offset = PetPoint(state.position.x - pointer.x, state.position.y - pointer.y)
+        self.pet_companion.drag_start(state.position)
+
+    def _pet_move(self, event) -> None:
+        pointer = self._pet_pointer(event)
+        self.pet_companion.drag_move(
+            PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
+            self._pet_viewport(),
+        )
+
+    def _pet_release(self, event) -> None:
+        pointer = self._pet_pointer(event)
+        self.pet_companion.drag_move(
+            PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
+            self._pet_viewport(),
+        )
+        self.pet_companion.drag_release()
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -1035,6 +1529,9 @@ class LexiTrackApp(tk.Tk):
                 highlightthickness=0,
                 indicatoron=True,
             )
+            # This widget is virtualized and recreated as the table scrolls;
+            # entry.word_id keeps its pet target identity stable across redraws.
+            checkbox.pet_target_id = f"dictation-selection:{entry.word_id}"
             checkbox.bind("<MouseWheel>", self._on_dictation_table_mousewheel, add="+")
             checkbox.bind("<Shift-MouseWheel>", self._on_dictation_table_mousewheel, add="+")
             self.dictation_table_canvas.create_window(
@@ -1210,6 +1707,7 @@ class LexiTrackApp(tk.Tk):
             dialog.destroy()
         self._primary_button(buttons, "确定选择", lambda: finish(True), width=10).pack(side=tk.LEFT, padx=6)
         self._outline_button(buttons, "返回选择", lambda: finish(False), width=10).pack(side=tk.LEFT, padx=6)
+        self._attach_pet_to_dialog(dialog, "dictation-confirm")
         self.wait_window(dialog)
         return result["value"]
 
@@ -1309,6 +1807,7 @@ class LexiTrackApp(tk.Tk):
         )
         download_button.pack(side=tk.RIGHT)
         self._outline_button(actions, "返回修改", preview.destroy, width=10).pack(side=tk.RIGHT, padx=8)
+        self._attach_pet_to_dialog(preview, "dictation-preview")
 
     def download_dictation(self):
         document = self.dictation_document
@@ -1374,6 +1873,7 @@ class LexiTrackApp(tk.Tk):
             dialog.destroy()
         self._primary_button(buttons, "标记", lambda: finish(True), width=8).pack(side=tk.LEFT, padx=6)
         self._outline_button(buttons, "不标记", lambda: finish(False), width=8).pack(side=tk.LEFT, padx=6)
+        self._attach_pet_to_dialog(dialog, "dictation-mark")
         self.wait_window(dialog)
 
     def _resize_study_answer(self, event):
@@ -1711,6 +2211,9 @@ class LexiTrackApp(tk.Tk):
 
     def show_page(self, key: str):
         self.word_bubbles.clear()
+        if self.current_page and self.current_page != key:
+            self.pet_companion.navigate()
+            self._pet_targets = ()
         if key != "dictation":
             self._cancel_dictation_loading()
         if self.current_page:
@@ -1733,6 +2236,7 @@ class LexiTrackApp(tk.Tk):
             self.refresh_analytics()
         elif key == "reminder":
             self._refresh_word_reminder_status()
+        self._schedule_pet_target_refresh()
 
     def _begin_dictation_loading(self) -> None:
         self._cancel_dictation_loading()
@@ -2085,6 +2589,7 @@ class LexiTrackApp(tk.Tk):
         self._outline_button(action_inner, "知道了", self._dismiss_word_reminder, width=8).pack(side=tk.RIGHT)
         actions.pack_configure(before=content)
         popup.protocol("WM_DELETE_WINDOW", self._dismiss_word_reminder)
+        self._attach_pet_to_dialog(popup, "word-reminder")
         try:
             self.bell()
         except tk.TclError:
@@ -2161,6 +2666,7 @@ class LexiTrackApp(tk.Tk):
             tree.insert("", tk.END, values=(issue.row, "跳过" if issue.status == "skipped" else "失败", issue.field, issue.error_code, issue.message))
         tree.pack(fill=tk.BOTH, expand=True)
         self._primary_button(dialog, "关闭", dialog.destroy, width=9).pack(anchor="e", padx=24, pady=(0, 20))
+        self._attach_pet_to_dialog(dialog, "csv-import-report")
 
     def batch_edit_labels(self):
         selected = self.library_tree.selection()
@@ -2203,6 +2709,7 @@ class LexiTrackApp(tk.Tk):
         actions.pack(side=tk.BOTTOM, fill=tk.X, pady=16)
         self._primary_button(actions, "保存标签", save, width=10).pack(side=tk.RIGHT, padx=24)
         self._outline_button(actions, "取消", dialog.destroy, width=8).pack(side=tk.RIGHT)
+        self._attach_pet_to_dialog(dialog, "batch-labels")
 
     def set_forecast_days(self, days: int):
         self.forecast_days = days
@@ -2315,14 +2822,129 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     except tk.TclError:
         pass
     app.update()
+    if app._pet_overlay is not None:
+        try:
+            app._pet_overlay.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+    app._refresh_pet_targets()
+    pet_overlay_ready = bool(
+        app._pet_overlay is not None
+        and app._pet_overlay.sprite_size[0] > 0
+        and app._pet_overlay.sprite_size[1] > 0
+    )
+    pet_target_kinds = {target.kind for target in app._pet_targets}
+    pet_targets_ready = {
+        PetTargetKind.CONTROL,
+        PetTargetKind.SURFACE,
+        PetTargetKind.CHART,
+        PetTargetKind.EDGE,
+    }.issubset(pet_target_kinds) and any(
+        target.kind == PetTargetKind.CHART and target.path
+        for target in app._pet_targets
+    )
+    chart_target_ids = {
+        target.id for target in app._pet_targets if target.kind == PetTargetKind.CHART
+    }
+    pet_chart_border_ready = any(
+        target.kind == PetTargetKind.SURFACE
+        and target.id.removesuffix(":border") in chart_target_ids
+        for target in app._pet_targets
+    )
+    pet_dialog_overlay_ready = False
+    if app._pet_image is not None:
+        first_dialog = tk.Toplevel(app)
+        first_dialog.geometry("360x220")
+        first_dialog.configure(bg=BG)
+        first_surface = app._card(first_dialog)
+        first_surface.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        app._primary_button(first_surface, "确认", lambda: None).pack(pady=50)
+        app._attach_pet_to_dialog(first_dialog, "smoke-dialog-first")
+        app.update_idletasks()
+        app.update()
+        first_runtime = app._dialog_pet_runtimes.get(first_dialog)
+        first_is_only_visible_pet = bool(
+            first_runtime is not None
+            and first_runtime.overlay.winfo_viewable()
+            and app._pet_overlay is not None
+            and app._pet_overlay.state() == "withdrawn"
+        )
+        dialog_targets = app._collect_dialog_pet_targets(first_dialog, "smoke-dialog-first")
+        dialog_viewport = app._pet_viewport_for(first_dialog)
+        dialog_target_kinds = {target.kind for target in dialog_targets}
+        targets_ready = bool(
+            {
+                PetTargetKind.CONTROL,
+                PetTargetKind.SURFACE,
+                PetTargetKind.EDGE,
+            }.issubset(dialog_target_kinds)
+            and all(
+                0 <= target.rect.left <= target.rect.right <= dialog_viewport.right
+                and 0 <= target.rect.top <= target.rect.bottom <= dialog_viewport.bottom
+                for target in dialog_targets
+            )
+        )
+
+        second_dialog = tk.Toplevel(app)
+        second_dialog.geometry("320x180")
+        second_dialog.configure(bg=BG)
+        second_surface = app._card(second_dialog)
+        second_surface.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        app._primary_button(second_surface, "继续", lambda: None).pack(pady=32)
+        app._attach_pet_to_dialog(second_dialog, "smoke-dialog-second")
+        app.update_idletasks()
+        app.update()
+        second_runtime = app._dialog_pet_runtimes.get(second_dialog)
+        second_is_only_visible_pet = bool(
+            first_runtime is not None
+            and first_runtime.overlay.state() == "withdrawn"
+            and second_runtime is not None
+            and second_runtime.overlay.winfo_viewable()
+            and app._pet_overlay is not None
+            and app._pet_overlay.state() == "withdrawn"
+            and app._dialog_pet_stack == [first_dialog, second_dialog]
+        )
+
+        second_dialog.destroy()
+        app.update_idletasks()
+        app.update()
+        first_restored = bool(
+            second_dialog not in app._dialog_pet_runtimes
+            and first_runtime is not None
+            and first_runtime.overlay.winfo_viewable()
+            and app._pet_overlay is not None
+            and app._pet_overlay.state() == "withdrawn"
+            and app._dialog_pet_stack == [first_dialog]
+        )
+
+        first_dialog.destroy()
+        app.update_idletasks()
+        app.update()
+        pet_dialog_overlay_ready = bool(
+            first_is_only_visible_pet
+            and targets_ready
+            and second_is_only_visible_pet
+            and first_restored
+            and first_dialog not in app._dialog_pet_runtimes
+            and not app._dialog_pet_stack
+            and app._pet_overlay is not None
+            and app._pet_overlay.winfo_viewable()
+        )
+    app.show_page("study")
+    pet_navigation_ready = app.pet_companion.state.mode == PetMode.FALL
+    app.update()
     visited = []
     dictation_table_ready = False
     dictation_horizontal_scrollbar_ready = False
     dictation_horizontal_scroll_sync = False
     dictation_checkbox_ready = False
+    dictation_pet_target_stability_ready = False
     dictation_download_entry_ready = False
+    pet_control_coverage_ready = True
+    pet_control_classes_seen: set[str] = set()
     reminder_filters_ready = False
     reminder_popup_ready = False
+    reminder_popup_pet_ready = False
     reminder_popup_examples_scrollable = False
     reminder_popup_wheel_scroll = False
     reminder_popup_only_examples_wheel = False
@@ -2333,6 +2955,15 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         app._complete_dictation_loading()
         app.update()
         visited.append(page)
+        app._refresh_pet_targets()
+        target_ids = {target.id for target in app._pet_targets}
+        for widget in app._walk_pet_widgets(app.pages[page]):
+            if widget.winfo_class() not in PET_CONTROL_CLASSES:
+                continue
+            target = app._pet_widget_target(widget, page)
+            if target is not None:
+                pet_control_classes_seen.add(widget.winfo_class())
+                pet_control_coverage_ready = pet_control_coverage_ready and target.id in target_ids
         if page == "dictation":
             app.dictation_mode_var.set("manual")
             app._refresh_visible_dictation_checkboxes()
@@ -2355,6 +2986,39 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             dictation_horizontal_scroll_sync = (
                 after_header[0] > before_header[0]
                 and after_body[0] > before_body[0]
+            )
+            app._scroll_dictation_horizontally("moveto", 0)
+            # The selection column is horizontally scrollable, so expose it
+            # before validating its semantic targets across vertical redraws.
+            app._scroll_dictation_horizontally("moveto", 1)
+            app.update_idletasks()
+            app.update()
+            app._refresh_pet_targets()
+            selection_prefix = "dictation:dictation-selection:"
+            before_pet_ids = {
+                target.id.removeprefix(selection_prefix): target.id
+                for target in app._pet_targets
+                if target.id.startswith(selection_prefix)
+            }
+            app._scroll_dictation_vertically("scroll", 3, "units")
+            app.update_idletasks()
+            app.update()
+            app._refresh_pet_targets()
+            app._scroll_dictation_vertically("moveto", 0)
+            app.update_idletasks()
+            app.update()
+            after_pet_ids = {
+                target.id.removeprefix(selection_prefix): target.id
+                for target in app._pet_targets
+                if target.id.startswith(selection_prefix)
+            }
+            shared_word_ids = set(before_pet_ids) & set(after_pet_ids)
+            dictation_pet_target_stability_ready = not app.dictation_candidates or (
+                bool(shared_word_ids)
+                and all(
+                    before_pet_ids[word_id] == after_pet_ids[word_id]
+                    for word_id in shared_word_ids
+                )
             )
             app._scroll_dictation_horizontally("moveto", 0)
             visible_checkboxes = list(app.dictation_selection_checkboxes.values())
@@ -2386,6 +3050,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     word_bubble_known_ready = False
     word_bubble_size_ready = False
     word_bubble_close_ready = False
+    word_bubble_pet_ready = False
     app.word_bubbles.open_from_token(-1, "a", "A conference in Tokyo.", 400, 300)
     for _ in range(3):
         app.update_idletasks()
@@ -2401,11 +3066,17 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         word_bubble_known_ready = sum(
             1 for text in label_texts if re.search(r"[\u3400-\u9fff]", str(text))
         ) >= 3
+        bubble_pet_runtime = app._dialog_pet_runtimes.get(popup)
+        word_bubble_pet_ready = bool(
+            bubble_pet_runtime is not None
+            and bubble_pet_runtime.overlay.winfo_viewable()
+        )
         app.word_bubbles._close_current(0)
         for _ in range(2):
             app.update_idletasks()
             app.update()
         word_bubble_close_ready = not any(window.winfo_exists() for window in app.word_bubbles._windows)
+        word_bubble_pet_ready = word_bubble_pet_ready and popup not in app._dialog_pet_runtimes
         app.word_bubbles.clear()
     app.change_font_scale("140")
     for _ in range(3):
@@ -2419,6 +3090,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     reminder_examples_view = app._word_reminder_examples_view
     if reminder_popup is not None and reminder_examples_view is not None:
         reminder_popup_ready = bool(reminder_popup.winfo_exists() and reminder_examples_view.winfo_ismapped())
+        reminder_pet_runtime = app._dialog_pet_runtimes.get(reminder_popup)
+        reminder_popup_pet_ready = bool(
+            reminder_pet_runtime is not None
+            and reminder_pet_runtime.overlay.winfo_viewable()
+        )
         reminder_popup_size = [reminder_popup.winfo_width(), reminder_popup.winfo_height()]
         reminder_popup_resizable = tuple(int(value) for value in reminder_popup.resizable()) == (0, 0)
         reminder_popup_fixed_limits = (
@@ -2457,6 +3133,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         popup_yview_after,
     )
     app._dismiss_word_reminder()
+    reminder_popup_pet_ready = (
+        reminder_popup_pet_ready
+        and reminder_popup not in app._dialog_pet_runtimes
+    )
     app.change_font_scale(str(original_font_scale * 100))
     for _ in range(3):
         app.update_idletasks()
@@ -2721,6 +3401,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and review_header_ready
             and reminder_filters_ready
             and reminder_popup_ready
+            and reminder_popup_pet_ready
             and reminder_popup_resizable
             and reminder_popup_fixed_limits
             and reminder_popup_scroll_contract_ready
@@ -2732,14 +3413,43 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and dictation_horizontal_scrollbar_ready
             and dictation_horizontal_scroll_sync
             and dictation_checkbox_ready
+            and dictation_pet_target_stability_ready
             and dictation_download_entry_ready
+            and pet_overlay_ready
+            and pet_targets_ready
+            and pet_chart_border_ready
+            and pet_dialog_overlay_ready
+            and word_bubble_pet_ready
+            and pet_navigation_ready
+            and pet_control_coverage_ready
+            and all(
+                pet_control_classes_seen & alternatives
+                for alternatives in (
+                    {"Button", "TButton"},
+                    {"Entry", "TEntry"},
+                    {"Checkbutton", "TCheckbutton"},
+                    {"Radiobutton", "TRadiobutton"},
+                    {"Scale", "TScale"},
+                    {"Spinbox", "TSpinbox"},
+                    {"Scrollbar", "TScrollbar"},
+                    {"Treeview"},
+                )
+            )
         ),
         "pages": visited,
         "dictationTableReady": dictation_table_ready,
         "dictationHorizontalScrollbarReady": dictation_horizontal_scrollbar_ready,
         "dictationHorizontalScrollSync": dictation_horizontal_scroll_sync,
         "dictationCheckboxReady": dictation_checkbox_ready,
+        "dictationPetTargetStabilityReady": dictation_pet_target_stability_ready,
         "dictationDownloadEntryReady": dictation_download_entry_ready,
+        "petOverlayReady": pet_overlay_ready,
+        "petTargetsReady": pet_targets_ready,
+        "petChartBorderReady": pet_chart_border_ready,
+        "petDialogOverlayReady": pet_dialog_overlay_ready,
+        "petNavigationReady": pet_navigation_ready,
+        "petControlCoverageReady": pet_control_coverage_ready,
+        "petControlClasses": sorted(pet_control_classes_seen),
         "catalogCount": app.catalog_count,
         "studyCardReady": app.current_card is None or len(app.current_card.examples) >= 3,
         "fontScale": app.service.font_scale(),
@@ -2780,9 +3490,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "wordBubbleKnownReady": word_bubble_known_ready,
         "wordBubbleSizeReady": word_bubble_size_ready,
         "wordBubbleCloseReady": word_bubble_close_ready,
+        "wordBubblePetReady": word_bubble_pet_ready,
         "reviewHeaderReady": review_header_ready,
         "reminderFiltersReady": reminder_filters_ready,
         "reminderPopupReady": reminder_popup_ready,
+        "reminderPopupPetReady": reminder_popup_pet_ready,
         "reminderPopupSize": reminder_popup_size,
         "reminderPopupResizable": reminder_popup_resizable,
         "reminderPopupFixedLimits": reminder_popup_fixed_limits,
