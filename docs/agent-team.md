@@ -35,7 +35,14 @@ in sync.
 Recorded in `CLAUDE.md` and `CODEBASE_ONBOARDING.md`. As of now they include:
 review reminder auto-clearing from the dashboard, centered/enlarged review
 start button, dictation row-click and drag-range multi-select, dictation
-preview wheel paging, and the recursive word bubble fixes below.
+preview wheel paging, the recursive word bubble fixes below, and the library
+group browser (`vocabulary-groups-v1`): entering 词库 shows the wordbook groups
+first (全部, CET-4, CET-6, 中考/zk, 高考/gk, 自定义), then a group opens its words
+while preserving all existing library features. The same layering applies to
+the 默写纸, whose former top 四级/六级/自定义 checkboxes are removed; the group
+browser is the single scope chooser for both 随机填写 (tap a group/all to set
+the sample scope) and 从词库选择 (open a group to tick its words, persisting
+selections across groups).
 
 ## Current word-bubble cross-platform contract
 

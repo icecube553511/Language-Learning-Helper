@@ -247,6 +247,45 @@ class LearningUseCasesTest {
         assertEquals(listOf(0, 0, 0, 1, 0, 0, 0), forecast().map { it.count })
     }
 
+    @Test
+    fun `library groups are canonical ordered with counts`() {
+        val vocab = FakeVocabularyRepository(
+            listOf(
+                word("adapt").copy(levels = setOf("CET4"), tags = setOf("gk")),
+                word("abandon").copy(levels = setOf("CET6"), tags = setOf("zk")),
+                word("zephyr").copy(levels = setOf("CET4", "CET6")),
+                word("myword").copy(levels = setOf("CUSTOM")),
+            ),
+        )
+        val groups = LibraryGroupsUseCase(vocab)()
+        assertEquals(listOf("all", "cet4", "cet6", "zk", "gk", "custom"), groups.map { it.key })
+        assertEquals(
+            mapOf("all" to 4, "cet4" to 2, "cet6" to 2, "zk" to 1, "gk" to 1, "custom" to 1),
+            groups.associate { it.key to it.count },
+        )
+        assertEquals("CET-4（四级）", groups.first { it.key == "cet4" }.label)
+    }
+
+    @Test
+    fun `words in group and within group search`() {
+        val vocab = FakeVocabularyRepository(
+            listOf(
+                word("adapt").copy(levels = setOf("CET4"), tags = setOf("gk")),
+                word("abandon").copy(levels = setOf("CET6"), tags = setOf("zk")),
+                word("zephyr").copy(levels = setOf("CET4", "CET6")),
+                word("myword").copy(levels = setOf("CUSTOM")),
+            ),
+        )
+        val useCase = WordsInGroupUseCase(vocab)
+        assertEquals(4, useCase("all").size)
+        assertEquals(setOf("adapt", "zephyr"), useCase("cet4").map { it.id }.toSet())
+        assertEquals(listOf("adapt"), useCase("gk").map { it.id })
+        assertEquals(listOf("myword"), useCase("custom").map { it.id })
+        assertEquals(listOf("abandon"), useCase("zk", "aband").map { it.id })
+        assertEquals(listOf("zephyr"), useCase("all", "zeph").map { it.id })
+        assertEquals(emptyList(), useCase("missing"))
+    }
+
     private fun word(id: String) = VocabularyEntry(
         id = id,
         word = id,

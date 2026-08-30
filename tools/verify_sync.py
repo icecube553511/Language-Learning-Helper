@@ -5,6 +5,7 @@ import json
 import math
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -287,6 +288,87 @@ def verify_pet_contract() -> None:
         or branding.get("petRuntimeImageLeft") != payload.get("runtimeAssetLeft")
     ):
         fail("Parity and pet golden asset paths differ")
+GROUP_ORDER = ["all", "cet4", "cet6", "zk", "gk", "custom"]
+GROUP_RULES = [
+    ("cet4", {"CET4"}, {"cet4"}),
+    ("cet6", {"CET6"}, {"cet6"}),
+    ("zk", {"ZK"}, {"zk"}),
+    ("gk", {"GK"}, {"gk"}),
+]
+
+
+def normalize_group_membership(code: str) -> str:
+    normalized = unicodedata.normalize("NFKC", code.strip()).upper()
+    return "".join(ch for ch in normalized if ch not in " -_.")
+
+
+def normalize_group_tag(tag: str) -> str:
+    return unicodedata.normalize("NFKC", tag.strip()).casefold()
+
+
+def classify_vocabulary_groups(memberships, tags) -> list[str]:
+    levels = {normalize_group_membership(value) for value in memberships}
+    normalized_tags = {normalize_group_tag(value) for value in tags}
+    result = {"all"}
+    for key, level_codes, tag_codes in GROUP_RULES:
+        if (levels & level_codes) or (normalized_tags & tag_codes):
+            result.add(key)
+    if "CUSTOM" in levels:
+        result.add("custom")
+    return sorted(result)
+
+
+def verify_vocabulary_groups_contract() -> None:
+    contract_path = CONTRACTS / "vocabulary-groups-v1.md"
+    golden_path = CONTRACTS / "vocabulary-groups-golden-v1.json"
+    if not contract_path.is_file() or "vocabulary-groups-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Vocabulary groups contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Vocabulary groups golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "vocabulary-groups-v1":
+        fail("Vocabulary groups golden version differs from the shared contract")
+
+    order = list(payload.get("groupOrder", []))
+    labels = payload.get("groupLabels", {})
+    if not order or order[0] != "all":
+        fail("Vocabulary groups must order the 'all' group first")
+    if not all(code in labels for code in order):
+        fail("Every canonical vocabulary group must have a display label")
+    if labels.get("all") != "全部":
+        fail("The 'all' group label must be 全部")
+
+    for raw, expected in payload.get("normalize", {}).items():
+        if normalize_group_membership(raw) != expected:
+            fail(f"Vocabulary group membership normalization differs for {raw!r}")
+
+    counts = dict.fromkeys(order, 0)
+    for fixture in payload.get("fixtures", []):
+        fid = str(fixture.get("id", ""))
+        if not fid:
+            fail("Vocabulary groups fixture has a blank id")
+        expected_groups = sorted(str(value) for value in fixture.get("expectedGroups", []))
+        actual = classify_vocabulary_groups(fixture.get("memberships", []), fixture.get("tags", []))
+        if actual != expected_groups:
+            fail(f"Vocabulary group classifier diverges for {fid}: {actual} != {expected_groups}")
+        for key in actual:
+            counts[key] += 1
+
+    expected_counts = payload.get("expected", {}).get("groupCounts", {})
+    if counts != expected_counts:
+        fail(f"Vocabulary group counts differ from the golden vector: {counts} != {expected_counts}")
+    if counts.get("all", 0) != len(payload.get("fixtures", [])):
+        fail("Vocabulary groups 'all' count must equal the fixture count")
+
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("vocabularyGroupsVersion") != "vocabulary-groups-v1":
+        fail("Parity manifest does not declare vocabulary-groups-v1")
+    if parity.get("capabilities", {}).get("vocabularyGroupBrowser") != "ready":
+        fail("Parity manifest does not declare vocabularyGroupBrowser ready")
+    if parity.get("capabilities", {}).get("dictationGroupSelection") != "ready":
+        fail("Parity manifest does not declare dictationGroupSelection ready")
+    if "Dictation manual word selection" not in contract_path.read_text(encoding="utf-8"):
+        fail("Vocabulary groups contract must govern the dictation manual word selection")
 
 
 def verify_catalog() -> None:
@@ -303,6 +385,7 @@ def verify_catalog() -> None:
         fail("Manifest word count is stale")
     ids: set[str] = set()
     membership_counts = {"CET4": 0, "CET6": 0}
+    allowed_memberships = {"CET4", "CET6", "ZK", "GK"}
     for item in catalog:
         entry_id = item.get("id", "")
         if not entry_id or entry_id in ids:
@@ -315,9 +398,10 @@ def verify_catalog() -> None:
         if not memberships:
             fail(f"Missing membership: {entry_id}")
         for membership in memberships:
-            if membership not in membership_counts:
+            if membership not in allowed_memberships:
                 fail(f"Invalid membership {membership}: {entry_id}")
-            membership_counts[membership] += 1
+            if membership in membership_counts:
+                membership_counts[membership] += 1
         examples = item.get("examples", [])
         if len(examples) < 3:
             fail(f"Fewer than three examples: {entry_id}")
@@ -390,7 +474,15 @@ def verify_platform_markers() -> None:
         if not marker_path.exists():
             fail(f"Missing platform marker: {marker_path.relative_to(ROOT)}")
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "wordBubbleVersion", "petCompanionVersion", "contentVersion"):
+        for key in (
+            "releaseVersion",
+            "schemaVersion",
+            "algorithmVersion",
+            "wordBubbleVersion",
+            "petCompanionVersion",
+            "vocabularyGroupsVersion",
+            "contentVersion",
+        ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         for key in ("branding", "petCompanion", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
@@ -406,6 +498,7 @@ def main() -> int:
     verify_dictation_contract()
     verify_word_bubble_contract()
     verify_pet_contract()
+    verify_vocabulary_groups_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()

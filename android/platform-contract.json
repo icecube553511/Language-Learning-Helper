@@ -4,6 +4,7 @@
   "algorithmVersion": "lexi-sm2-v1",
   "wordBubbleVersion": "word-bubble-v1",
   "petCompanionVersion": "pet-companion-v1",
+  "vocabularyGroupsVersion": "vocabulary-groups-v1",
   "contentVersion": "cet-2026.08-v2",
   "branding": {
     "appImage": "shared/assets/branding/app_image.png",
@@ -59,7 +60,9 @@
     "dictationManualSelectionTable": "ready",
     "programTagOverrides": "ready",
     "wordBubbleInteraction": "ready",
-    "petCompanionInteraction": "ready"
+    "petCompanionInteraction": "ready",
+    "vocabularyGroupBrowser": "ready",
+    "dictationGroupSelection": "ready"
   },
   "platforms": ["windows", "android"]
 }
