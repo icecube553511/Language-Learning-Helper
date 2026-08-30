@@ -140,6 +140,7 @@ import com.lexitrack.learning.domain.VocabularyEntry
 import com.lexitrack.learning.domain.BubbleDefinition
 import com.lexitrack.learning.domain.BubbleStack
 import com.lexitrack.learning.domain.PetMode
+import com.lexitrack.learning.domain.PetFacing
 import com.lexitrack.learning.domain.PetPoint
 import com.lexitrack.learning.domain.PetRect
 import com.lexitrack.learning.domain.PetState
@@ -151,6 +152,7 @@ import com.lexitrack.learning.domain.moveDrag
 import com.lexitrack.learning.domain.nearestPetTarget
 import com.lexitrack.learning.domain.onNavigation
 import com.lexitrack.learning.domain.releaseDrag
+import com.lexitrack.learning.domain.PET_CRUISE_SPEED
 import com.lexitrack.learning.domain.tokenizeEnglish
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -191,6 +193,9 @@ private val LocalDismissWordBubbles = staticCompositionLocalOf<() -> Unit> { {} 
 private val LocalRegisterPetTarget = staticCompositionLocalOf<(PetTarget) -> Unit> { {} }
 private val LocalRegisterPetWindow = staticCompositionLocalOf<(Any, Boolean) -> Unit> { { _, _ -> } }
 private val LocalActivePetWindowKey = staticCompositionLocalOf<Any?> { null }
+
+internal const val PET_DISPLAY_SIZE_DP = 112
+internal const val PET_TICK_MS = 16L
 
 private fun Rect.toPetRect(): PetRect = PetRect(left, top, width, height)
 
@@ -241,7 +246,7 @@ private fun PetOverlay(
     onPointerActiveChange: (Boolean) -> Unit,
     visible: Boolean = true,
 ) {
-    val petSize = 82.dp
+    val petSize = PET_DISPLAY_SIZE_DP.dp
     val halfSize = with(LocalDensity.current) { petSize.toPx() / 2f }
     var state by remember {
         mutableStateOf(PetState(PetPoint(halfSize + 12f, halfSize + 96f)))
@@ -252,7 +257,6 @@ private fun PetOverlay(
             emptyList()
         } else {
             listOf(
-                PetTarget("edge:top", PetTargetKind.EDGE, PetRect(0f, 0f, viewport.width, 1f)),
                 PetTarget("edge:right", PetTargetKind.EDGE, PetRect(viewport.right - 1f, 0f, 1f, viewport.height)),
                 PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0f, viewport.bottom - 1f, viewport.width, 1f)),
                 PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0f, 0f, 1f, viewport.height)),
@@ -271,21 +275,23 @@ private fun PetOverlay(
     }
     LaunchedEffect(viewport, activeTargets, halfSize) {
         while (true) {
-            delay(50)
+            delay(PET_TICK_MS)
             if (viewport.width > 0f && viewport.height > 0f) {
                 state = advancePet(
                     state = state,
                     targets = activeTargets,
                     viewport = viewport,
                     halfSize = halfSize,
-                    step = 6f,
+                    step = PET_CRUISE_SPEED,
                 )
             }
         }
     }
     if (!visible) return
     Image(
-        painter = painterResource(R.drawable.bingzi),
+        painter = painterResource(
+            if (state.facing == PetFacing.LEFT) R.drawable.bingzi_left else R.drawable.bingzi,
+        ),
         contentDescription = "冰子",
         modifier = Modifier
             .zIndex(20f)
@@ -299,15 +305,25 @@ private fun PetOverlay(
             .scale(if (state.mode == PetMode.FALL) 0.96f else 1f)
             .pointerInput(viewport, halfSize) {
                 detectDragGestures(
-                    onDragStart = {
+                    onDragStart = { localOffset ->
                         onPointerActiveChange(true)
-                        state = beginDrag(state, state.position)
+                        state = beginDrag(
+                            state,
+                            PetPoint(
+                                state.position.x - halfSize + localOffset.x,
+                                state.position.y - halfSize + localOffset.y,
+                            ),
+                        )
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
+                        val grabOffset = state.dragOffset ?: PetPoint(0f, 0f)
                         state = moveDrag(
                             state,
-                            PetPoint(state.position.x + dragAmount.x, state.position.y + dragAmount.y),
+                            PetPoint(
+                                state.position.x + grabOffset.x + dragAmount.x,
+                                state.position.y + grabOffset.y + dragAmount.y,
+                            ),
                             viewport,
                             halfSize,
                         )

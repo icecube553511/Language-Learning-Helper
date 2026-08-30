@@ -852,8 +852,18 @@ class PetOverlay(tk.Toplevel):
 
     TRANSPARENT_KEY = "#ff00ff"
 
-    def __init__(self, parent: tk.Misc, image: tk.PhotoImage, on_press, on_move, on_release):
+    def __init__(
+        self,
+        parent: tk.Misc,
+        image: tk.PhotoImage,
+        on_press,
+        on_move,
+        on_release,
+        *,
+        display_size: int,
+    ):
         self._pet_image = image
+        self._display_size = max(1, display_size)
         super().__init__(parent)
         self.withdraw()
         self.overrideredirect(True)
@@ -866,6 +876,8 @@ class PetOverlay(tk.Toplevel):
         self._sprite = tk.Label(
             self,
             image=image,
+            width=self._display_size,
+            height=self._display_size,
             bg=self.TRANSPARENT_KEY,
             bd=0,
             highlightthickness=0,
@@ -884,11 +896,17 @@ class PetOverlay(tk.Toplevel):
 
     @property
     def sprite_size(self) -> tuple[int, int]:
-        return self._pet_image.width(), self._pet_image.height()
+        return self._display_size, self._display_size
+
+    def set_image(self, image: tk.PhotoImage) -> None:
+        if image is self._pet_image:
+            return
+        self._pet_image = image
+        self._sprite.configure(image=image)
 
     def place(self, *, x: int, y: int, width: int | None = None, height: int | None = None) -> None:
-        width = width or self._pet_image.width()
-        height = height or self._pet_image.height()
+        width = width or self._display_size
+        height = height or self._display_size
         root_x = self.master.winfo_rootx() + x
         root_y = self.master.winfo_rooty() + y
         self.geometry(f"{width}x{height}+{root_x}+{root_y}")

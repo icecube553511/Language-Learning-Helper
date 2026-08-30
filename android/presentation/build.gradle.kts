@@ -7,9 +7,11 @@ plugins {
 }
 
 val preparePetAsset by tasks.registering(Copy::class) {
-    from(rootProject.file("../shared/assets/pets/bingzi.png"))
+    from(rootProject.file("../shared/assets/pets")) {
+        include("bingzi.png", "bingzi-left.png")
+        rename("bingzi-left.png", "bingzi_left.png")
+    }
     into(layout.buildDirectory.dir("generated/pet-res/drawable"))
-    rename { "bingzi.png" }
 }
 
 android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/pet-res"))

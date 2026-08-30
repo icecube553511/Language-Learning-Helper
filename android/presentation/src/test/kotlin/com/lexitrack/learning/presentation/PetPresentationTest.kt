@@ -10,6 +10,12 @@ import org.junit.Test
 
 class PetPresentationTest {
     @Test
+    fun `pet presentation uses the shared logical size and tick rate`() {
+        assertEquals(112, PET_DISPLAY_SIZE_DP)
+        assertEquals(16L, PET_TICK_MS)
+    }
+
+    @Test
     fun `registry prefixes live targets and removes disposed targets`() {
         val registry = linkedMapOf<String, PetTarget>()
         val target = PetTarget("search", PetTargetKind.CONTROL, PetRect(10f, 20f, 100f, 40f))

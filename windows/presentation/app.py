@@ -14,7 +14,11 @@ from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
 from domain.pet_companion import (
+    CRUISE_SPEED,
+    PET_DISPLAY_SIZE,
+    PET_TICK_MS,
     PetCompanion,
+    PetFacing,
     PetMode,
     PetPoint,
     PetRect,
@@ -238,6 +242,7 @@ class LexiTrackApp(tk.Tk):
         catalog_rejected: int = 0,
         catalog_error: str = "",
         pet_asset_path: Path | None = None,
+        pet_asset_left_path: Path | None = None,
     ):
         super().__init__()
         self.service = service
@@ -246,6 +251,7 @@ class LexiTrackApp(tk.Tk):
         self.catalog_rejected = catalog_rejected
         self.catalog_error = catalog_error
         self.pet_asset_path = pet_asset_path
+        self.pet_asset_left_path = pet_asset_left_path
         self.title("LexiTrack 词程")
         self.geometry("1220x800")
         self.minsize(960, 700)
@@ -277,7 +283,13 @@ class LexiTrackApp(tk.Tk):
         self.dictation_selected_ids: set[str] = set()
         self._dictation_loading: DictationLoadingOverlay | None = None
         self._dictation_loading_after_id: str | None = None
-        self.pet_companion = PetCompanion(PetState(PetPoint(120.0, 120.0)), speed=7.0, pet_size=28.0)
+        self.pet_companion = PetCompanion(
+            PetState(PetPoint(120.0, 120.0)),
+            speed=CRUISE_SPEED,
+            pet_size=PET_DISPLAY_SIZE / 2.0,
+        )
+        self._pet_image_sources: dict[PetFacing, tk.PhotoImage] = {}
+        self._pet_images: dict[PetFacing, tk.PhotoImage] = {}
         self._pet_image_source: tk.PhotoImage | None = None
         self._pet_image: tk.PhotoImage | None = None
         self._pet_overlay: PetOverlay | None = None
@@ -295,31 +307,57 @@ class LexiTrackApp(tk.Tk):
 
     def _setup_pet_overlay(self) -> None:
         """Load the injected runtime sprite and start the transient UI companion."""
-        path = self.pet_asset_path
-        if path is None or not path.is_file():
+        right_path = self.pet_asset_path
+        if right_path is None or not right_path.is_file():
             return
         try:
-            source = tk.PhotoImage(file=str(path))
-            # The source sheet is intentionally high resolution; keep a stable
-            # hit box around a small display sprite regardless of DPI scaling.
-            divisor = max(1, (max(source.width(), source.height()) + 63) // 64)
-            image = source.subsample(divisor, divisor)
+            right_source = tk.PhotoImage(file=str(right_path))
+            divisor = max(
+                1,
+                (max(right_source.width(), right_source.height()) + PET_DISPLAY_SIZE - 1)
+                // PET_DISPLAY_SIZE,
+            )
+            right_image = right_source.subsample(divisor, divisor)
+            left_source = (
+                tk.PhotoImage(file=str(self.pet_asset_left_path))
+                if self.pet_asset_left_path is not None and self.pet_asset_left_path.is_file()
+                else right_source
+            )
+            left_image = (
+                left_source.subsample(divisor, divisor)
+                if left_source is not right_source
+                else right_image
+            )
         except (tk.TclError, OSError):
             return
-        self._pet_image_source = source
-        self._pet_image = image
-        self.pet_companion.pet_size = max(image.width(), image.height()) / 2.0
+        self._pet_image_sources = {
+            PetFacing.RIGHT: right_source,
+            PetFacing.LEFT: left_source,
+        }
+        self._pet_images = {
+            PetFacing.RIGHT: right_image,
+            PetFacing.LEFT: left_image,
+        }
+        self._pet_image_source = right_source
+        self._pet_image = right_image
+        self.pet_companion.pet_size = PET_DISPLAY_SIZE / 2.0
         self._pet_overlay = PetOverlay(
             self,
-            image,
+            right_image,
             self._pet_press,
             self._pet_move,
             self._pet_release,
+            display_size=PET_DISPLAY_SIZE,
         )
         self._pet_overlay.place(x=0, y=0)
         self.bind("<Configure>", lambda _event: self._schedule_pet_target_refresh(), add="+")
         self._schedule_pet_target_refresh()
-        self._pet_tick_after_id = self.after(50, self._pet_tick)
+        self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
+
+    def _apply_pet_facing(self, overlay: PetOverlay, state: PetState) -> None:
+        image = self._pet_images.get(state.facing) or self._pet_image
+        if image is not None:
+            overlay.set_image(image)
 
     def destroy(self) -> None:
         """Stop the transient pet window before tearing down the Tk root."""
@@ -462,7 +500,6 @@ class LexiTrackApp(tk.Tk):
                 targets.append(target)
         edge_size = 3.0
         targets.extend((
-            PetTarget(f"dialog:{key}:edge:top", PetTargetKind.EDGE, PetRect(0, 0, viewport.width, edge_size)),
             PetTarget(f"dialog:{key}:edge:right", PetTargetKind.EDGE, PetRect(max(0, viewport.width - edge_size), 0, edge_size, viewport.height)),
             PetTarget(f"dialog:{key}:edge:bottom", PetTargetKind.EDGE, PetRect(0, max(0, viewport.height - edge_size), viewport.width, edge_size)),
             PetTarget(f"dialog:{key}:edge:left", PetTargetKind.EDGE, PetRect(0, 0, edge_size, viewport.height)),
@@ -476,6 +513,7 @@ class LexiTrackApp(tk.Tk):
             try:
                 if active_dialog is None:
                     state = self.pet_companion.state
+                    self._apply_pet_facing(self._pet_overlay, state)
                     width, height = self._pet_overlay.sprite_size
                     self._pet_overlay.place(
                         x=round(state.position.x - width / 2),
@@ -492,6 +530,7 @@ class LexiTrackApp(tk.Tk):
             try:
                 if dialog is active_dialog:
                     state = runtime.companion.state
+                    self._apply_pet_facing(runtime.overlay, state)
                     width, height = runtime.overlay.sprite_size
                     runtime.overlay.place(
                         x=round(state.position.x - width / 2),
@@ -510,10 +549,10 @@ class LexiTrackApp(tk.Tk):
         if dialog in self._dialog_pet_runtimes or self._pet_image is None:
             return
         dialog.update_idletasks()
-        half_size = max(self._pet_image.width(), self._pet_image.height()) / 2.0
+        half_size = PET_DISPLAY_SIZE / 2.0
         viewport = self._pet_viewport_for(dialog)
         start = viewport.clamp(PetPoint(half_size + 12.0, half_size + 12.0), half_size)
-        companion = PetCompanion(PetState(start), speed=7.0, pet_size=half_size)
+        companion = PetCompanion(PetState(start), speed=CRUISE_SPEED, pet_size=half_size)
         runtime_holder: dict[str, DialogPetRuntime] = {}
 
         def pointer(event) -> PetPoint:
@@ -547,7 +586,14 @@ class LexiTrackApp(tk.Tk):
             move(event)
             runtime_holder["runtime"].companion.drag_release()
 
-        overlay = PetOverlay(dialog, self._pet_image, press, move, release)
+        overlay = PetOverlay(
+            dialog,
+            self._pet_image,
+            press,
+            move,
+            release,
+            display_size=PET_DISPLAY_SIZE,
+        )
         runtime = DialogPetRuntime(key=key, companion=companion, overlay=overlay)
         runtime_holder["runtime"] = runtime
         self._dialog_pet_runtimes[dialog] = runtime
@@ -564,6 +610,7 @@ class LexiTrackApp(tk.Tk):
                     viewport_now = self._pet_viewport_for(dialog)
                     targets = self._collect_dialog_pet_targets(dialog, key)
                     state = companion.tick(targets, viewport_now)
+                    self._apply_pet_facing(overlay, state)
                     width, height = overlay.sprite_size
                     overlay.place(
                         x=round(state.position.x - width / 2),
@@ -574,7 +621,7 @@ class LexiTrackApp(tk.Tk):
                     overlay.lift()
                 else:
                     overlay.withdraw()
-                runtime.tick_after_id = dialog.after(50, tick)
+                runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
             except tk.TclError:
                 self._detach_pet_from_dialog(dialog)
 
@@ -583,7 +630,7 @@ class LexiTrackApp(tk.Tk):
                 self._detach_pet_from_dialog(dialog)
 
         dialog.bind("<Destroy>", on_destroy, add="+")
-        runtime.tick_after_id = dialog.after(50, tick)
+        runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
 
     def _detach_pet_from_dialog(self, dialog: tk.Toplevel) -> None:
         runtime = self._dialog_pet_runtimes.pop(dialog, None)
@@ -636,7 +683,6 @@ class LexiTrackApp(tk.Tk):
         viewport = self._pet_viewport()
         edge_size = 3.0
         targets.extend((
-            PetTarget("edge:top", PetTargetKind.EDGE, PetRect(0, 0, viewport.width, edge_size)),
             PetTarget("edge:right", PetTargetKind.EDGE, PetRect(max(0, viewport.width - edge_size), 0, edge_size, viewport.height)),
             PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0, max(0, viewport.height - edge_size), viewport.width, edge_size)),
             PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0, 0, edge_size, viewport.height)),
@@ -705,12 +751,13 @@ class LexiTrackApp(tk.Tk):
         try:
             if self._dialog_pet_stack:
                 overlay.withdraw()
-                self._pet_tick_after_id = self.after(50, self._pet_tick)
+                self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                 return
             # Geometry can change without resizing the root (scrolling, lazy rows,
             # pack/forget), so animation consumes a fresh visible target snapshot.
             self._pet_targets = self._collect_pet_targets()
             state = self.pet_companion.tick(self._pet_targets, self._pet_viewport())
+            self._apply_pet_facing(overlay, state)
             width, height = overlay.sprite_size
             overlay.place(
                 x=round(state.position.x - width / 2),
@@ -719,7 +766,7 @@ class LexiTrackApp(tk.Tk):
                 height=height,
             )
             overlay.lift()
-            self._pet_tick_after_id = self.after(50, self._pet_tick)
+            self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
         except tk.TclError:
             self._pet_tick_after_id = None
 
@@ -2830,9 +2877,27 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     app._refresh_pet_targets()
     pet_overlay_ready = bool(
         app._pet_overlay is not None
-        and app._pet_overlay.sprite_size[0] > 0
-        and app._pet_overlay.sprite_size[1] > 0
+        and app._pet_overlay.sprite_size == (PET_DISPLAY_SIZE, PET_DISPLAY_SIZE)
     )
+    pet_motion_contract_ready = bool(
+        app.pet_companion.speed == CRUISE_SPEED
+        and app.pet_companion.pet_size == PET_DISPLAY_SIZE / 2.0
+        and set(app._pet_images) == {PetFacing.LEFT, PetFacing.RIGHT}
+        and app._pet_images.get(PetFacing.LEFT) is not app._pet_images.get(PetFacing.RIGHT)
+    )
+    pet_facing_assets_ready = False
+    if app._pet_overlay is not None and pet_motion_contract_ready:
+        app._apply_pet_facing(
+            app._pet_overlay,
+            replace(app.pet_companion.state, facing=PetFacing.LEFT),
+        )
+        left_ready = app._pet_overlay._pet_image is app._pet_images[PetFacing.LEFT]
+        app._apply_pet_facing(
+            app._pet_overlay,
+            replace(app.pet_companion.state, facing=PetFacing.RIGHT),
+        )
+        right_ready = app._pet_overlay._pet_image is app._pet_images[PetFacing.RIGHT]
+        pet_facing_assets_ready = left_ready and right_ready
     pet_target_kinds = {target.kind for target in app._pet_targets}
     pet_targets_ready = {
         PetTargetKind.CONTROL,
@@ -2850,6 +2915,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         target.kind == PetTargetKind.SURFACE
         and target.id.removesuffix(":border") in chart_target_ids
         for target in app._pet_targets
+    )
+    edge_ids = {target.id for target in app._pet_targets if target.kind == PetTargetKind.EDGE}
+    pet_edge_contract_ready = bool(
+        "edge:top" not in edge_ids
+        and {"edge:left", "edge:right", "edge:bottom"}.issubset(edge_ids)
     )
     pet_dialog_overlay_ready = False
     if app._pet_image is not None:
@@ -2883,6 +2953,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
                 and 0 <= target.rect.top <= target.rect.bottom <= dialog_viewport.bottom
                 for target in dialog_targets
             )
+            and not any(target.id.endswith(":edge:top") for target in dialog_targets)
         )
 
         second_dialog = tk.Toplevel(app)
@@ -2929,6 +3000,8 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and not app._dialog_pet_stack
             and app._pet_overlay is not None
             and app._pet_overlay.winfo_viewable()
+            and first_runtime is not None
+            and first_runtime.overlay.sprite_size == (PET_DISPLAY_SIZE, PET_DISPLAY_SIZE)
         )
     app.show_page("study")
     pet_navigation_ready = app.pet_companion.state.mode == PetMode.FALL
@@ -3416,8 +3489,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and dictation_pet_target_stability_ready
             and dictation_download_entry_ready
             and pet_overlay_ready
+            and pet_motion_contract_ready
+            and pet_facing_assets_ready
             and pet_targets_ready
             and pet_chart_border_ready
+            and pet_edge_contract_ready
             and pet_dialog_overlay_ready
             and word_bubble_pet_ready
             and pet_navigation_ready
@@ -3444,8 +3520,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "dictationPetTargetStabilityReady": dictation_pet_target_stability_ready,
         "dictationDownloadEntryReady": dictation_download_entry_ready,
         "petOverlayReady": pet_overlay_ready,
+        "petMotionContractReady": pet_motion_contract_ready,
+        "petFacingAssetsReady": pet_facing_assets_ready,
         "petTargetsReady": pet_targets_ready,
         "petChartBorderReady": pet_chart_border_ready,
+        "petEdgeContractReady": pet_edge_contract_ready,
         "petDialogOverlayReady": pet_dialog_overlay_ready,
         "petNavigationReady": pet_navigation_ready,
         "petControlCoverageReady": pet_control_coverage_ready,

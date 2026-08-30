@@ -67,6 +67,7 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         catalog_rejected=loader.rejected_count,
         catalog_error=loader.error,
         pet_asset_path=resources / "shared" / "assets" / "pets" / "bingzi.png",
+        pet_asset_left_path=resources / "shared" / "assets" / "pets" / "bingzi-left.png",
     )
 
 

@@ -8,13 +8,23 @@
   "branding": {
     "appImage": "shared/assets/branding/app_image.png",
     "petImage": "shared/assets/branding/pet_image.png",
-    "petRuntimeImage": "shared/assets/pets/bingzi.png"
+    "petRuntimeImage": "shared/assets/pets/bingzi.png",
+    "petRuntimeImageLeft": "shared/assets/pets/bingzi-left.png"
   },
   "petCompanion": {
     "name": "冰子",
-    "tickMs": 50,
+    "tickMs": 16,
+    "displaySize": 112,
+    "idleTicks": 24,
     "targetKinds": ["control", "surface", "chart", "edge"],
     "navigationTransition": "drop-to-nearest",
+    "supportSide": "upper",
+    "screenEdges": ["left", "right", "bottom"],
+    "acceleratedFall": true,
+    "hardLandingBounces": 2,
+    "bounceDecay": 0.55,
+    "horizontalFlip": true,
+    "centerBiasedSelection": true,
     "windowScope": "application-owned-window",
     "singleActivePet": true,
     "platformManagedUiExcluded": true,

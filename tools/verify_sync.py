@@ -168,9 +168,17 @@ def verify_pet_contract() -> None:
     payload = json.loads(golden_path.read_text(encoding="utf-8"))
     if payload.get("contractVersion") != "pet-companion-v1" or payload.get("name") != "冰子":
         fail("Pet companion identity differs from the shared contract")
-    if payload.get("sourceAsset") != "shared/assets/branding/pet_image.png" or payload.get("runtimeAsset") != "shared/assets/pets/bingzi.png":
+    if (
+        payload.get("sourceAsset") != "shared/assets/branding/pet_image.png"
+        or payload.get("runtimeAsset") != "shared/assets/pets/bingzi.png"
+        or payload.get("runtimeAssetLeft") != "shared/assets/pets/bingzi-left.png"
+    ):
         fail("Pet companion asset paths differ")
-    if payload.get("tickMs") != 50 or payload.get("navigationTransition") != "drop-to-nearest":
+    if (
+        payload.get("tickMs") != 16
+        or payload.get("displaySize") != 112
+        or payload.get("navigationTransition") != "drop-to-nearest"
+    ):
         fail("Pet companion timing or navigation transition differs")
     if (
         payload.get("windowScope") != "application-owned-window"
@@ -182,8 +190,27 @@ def verify_pet_contract() -> None:
         fail("Pet companion geometry semantics differ")
     if payload.get("targetKinds") != ["control", "surface", "chart", "edge"]:
         fail("Pet companion target kinds differ")
-    if payload.get("modes") != ["idle", "slide", "roll", "fly", "fall", "dragging"]:
+    if payload.get("modes") != ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging"]:
         fail("Pet companion modes differ")
+    if payload.get("facings") != ["left", "right"]:
+        fail("Pet companion facing values differ")
+    if payload.get("motion") != {
+        "acceleration": 0.5,
+        "cruiseSpeed": 4.0,
+        "idleTicks": 24,
+        "fallGravity": 0.55,
+        "maxFallSpeed": 10.0,
+        "hardLandingSpeed": 7.0,
+        "bounceCount": 2,
+        "firstBounceSpeed": 5.0,
+        "bounceDecay": 0.55,
+        "centerBiasWeight": 0.65,
+        "edgePenaltyRatio": 0.15,
+        "supportSide": "upper",
+        "screenEdges": ["left", "right", "bottom"],
+        "horizontalFlip": True,
+    }:
+        fail("Pet companion motion semantics differ")
     drag = payload.get("drag", {})
     if drag != {
         "enabled": True,
@@ -195,21 +222,35 @@ def verify_pet_contract() -> None:
     if payload.get("transientOnly") is not True:
         fail("Pet companion state must be transient")
     expected_behaviors = {
-        "surface-inside-moves-to-border",
-        "border-rolls-clockwise",
+        "surface-inside-moves-to-upper-support",
+        "upper-support-reverses",
+        "vertical-screen-edge-remains-traversable",
+        "horizontal-edge-moves-to-upper-support",
         "chart-path-reverses",
         "flight-is-vertical-first",
         "navigation-prefers-below",
+        "navigation-fallback-ignores-center-bias",
+        "fall-accelerates",
+        "hard-landing-bounces-twice",
+        "center-bias-prefers-interior",
+        "center-bias-measures-nearest-support",
     }
     observed_behaviors = {item.get("name") for item in payload.get("behaviorVectors", [])}
     if observed_behaviors != expected_behaviors:
         fail("Pet companion behavior vectors differ")
     behavior_fields = {
-        "surface-inside-moves-to-border": {"position", "target", "step", "expectedPosition", "expectedMode"},
-        "border-rolls-clockwise": {"position", "target", "step", "expectedMode"},
+        "surface-inside-moves-to-upper-support": {"position", "target", "step", "expectedPosition", "expectedMode"},
+        "upper-support-reverses": {"position", "target", "step", "movementSpeed", "expectedPosition", "expectedMode", "expectedFacing"},
+        "vertical-screen-edge-remains-traversable": {"position", "target", "step", "movementSpeed", "expectedPosition", "expectedMode"},
+        "horizontal-edge-moves-to-upper-support": {"position", "target", "step", "expectedPosition", "expectedMode"},
         "chart-path-reverses": {"position", "target", "step", "ticks", "expectedMode", "mustReverse"},
-        "flight-is-vertical-first": {"position", "mode", "target", "step", "expectedPosition", "expectedMode"},
+        "flight-is-vertical-first": {"position", "mode", "target", "step", "movementSpeed", "expectedPosition", "expectedMode"},
         "navigation-prefers-below": {"position", "targets", "step", "expectedTarget", "expectedPosition"},
+        "navigation-fallback-ignores-center-bias": {"position", "viewport", "targets", "expectedTarget"},
+        "fall-accelerates": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedVerticalVelocity", "expectedMode"},
+        "hard-landing-bounces-twice": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedMode", "expectedBouncesRemaining"},
+        "center-bias-prefers-interior": {"position", "viewport", "targets", "expectedTarget"},
+        "center-bias-measures-nearest-support": {"position", "viewport", "targets", "expectedTarget"},
     }
     for behavior in payload.get("behaviorVectors", []):
         name = behavior.get("name")
@@ -223,7 +264,16 @@ def verify_pet_contract() -> None:
     if (
         pet.get("name") != "冰子"
         or pet.get("transientOnly") is not True
-        or pet.get("tickMs") != 50
+        or pet.get("tickMs") != 16
+        or pet.get("displaySize") != 112
+        or pet.get("idleTicks") != 24
+        or pet.get("supportSide") != "upper"
+        or pet.get("screenEdges") != ["left", "right", "bottom"]
+        or pet.get("acceleratedFall") is not True
+        or pet.get("hardLandingBounces") != 2
+        or pet.get("bounceDecay") != 0.55
+        or pet.get("horizontalFlip") is not True
+        or pet.get("centerBiasedSelection") is not True
         or pet.get("windowScope") != "application-owned-window"
         or pet.get("singleActivePet") is not True
         or pet.get("platformManagedUiExcluded") is not True
@@ -231,7 +281,11 @@ def verify_pet_contract() -> None:
     ):
         fail("Parity manifest does not declare transient Bingzi state")
     branding = parity.get("branding", {})
-    if branding.get("petImage") != payload.get("sourceAsset") or branding.get("petRuntimeImage") != payload.get("runtimeAsset"):
+    if (
+        branding.get("petImage") != payload.get("sourceAsset")
+        or branding.get("petRuntimeImage") != payload.get("runtimeAsset")
+        or branding.get("petRuntimeImageLeft") != payload.get("runtimeAssetLeft")
+    ):
         fail("Parity and pet golden asset paths differ")
 
 
@@ -300,8 +354,9 @@ def verify_branding() -> None:
     expected_hashes = {
         "petImage": "ff8ce536c8ebf69f9f8990c94115842ac7c6fe3fac867265b031c396d18ec124",
         "petRuntimeImage": "eea2733972136eca55c20fa58d86add1e5378422028f72d2f1209d396c2a5fb7",
+        "petRuntimeImageLeft": "e4b364dcd96c431df1962c3e9b12dc05f6787c1db52db330b43c07a7dea27294",
     }
-    for key in ("petImage", "petRuntimeImage"):
+    for key in ("petImage", "petRuntimeImage", "petRuntimeImageLeft"):
         pet_relative = pet_paths.get(key)
         if not pet_relative:
             fail(f"Shared {key} is not declared")
@@ -317,11 +372,15 @@ def verify_branding() -> None:
             fail(f"Shared pet image hash differs: {pet_relative}")
     source_path = ROOT / pet_paths["petImage"]
     runtime_path = ROOT / pet_paths["petRuntimeImage"]
+    runtime_left_path = ROOT / pet_paths["petRuntimeImageLeft"]
     with TemporaryDirectory(prefix="lexitrack-pet-") as temp_dir:
         generated_path = Path(temp_dir) / "bingzi.png"
-        prepare_pet_asset(source_path, generated_path)
+        generated_left_path = Path(temp_dir) / "bingzi-left.png"
+        prepare_pet_asset(source_path, generated_path, generated_left_path)
         if generated_path.read_bytes() != runtime_path.read_bytes():
             fail("Shared pet runtime image is not reproducible from the canonical source")
+        if generated_left_path.read_bytes() != runtime_left_path.read_bytes():
+            fail("Shared mirrored pet image is not reproducible from the canonical source")
 
 
 def verify_platform_markers() -> None:
