@@ -277,7 +277,7 @@ class LexiTrackApp(tk.Tk):
         self.forecast_days = 7
         self._dialog_pet_runtimes: dict[tk.Toplevel, DialogPetRuntime] = {}
         self._dialog_pet_stack: list[tk.Toplevel] = []
-        self.word_bubbles = WordBubbleManager(self, self.service, self._attach_pet_to_dialog)
+        self.word_bubbles = WordBubbleManager(self, self.service)
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()
@@ -526,6 +526,7 @@ class LexiTrackApp(tk.Tk):
                     self._pet_overlay.withdraw()
             except tk.TclError:
                 pass
+
         for dialog, runtime in tuple(self._dialog_pet_runtimes.items()):
             try:
                 if dialog is active_dialog:
@@ -543,6 +544,20 @@ class LexiTrackApp(tk.Tk):
                     runtime.overlay.withdraw()
             except tk.TclError:
                 pass
+
+    def _promote_dialog_pet(self, dialog: tk.Toplevel) -> None:
+        """Make a focused or newly mapped application window own the pet."""
+        if dialog not in self._dialog_pet_runtimes:
+            return
+        self._dialog_pet_stack = [item for item in self._dialog_pet_stack if item is not dialog]
+        self._dialog_pet_stack.append(dialog)
+        self._sync_pet_overlay_visibility()
+
+    def _deactivate_dialog_pet(self, dialog: tk.Toplevel) -> None:
+        if dialog not in self._dialog_pet_stack:
+            return
+        self._dialog_pet_stack = [item for item in self._dialog_pet_stack if item is not dialog]
+        self._sync_pet_overlay_visibility()
 
     def _attach_pet_to_dialog(self, dialog: tk.Toplevel, key: str) -> None:
         """Attach a transient companion that uses only this dialog's coordinates."""
@@ -584,7 +599,10 @@ class LexiTrackApp(tk.Tk):
 
         def release(event) -> None:
             move(event)
-            runtime_holder["runtime"].companion.drag_release()
+            runtime_holder["runtime"].companion.drag_release(
+                self._collect_dialog_pet_targets(dialog, key),
+                self._pet_viewport_for(dialog),
+            )
 
         overlay = PetOverlay(
             dialog,
@@ -629,7 +647,18 @@ class LexiTrackApp(tk.Tk):
             if event.widget is dialog:
                 self._detach_pet_from_dialog(dialog)
 
+        def on_map(event) -> None:
+            if event.widget is dialog:
+                self._promote_dialog_pet(dialog)
+
+        def on_unmap(event) -> None:
+            if event.widget is dialog:
+                self._deactivate_dialog_pet(dialog)
+
         dialog.bind("<Destroy>", on_destroy, add="+")
+        dialog.bind("<FocusIn>", lambda _event: self._promote_dialog_pet(dialog), add="+")
+        dialog.bind("<Map>", on_map, add="+")
+        dialog.bind("<Unmap>", on_unmap, add="+")
         runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
 
     def _detach_pet_from_dialog(self, dialog: tk.Toplevel) -> None:
@@ -795,7 +824,8 @@ class LexiTrackApp(tk.Tk):
             PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
             self._pet_viewport(),
         )
-        self.pet_companion.drag_release()
+        self._pet_targets = self._collect_pet_targets()
+        self.pet_companion.drag_release(self._pet_targets, self._pet_viewport())
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -2727,7 +2757,7 @@ class LexiTrackApp(tk.Tk):
             english = WordClickableText(
                 examples_view.content,
                 on_token=lambda token, ctx, x_root, y_root: self.word_bubbles.open_from_token(
-                    -1, token, ctx, x_root, y_root,
+                    -1, token, ctx, x_root, y_root, owner=popup,
                 ),
                 bg=SURFACE,
                 fg=TEXT,
@@ -3001,6 +3031,26 @@ def _descendant_labels(widget: tk.Misc) -> list[tk.Label]:
 
 
 def run_gui_smoke(app: LexiTrackApp) -> dict:
+    def visible_pet_count() -> int:
+        overlays = [app._pet_overlay] + [
+            runtime.overlay for runtime in app._dialog_pet_runtimes.values()
+        ]
+        count = 0
+        for overlay in overlays:
+            if overlay is None:
+                continue
+            try:
+                count += int(overlay.winfo_exists() and overlay.winfo_viewable())
+            except tk.TclError:
+                pass
+        return count
+
+    def window_is_above(upper: tk.Misc, lower: tk.Misc) -> bool:
+        try:
+            return bool(app.tk.call("wm", "stackorder", str(upper), "isabove", str(lower)))
+        except tk.TclError:
+            return False
+
     def example_stack_metrics(labels: list[tk.Label], area: tk.Frame) -> tuple[list[list[int]], list[int], bool]:
         bounds = [
             [label.winfo_rooty(), label.winfo_rooty() + label.winfo_height()]
@@ -3079,6 +3129,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         and {"edge:left", "edge:right", "edge:bottom"}.issubset(edge_ids)
     )
     pet_dialog_overlay_ready = False
+    pet_dialog_focus_promotion_ready = False
     if app._pet_image is not None:
         first_dialog = tk.Toplevel(app)
         first_dialog.geometry("360x220")
@@ -3133,6 +3184,30 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and app._dialog_pet_stack == [first_dialog, second_dialog]
         )
 
+        first_dialog.event_generate("<FocusIn>")
+        app.update_idletasks()
+        app.update()
+        first_focus_promoted = bool(
+            first_runtime is not None
+            and first_runtime.overlay.winfo_viewable()
+            and second_runtime is not None
+            and second_runtime.overlay.state() == "withdrawn"
+            and app._dialog_pet_stack == [second_dialog, first_dialog]
+            and visible_pet_count() == 1
+        )
+        second_dialog.event_generate("<FocusIn>")
+        app.update_idletasks()
+        app.update()
+        second_focus_promoted = bool(
+            first_runtime is not None
+            and first_runtime.overlay.state() == "withdrawn"
+            and second_runtime is not None
+            and second_runtime.overlay.winfo_viewable()
+            and app._dialog_pet_stack == [first_dialog, second_dialog]
+            and visible_pet_count() == 1
+        )
+        pet_dialog_focus_promotion_ready = first_focus_promoted and second_focus_promoted
+
         second_dialog.destroy()
         app.update_idletasks()
         app.update()
@@ -3152,6 +3227,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             first_is_only_visible_pet
             and targets_ready
             and second_is_only_visible_pet
+            and pet_dialog_focus_promotion_ready
             and first_restored
             and first_dialog not in app._dialog_pet_runtimes
             and not app._dialog_pet_stack
@@ -3178,6 +3254,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     reminder_popup_examples_scrollable = False
     reminder_popup_wheel_scroll = False
     reminder_popup_only_examples_wheel = False
+    reminder_pet_z_order_ready = False
+    reminder_bubble_z_order_ready = False
+    reminder_bubble_above_owner_ready = False
+    reminder_word_bubble_bounds_ready = False
     original_font_scale = app.service.font_scale()
     for page in ("dashboard", "study", "review", "dictation", "library", "analytics", "reminder", "settings"):
         app.show_page(page)
@@ -3194,6 +3274,22 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             if target is not None:
                 pet_control_classes_seen.add(widget.winfo_class())
                 pet_control_coverage_ready = pet_control_coverage_ready and target.id in target_ids
+        if page == "library":
+            app._open_library_group("all")
+            app.update_idletasks()
+            app.update()
+            app._refresh_pet_targets()
+            target_ids = {target.id for target in app._pet_targets}
+            for widget in app._walk_pet_widgets(app.pages[page]):
+                if widget.winfo_class() not in PET_CONTROL_CLASSES:
+                    continue
+                target = app._pet_widget_target(widget, page)
+                if target is not None:
+                    pet_control_classes_seen.add(widget.winfo_class())
+                    pet_control_coverage_ready = (
+                        pet_control_coverage_ready and target.id in target_ids
+                    )
+            app._back_to_groups()
         if page == "dictation":
             app.dictation_mode_var.set("manual")
             app.dictation_group = "all"
@@ -3283,6 +3379,11 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     word_bubble_size_ready = False
     word_bubble_close_ready = False
     word_bubble_pet_ready = False
+    word_bubble_pet_bounds_ready = False
+    word_bubble_host_retained_ready = False
+    reminder_word_bubble_owner_ready = False
+    reminder_word_bubble_cleanup_ready = False
+    popup: tk.Toplevel | None = None
     app.word_bubbles.open_from_token(-1, "a", "A conference in Tokyo.", 400, 300)
     for _ in range(3):
         app.update_idletasks()
@@ -3298,18 +3399,87 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         word_bubble_known_ready = sum(
             1 for text in label_texts if re.search(r"[\u3400-\u9fff]", str(text))
         ) >= 3
-        bubble_pet_runtime = app._dialog_pet_runtimes.get(popup)
         word_bubble_pet_ready = bool(
-            bubble_pet_runtime is not None
-            and bubble_pet_runtime.overlay.winfo_viewable()
+            popup not in app._dialog_pet_runtimes
+            and not app._dialog_pet_stack
+            and app._pet_overlay is not None
+            and app._pet_overlay.winfo_viewable()
+            and window_is_above(app._pet_overlay, popup)
+            and visible_pet_count() == 1
+        )
+        host_viewport = app._pet_viewport()
+        half_size = PET_DISPLAY_SIZE / 2.0
+        popup_rect = PetRect(
+            float(popup.winfo_rootx() - app.winfo_rootx()),
+            float(popup.winfo_rooty() - app.winfo_rooty()),
+            float(popup.winfo_width()),
+            float(popup.winfo_height()),
+        )
+        host_corners = (
+            PetPoint(half_size, half_size),
+            PetPoint(host_viewport.right - half_size, half_size),
+            PetPoint(half_size, host_viewport.bottom - half_size),
+            PetPoint(host_viewport.right - half_size, host_viewport.bottom - half_size),
+        )
+        escape_point = next(
+            point for point in host_corners
+            if not (
+                popup_rect.left <= point.x <= popup_rect.right
+                and popup_rect.top <= point.y <= popup_rect.bottom
+            )
+        )
+        app.pet_companion.drag_start(app.pet_companion.state.position)
+        escaped = app.pet_companion.drag_move(escape_point, host_viewport)
+        app.pet_companion.drag_release(app._collect_pet_targets(), host_viewport)
+        word_bubble_pet_bounds_ready = bool(
+            escaped.position == escape_point
+            and host_viewport.left + half_size <= escaped.position.x <= host_viewport.right - half_size
+            and host_viewport.top + half_size <= escaped.position.y <= host_viewport.bottom - half_size
+            and not (
+                popup_rect.left <= escaped.position.x <= popup_rect.right
+                and popup_rect.top <= escaped.position.y <= popup_rect.bottom
+            )
+        )
+        app.word_bubbles.open_from_token(
+            0,
+            "conference",
+            "A conference in Tokyo.",
+            popup.winfo_rootx() + 120,
+            popup.winfo_rooty() + 120,
+            owner=popup,
+        )
+        for _ in range(2):
+            app.update_idletasks()
+            app.update()
+        child_popup = app.word_bubbles._windows[-1]
+        word_bubble_host_retained_ready = bool(
+            child_popup not in app._dialog_pet_runtimes
+            and popup not in app._dialog_pet_runtimes
+            and not app._dialog_pet_stack
+            and str(child_popup.transient()) == str(popup)
+            and child_popup.master is popup
+            and app._pet_overlay is not None
+            and app._pet_overlay.winfo_viewable()
+            and window_is_above(app._pet_overlay, child_popup)
+            and visible_pet_count() == 1
         )
         app.word_bubbles._close_current(0)
         for _ in range(2):
             app.update_idletasks()
             app.update()
-        word_bubble_close_ready = not any(window.winfo_exists() for window in app.word_bubbles._windows)
-        word_bubble_pet_ready = word_bubble_pet_ready and popup not in app._dialog_pet_runtimes
-        app.word_bubbles.clear()
+        word_bubble_close_ready = bool(
+            not app.word_bubbles._windows
+            and not app.word_bubbles.stack.frames
+        )
+        word_bubble_pet_ready = bool(
+            word_bubble_pet_ready
+            and popup not in app._dialog_pet_runtimes
+            and child_popup not in app._dialog_pet_runtimes
+            and not app._dialog_pet_stack
+            and app._pet_overlay is not None
+            and app._pet_overlay.winfo_viewable()
+            and visible_pet_count() == 1
+        )
     app.change_font_scale("140")
     for _ in range(3):
         app.update_idletasks()
@@ -3323,9 +3493,20 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     if reminder_popup is not None and reminder_examples_view is not None:
         reminder_popup_ready = bool(reminder_popup.winfo_exists() and reminder_examples_view.winfo_ismapped())
         reminder_pet_runtime = app._dialog_pet_runtimes.get(reminder_popup)
+        reminder_pet_z_order_ready = bool(
+            reminder_pet_runtime is not None
+            and bool(reminder_pet_runtime.overlay.wm_attributes("-topmost"))
+            and window_is_above(reminder_pet_runtime.overlay, reminder_popup)
+        )
         reminder_popup_pet_ready = bool(
             reminder_pet_runtime is not None
             and reminder_pet_runtime.overlay.winfo_viewable()
+            and not app.word_bubbles._windows
+            and not app.word_bubbles.stack.frames
+            and app._pet_overlay is not None
+            and app._pet_overlay.state() == "withdrawn"
+            and reminder_pet_z_order_ready
+            and visible_pet_count() == 1
         )
         reminder_popup_size = [reminder_popup.winfo_width(), reminder_popup.winfo_height()]
         reminder_popup_resizable = tuple(int(value) for value in reminder_popup.resizable()) == (0, 0)
@@ -3364,11 +3545,142 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         popup_yview_before,
         popup_yview_after,
     )
-    app._dismiss_word_reminder()
-    reminder_popup_pet_ready = (
-        reminder_popup_pet_ready
-        and reminder_popup not in app._dialog_pet_runtimes
-    )
+    if reminder_popup is not None and reminder_popup.winfo_exists():
+        bubble_x = reminder_popup.winfo_rootx() + reminder_popup.winfo_width() // 2
+        bubble_y = reminder_popup.winfo_rooty() + reminder_popup.winfo_height() // 2
+        app.word_bubbles.open_from_token(
+            -1,
+            "conference",
+            "A conference in Tokyo.",
+            bubble_x,
+            bubble_y,
+            owner=reminder_popup,
+        )
+        for _ in range(2):
+            app.update_idletasks()
+            app.update()
+        reminder_bubble = app.word_bubbles._windows[-1]
+        reminder_pet_runtime = app._dialog_pet_runtimes.get(reminder_popup)
+        if reminder_pet_runtime is not None:
+            reminder_viewport = app._pet_viewport_for(reminder_popup)
+            reminder_half_size = PET_DISPLAY_SIZE / 2.0
+            reminder_bubble_rect = PetRect(
+                float(reminder_bubble.winfo_rootx() - reminder_popup.winfo_rootx()),
+                float(reminder_bubble.winfo_rooty() - reminder_popup.winfo_rooty()),
+                float(reminder_bubble.winfo_width()),
+                float(reminder_bubble.winfo_height()),
+            )
+            reminder_host_corners = (
+                PetPoint(reminder_half_size, reminder_half_size),
+                PetPoint(reminder_viewport.right - reminder_half_size, reminder_half_size),
+                PetPoint(reminder_half_size, reminder_viewport.bottom - reminder_half_size),
+                PetPoint(
+                    reminder_viewport.right - reminder_half_size,
+                    reminder_viewport.bottom - reminder_half_size,
+                ),
+            )
+            reminder_escape_point = next((
+                point for point in reminder_host_corners
+                if not (
+                    reminder_bubble_rect.left <= point.x <= reminder_bubble_rect.right
+                    and reminder_bubble_rect.top <= point.y <= reminder_bubble_rect.bottom
+                )
+            ), None)
+            if reminder_escape_point is not None:
+                reminder_pet_runtime.companion.drag_start(
+                    reminder_pet_runtime.companion.state.position,
+                )
+                reminder_escaped = reminder_pet_runtime.companion.drag_move(
+                    reminder_escape_point,
+                    reminder_viewport,
+                )
+                reminder_pet_runtime.companion.drag_release(
+                    app._collect_dialog_pet_targets(reminder_popup, reminder_pet_runtime.key),
+                    reminder_viewport,
+                )
+                reminder_word_bubble_bounds_ready = bool(
+                    reminder_escaped.position == reminder_escape_point
+                    and not (
+                        reminder_bubble_rect.left <= reminder_escaped.position.x <= reminder_bubble_rect.right
+                        and reminder_bubble_rect.top <= reminder_escaped.position.y <= reminder_bubble_rect.bottom
+                    )
+                )
+        nested_owner_ready = bool(
+            str(reminder_bubble.transient()) == str(reminder_popup)
+            and reminder_bubble.master is reminder_popup
+            and reminder_bubble not in app._dialog_pet_runtimes
+            and reminder_pet_runtime is not None
+            and reminder_pet_runtime.overlay.winfo_viewable()
+            and app._dialog_pet_stack[-1:] == [reminder_popup]
+            and app._pet_overlay is not None
+            and app._pet_overlay.state() == "withdrawn"
+            and bool(reminder_bubble.wm_attributes("-topmost"))
+            and visible_pet_count() == 1
+            and reminder_word_bubble_bounds_ready
+        )
+        reminder_bubble_above_owner_ready = window_is_above(reminder_bubble, reminder_popup)
+        reminder_bubble_z_order_ready = bool(
+            reminder_bubble_above_owner_ready and reminder_pet_z_order_ready
+        )
+        nested_owner_ready = nested_owner_ready and reminder_bubble_z_order_ready
+        app.word_bubbles._close_current(0)
+        for _ in range(2):
+            app.update_idletasks()
+            app.update()
+        reminder_restored = bool(
+            reminder_bubble not in app._dialog_pet_runtimes
+            and not app.word_bubbles._windows
+            and not app.word_bubbles.stack.frames
+            and reminder_pet_runtime is not None
+            and reminder_pet_runtime.overlay.winfo_viewable()
+            and app._dialog_pet_stack[-1:] == [reminder_popup]
+            and visible_pet_count() == 1
+        )
+        reminder_word_bubble_owner_ready = nested_owner_ready and reminder_restored
+
+        # Reopen the same definition, then destroy its owner. Tk destroys the
+        # child Toplevel implicitly; the manager must discard all stale frames.
+        app.word_bubbles.open_from_token(
+            -1,
+            "conference",
+            "A conference in Tokyo.",
+            bubble_x,
+            bubble_y,
+            owner=reminder_popup,
+        )
+        for _ in range(2):
+            app.update_idletasks()
+            app.update()
+        lifecycle_bubble = app.word_bubbles._windows[-1]
+        lifecycle_reopened = bool(
+            lifecycle_bubble.winfo_exists()
+            and lifecycle_bubble not in app._dialog_pet_runtimes
+            and reminder_pet_runtime is not None
+            and reminder_pet_runtime.overlay.winfo_viewable()
+            and app._dialog_pet_stack[-1:] == [reminder_popup]
+        )
+        app._dismiss_word_reminder()
+        for _ in range(2):
+            app.update_idletasks()
+            app.update()
+        reminder_word_bubble_cleanup_ready = bool(
+            lifecycle_reopened
+            and reminder_popup not in app._dialog_pet_runtimes
+            and lifecycle_bubble not in app._dialog_pet_runtimes
+            and not app.word_bubbles._windows
+            and not app.word_bubbles.stack.frames
+            and not app._dialog_pet_stack
+            and app._pet_overlay is not None
+            and app._pet_overlay.winfo_viewable()
+            and visible_pet_count() == 1
+        )
+        reminder_popup_pet_ready = bool(
+            reminder_popup_pet_ready
+            and reminder_restored
+            and reminder_word_bubble_cleanup_ready
+        )
+    else:
+        app._dismiss_word_reminder()
     app.change_font_scale(str(original_font_scale * 100))
     for _ in range(3):
         app.update_idletasks()
@@ -3654,7 +3966,12 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and pet_chart_border_ready
             and pet_edge_contract_ready
             and pet_dialog_overlay_ready
+            and pet_dialog_focus_promotion_ready
             and word_bubble_pet_ready
+            and word_bubble_pet_bounds_ready
+            and word_bubble_host_retained_ready
+            and reminder_word_bubble_owner_ready
+            and reminder_word_bubble_cleanup_ready
             and pet_navigation_ready
             and pet_control_coverage_ready
             and all(
@@ -3685,6 +4002,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "petChartBorderReady": pet_chart_border_ready,
         "petEdgeContractReady": pet_edge_contract_ready,
         "petDialogOverlayReady": pet_dialog_overlay_ready,
+        "petDialogFocusPromotionReady": pet_dialog_focus_promotion_ready,
         "petNavigationReady": pet_navigation_ready,
         "petControlCoverageReady": pet_control_coverage_ready,
         "petControlClasses": sorted(pet_control_classes_seen),
@@ -3729,10 +4047,18 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "wordBubbleSizeReady": word_bubble_size_ready,
         "wordBubbleCloseReady": word_bubble_close_ready,
         "wordBubblePetReady": word_bubble_pet_ready,
+        "wordBubblePetBoundsReady": word_bubble_pet_bounds_ready,
+        "wordBubbleHostRetainedReady": word_bubble_host_retained_ready,
         "reviewHeaderReady": review_header_ready,
         "reminderFiltersReady": reminder_filters_ready,
         "reminderPopupReady": reminder_popup_ready,
         "reminderPopupPetReady": reminder_popup_pet_ready,
+        "reminderPetZOrderReady": reminder_pet_z_order_ready,
+        "reminderBubbleZOrderReady": reminder_bubble_z_order_ready,
+        "reminderBubbleAboveOwnerReady": reminder_bubble_above_owner_ready,
+        "reminderWordBubbleOwnerReady": reminder_word_bubble_owner_ready,
+        "reminderWordBubbleBoundsReady": reminder_word_bubble_bounds_ready,
+        "reminderWordBubbleCleanupReady": reminder_word_bubble_cleanup_ready,
         "reminderPopupSize": reminder_popup_size,
         "reminderPopupResizable": reminder_popup_resizable,
         "reminderPopupFixedLimits": reminder_popup_fixed_limits,

@@ -106,20 +106,16 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupPositionProvider
-import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUp
@@ -163,7 +159,42 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-private data class WordBubbleState(val data: BubbleDefinition, val anchor: IntRect)
+internal data class WordBubbleState(val data: BubbleDefinition, val anchor: IntRect)
+
+internal data class WordBubbleHostState(
+    val stack: BubbleStack = BubbleStack(),
+    val bubbles: List<WordBubbleState> = emptyList(),
+)
+
+internal fun openWordBubbleHost(
+    state: WordBubbleHostState,
+    definition: BubbleDefinition,
+    depth: Int,
+    anchor: IntRect,
+): WordBubbleHostState {
+    val nextStack = if (depth < 0) {
+        BubbleStack().openRoot(definition)
+    } else {
+        state.stack.openChild(depth, definition)
+    }
+    if (nextStack == state.stack) return state
+    val previousAnchors = state.bubbles.map(WordBubbleState::anchor)
+    return WordBubbleHostState(
+        stack = nextStack,
+        bubbles = nextStack.frames.mapIndexed { index, frame ->
+            WordBubbleState(
+                frame.definition,
+                if (index == nextStack.frames.lastIndex) anchor else previousAnchors.getOrElse(index) { anchor },
+            )
+        },
+    )
+}
+
+internal fun closeWordBubbleHostAfter(state: WordBubbleHostState, depth: Int): WordBubbleHostState =
+    state.copy(stack = state.stack.closeAfter(depth), bubbles = state.bubbles.take(depth + 1))
+
+internal fun closeWordBubbleHostAt(state: WordBubbleHostState, depth: Int): WordBubbleHostState =
+    state.copy(stack = state.stack.closeBubble(depth), bubbles = state.bubbles.take(depth))
 
 const val DICTATION_DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 const val DICTATION_PDF_MIME_TYPE = "application/pdf"
@@ -194,10 +225,11 @@ private val LocalBubbleDepth = staticCompositionLocalOf { -1 }
 private val LocalDismissWordBubbles = staticCompositionLocalOf<() -> Unit> { {} }
 private val LocalRegisterPetTarget = staticCompositionLocalOf<(PetTarget) -> Unit> { {} }
 private val LocalRegisterPetWindow = staticCompositionLocalOf<(Any, Boolean) -> Unit> { { _, _ -> } }
-private val LocalActivePetWindowKey = staticCompositionLocalOf<Any?> { null }
+private val LocalPetWindowStack = staticCompositionLocalOf<List<Any>> { emptyList() }
 
 internal const val PET_DISPLAY_SIZE_DP = 112
 internal const val PET_TICK_MS = 16L
+internal const val WORD_BUBBLE_PET_SCOPE = "trigger-window-retained"
 
 private fun Rect.toPetRect(): PetRect = PetRect(left, top, width, height)
 
@@ -213,7 +245,7 @@ private fun Modifier.petTarget(
         }
     }
     Modifier.onGloballyPositioned { coordinates ->
-        val bounds = coordinates.boundsInRoot()
+        val bounds = coordinates.boundsInWindow()
         register(PetTarget(id, kind, bounds.toPetRect(), path(bounds)))
     }
 }
@@ -240,6 +272,62 @@ internal fun <T> updatePetWindowStack(
     if (active) stack.add(key)
 }
 
+internal fun isMainPetWindowVisible(stack: List<Any>): Boolean = stack.isEmpty()
+
+internal fun isPetWindowVisible(stack: List<Any>, key: Any): Boolean = stack.lastOrNull() === key
+
+internal fun localizePetTargets(
+    targets: List<PetTarget>,
+    origin: PetPoint,
+    viewport: PetRect,
+): List<PetTarget> {
+    if (!viewport.valid) return emptyList()
+    return targets.mapNotNull { target ->
+        val localLeft = target.rect.left - origin.x
+        val localTop = target.rect.top - origin.y
+        val localRight = target.rect.right - origin.x
+        val localBottom = target.rect.bottom - origin.y
+        val left = localLeft.coerceAtLeast(viewport.left)
+        val top = localTop.coerceAtLeast(viewport.top)
+        val right = localRight.coerceAtMost(viewport.right)
+        val bottom = localBottom.coerceAtMost(viewport.bottom)
+        if (!target.visible || right <= left || bottom <= top) return@mapNotNull null
+        target.copy(
+            rect = PetRect(left, top, right - left, bottom - top),
+            path = target.path.map { point ->
+                PetPoint(
+                    (point.x - origin.x).coerceIn(viewport.left, viewport.right),
+                    (point.y - origin.y).coerceIn(viewport.top, viewport.bottom),
+                )
+            },
+        )
+    }
+}
+
+internal fun wordBubbleOffset(
+    anchor: IntRect,
+    hostOrigin: PetPoint,
+    viewport: PetRect,
+    bubbleSize: IntSize,
+    gapPx: Int,
+): IntOffset {
+    val viewportLeft = viewport.left.roundToInt()
+    val viewportTop = viewport.top.roundToInt()
+    val viewportRight = viewport.right.roundToInt()
+    val viewportBottom = viewport.bottom.roundToInt()
+    val anchorLeft = anchor.left - hostOrigin.x.roundToInt()
+    val anchorTop = anchor.top - hostOrigin.y.roundToInt()
+    val anchorBottom = anchor.bottom - hostOrigin.y.roundToInt()
+    val maxX = (viewportRight - bubbleSize.width).coerceAtLeast(viewportLeft)
+    val centeredX = anchorLeft + (anchor.width - bubbleSize.width) / 2
+    val x = centeredX.coerceIn(viewportLeft, maxX)
+    val below = anchorBottom + gapPx
+    val above = anchorTop - bubbleSize.height - gapPx
+    val maxY = (viewportBottom - bubbleSize.height).coerceAtLeast(viewportTop)
+    val y = if (below + bubbleSize.height <= viewportBottom) below else above
+    return IntOffset(x, y.coerceIn(viewportTop, maxY))
+}
+
 @Composable
 private fun PetOverlay(
     viewport: PetRect,
@@ -249,7 +337,8 @@ private fun PetOverlay(
     visible: Boolean = true,
 ) {
     val petSize = PET_DISPLAY_SIZE_DP.dp
-    val halfSize = with(LocalDensity.current) { petSize.toPx() / 2f }
+    val density = LocalDensity.current
+    val halfSize = with(density) { petSize.toPx() / 2f }
     var state by remember {
         mutableStateOf(PetState(PetPoint(halfSize + 12f, halfSize + 96f)))
     }
@@ -266,6 +355,7 @@ private fun PetOverlay(
         }
     }
     val activeTargets = targets + edgeTargets
+    val displayPosition = if (viewport.valid) viewport.clamp(state.position, halfSize) else state.position
     LaunchedEffect(navigationKey) {
         state = onNavigation(state)
     }
@@ -285,11 +375,12 @@ private fun PetOverlay(
                     viewport = viewport,
                     halfSize = halfSize,
                     step = PET_CRUISE_SPEED,
+                    fallUnitScale = density.density,
                 )
             }
         }
     }
-    if (!visible) return
+    if (!visible || !viewport.valid) return
     Image(
         painter = painterResource(
             if (state.facing == PetFacing.LEFT) R.drawable.bingzi_left else R.drawable.bingzi,
@@ -299,8 +390,8 @@ private fun PetOverlay(
             .zIndex(20f)
             .offset {
                 IntOffset(
-                    (state.position.x - halfSize).roundToInt(),
-                    (state.position.y - halfSize).roundToInt(),
+                    (displayPosition.x - halfSize).roundToInt(),
+                    (displayPosition.y - halfSize).roundToInt(),
                 )
             }
             .size(petSize)
@@ -310,10 +401,10 @@ private fun PetOverlay(
                     onDragStart = { localOffset ->
                         onPointerActiveChange(true)
                         state = beginDrag(
-                            state,
+                            state.copy(position = displayPosition),
                             PetPoint(
-                                state.position.x - halfSize + localOffset.x,
-                                state.position.y - halfSize + localOffset.y,
+                                displayPosition.x - halfSize + localOffset.x,
+                                displayPosition.y - halfSize + localOffset.y,
                             ),
                         )
                     },
@@ -331,11 +422,11 @@ private fun PetOverlay(
                         )
                     },
                     onDragEnd = {
-                        state = releaseDrag(state)
+                        state = releaseDrag(state, activeTargets, viewport, halfSize)
                         completedDrag += 1
                     },
                     onDragCancel = {
-                        state = releaseDrag(state)
+                        state = releaseDrag(state, activeTargets, viewport, halfSize)
                         completedDrag += 1
                     },
                 )
@@ -346,6 +437,7 @@ private fun PetOverlay(
 @Composable
 private fun PetAlertDialog(
     petId: String,
+    wordBubbleLookup: ((String, String) -> BubbleDefinition)? = null,
     onDismissRequest: () -> Unit,
     title: @Composable () -> Unit,
     text: @Composable () -> Unit,
@@ -355,10 +447,31 @@ private fun PetAlertDialog(
     shape: Shape = RoundedCornerShape(8.dp),
 ) {
     val registerPetWindow = LocalRegisterPetWindow.current
-    val activePetWindowKey = LocalActivePetWindowKey.current
+    val petWindowStack = LocalPetWindowStack.current
+    val inheritedOpenWordBubble = LocalOpenWordBubble.current
+    val inheritedDismissWordBubbles = LocalDismissWordBubbles.current
     val petWindowKey = remember { Any() }
     val targets = remember { mutableStateMapOf<String, PetTarget>() }
     var viewport by remember { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
+    var viewportOrigin by remember { mutableStateOf(PetPoint(0f, 0f)) }
+    var localBubbleHost by remember(petWindowKey) { mutableStateOf(WordBubbleHostState()) }
+    val openWordBubble: (String, String, Int, IntRect) -> Unit = if (wordBubbleLookup == null) {
+        inheritedOpenWordBubble
+    } else {
+        { token, contextExample, depth, anchor ->
+            localBubbleHost = openWordBubbleHost(
+                localBubbleHost,
+                wordBubbleLookup(token, contextExample),
+                depth,
+                anchor,
+            )
+        }
+    }
+    val dismissWordBubbles: () -> Unit = if (wordBubbleLookup == null) {
+        inheritedDismissWordBubbles
+    } else {
+        { localBubbleHost = WordBubbleHostState() }
+    }
     val registerTarget: (PetTarget) -> Unit = remember(petId) {
         { target -> updatePetTargetRegistry(targets, petId, target) }
     }
@@ -367,12 +480,19 @@ private fun PetAlertDialog(
         onDispose { registerPetWindow(petWindowKey, false) }
     }
     Dialog(onDismissRequest = onDismissRequest) {
-        CompositionLocalProvider(LocalRegisterPetTarget provides registerTarget) {
+        CompositionLocalProvider(
+            LocalOpenWordBubble provides openWordBubble,
+            LocalDismissWordBubbles provides dismissWordBubbles,
+            LocalRegisterPetTarget provides registerTarget,
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(min = 280.dp, max = 560.dp)
+                    .heightIn(min = PET_DISPLAY_SIZE_DP.dp)
                     .onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        viewportOrigin = PetPoint(bounds.left, bounds.top)
                         viewport = PetRect(
                             0f,
                             0f,
@@ -425,12 +545,25 @@ private fun PetAlertDialog(
                         }
                     }
                 }
+                if (wordBubbleLookup != null) {
+                    WordBubbleOverlay(
+                        bubbles = localBubbleHost.bubbles,
+                        hostOrigin = viewportOrigin,
+                        viewport = viewport,
+                        onCloseAfter = { depth ->
+                            localBubbleHost = closeWordBubbleHostAfter(localBubbleHost, depth)
+                        },
+                        onDismissCurrent = { depth ->
+                            localBubbleHost = closeWordBubbleHostAt(localBubbleHost, depth)
+                        },
+                    )
+                }
                 PetOverlay(
                     viewport = viewport,
-                    targets = targets.values.toList(),
+                    targets = localizePetTargets(targets.values.toList(), viewportOrigin, viewport),
                     navigationKey = petWindowKey,
                     onPointerActiveChange = {},
-                    visible = activePetWindowKey === petWindowKey,
+                    visible = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
             }
         }
@@ -448,34 +581,18 @@ fun LexiTrackApp(
     var labelEditorOpen by remember { mutableStateOf(false) }
     var dictationPreviewOpen by remember { mutableStateOf(false) }
     var dictationMarkOpen by remember { mutableStateOf(false) }
-    val bubbles = remember { mutableStateListOf<WordBubbleState>() }
+    var bubbleHost by remember { mutableStateOf(WordBubbleHostState()) }
     val petTargets = remember { mutableStateMapOf<String, PetTarget>() }
     val petWindows = remember { mutableStateListOf<Any>() }
     var petViewport by remember { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
+    var petViewportOrigin by remember { mutableStateOf(PetPoint(0f, 0f)) }
     var petPointerActive by remember { mutableStateOf(false) }
-    var bubbleStack by remember { mutableStateOf(BubbleStack()) }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
-        val next = if (depth < 0) {
-            BubbleStack().openRoot(definition)
-        } else {
-            bubbleStack.openChild(depth, definition)
-        }
-        if (next != bubbleStack) {
-            bubbleStack = next
-            val previousAnchors = bubbles.map { it.anchor }
-            bubbles.clear()
-            next.frames.forEachIndexed { index, frame ->
-                bubbles += WordBubbleState(
-                    frame.definition,
-                    if (index == next.frames.lastIndex) anchor else previousAnchors.getOrElse(index) { anchor },
-                )
-            }
-        }
+        bubbleHost = openWordBubbleHost(bubbleHost, definition, depth, anchor)
     }
     LaunchedEffect(state.section, state.currentCard?.id, state.reviewCard?.id, state.wordReminderCard?.id) {
-        bubbleStack = BubbleStack()
-        bubbles.clear()
+        bubbleHost = WordBubbleHostState()
     }
     LaunchedEffect(state.section) {
         petTargets.clear()
@@ -492,22 +609,22 @@ fun LexiTrackApp(
             updatePetWindowStack(petWindows, key, active)
         }
     }
-    val activePetWindowKey = petWindows.lastOrNull()
     LexiTrackTheme(state.fontScale) {
         CompositionLocalProvider(
             LocalOpenWordBubble provides openBubble,
             LocalDismissWordBubbles provides {
-                bubbles.clear()
-                bubbleStack = BubbleStack()
+                bubbleHost = WordBubbleHostState()
             },
             LocalRegisterPetTarget provides registerPetTarget,
             LocalRegisterPetWindow provides registerPetWindow,
-            LocalActivePetWindowKey provides activePetWindowKey,
+            LocalPetWindowStack provides petWindows,
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        petViewportOrigin = PetPoint(bounds.left, bounds.top)
                         petViewport = PetRect(0f, 0f, coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
                     }
                     .pointerInput(Unit) {
@@ -515,8 +632,7 @@ fun LexiTrackApp(
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Final)
                                 if (!petPointerActive && event.changes.any { it.changedToUp() && !it.isConsumed }) {
-                                    bubbles.clear()
-                                    bubbleStack = BubbleStack()
+                                    bubbleHost = WordBubbleHostState()
                                 }
                             }
                         }
@@ -613,12 +729,24 @@ fun LexiTrackApp(
             }
         }
 
+        WordBubbleOverlay(
+            bubbles = bubbleHost.bubbles,
+            hostOrigin = petViewportOrigin,
+            viewport = petViewport,
+            onCloseAfter = { depth ->
+                bubbleHost = closeWordBubbleHostAfter(bubbleHost, depth)
+            },
+            onDismissCurrent = { depth ->
+                bubbleHost = closeWordBubbleHostAt(bubbleHost, depth)
+            },
+        )
+
         PetOverlay(
             viewport = petViewport,
-            targets = petTargets.values.toList(),
+            targets = localizePetTargets(petTargets.values.toList(), petViewportOrigin, petViewport),
             navigationKey = state.section,
             onPointerActiveChange = { petPointerActive = it },
-            visible = activePetWindowKey == null,
+            visible = isMainPetWindowVisible(petWindows),
         )
 
         state.importReport?.let { report ->
@@ -692,6 +820,9 @@ fun LexiTrackApp(
         } ?: state.wordReminderCard?.let { card ->
             PetAlertDialog(
                 petId = "word-reminder",
+                wordBubbleLookup = { token, contextExample ->
+                    viewModel.lookupWordBubble(token, contextExample)
+                },
                 onDismissRequest = viewModel::dismissWordReminder,
                 icon = { Icon(Icons.Outlined.School, contentDescription = null) },
                 title = { Text("单词学习提醒") },
@@ -725,21 +856,6 @@ fun LexiTrackApp(
                 dismissButton = null,
             )
         }
-        WordBubbleOverlay(
-            bubbles = bubbles,
-            onDismissAll = {
-                bubbles.clear()
-                bubbleStack = BubbleStack()
-            },
-            onCloseAfter = { depth ->
-                bubbleStack = bubbleStack.closeAfter(depth)
-                while (bubbles.size > depth + 1) bubbles.removeAt(bubbles.lastIndex)
-            },
-            onDismissCurrent = { depth ->
-                bubbleStack = bubbleStack.closeBubble(depth)
-                while (bubbles.size > depth) bubbles.removeAt(bubbles.lastIndex)
-            },
-        )
             }
         }
     }
@@ -815,75 +931,57 @@ private fun InteractiveSentence(
 
 @Composable
 private fun WordBubbleOverlay(
-    bubbles: MutableList<WordBubbleState>,
-    onDismissAll: () -> Unit,
+    bubbles: List<WordBubbleState>,
+    hostOrigin: PetPoint,
+    viewport: PetRect,
     onCloseAfter: (Int) -> Unit,
     onDismissCurrent: (Int) -> Unit,
 ) {
-    val registerPetWindow = LocalRegisterPetWindow.current
-    val activePetWindowKey = LocalActivePetWindowKey.current
-    bubbles.toList().forEachIndexed { index, bubble ->
-        val petId = "word-bubble-$index-${bubble.data.word.hashCode()}"
-        val petWindowKey = remember(petId) { Any() }
-        val petTargets = remember(petId) { mutableStateMapOf<String, PetTarget>() }
-        var petViewport by remember(petId) { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
-        val registerPetTarget: (PetTarget) -> Unit = remember(petId) {
-            { target -> updatePetTargetRegistry(petTargets, petId, target) }
-        }
-        DisposableEffect(registerPetWindow, petWindowKey) {
-            registerPetWindow(petWindowKey, true)
-            onDispose { registerPetWindow(petWindowKey, false) }
-        }
-        val positionProvider: PopupPositionProvider = remember(bubble.anchor) {
-            object : PopupPositionProvider {
-                override fun calculatePosition(
-                    anchorBounds: IntRect,
-                    windowSize: IntSize,
-                    layoutDirection: LayoutDirection,
-                    popupContentSize: IntSize,
-                ): IntOffset {
-                    val centeredX = bubble.anchor.left + (bubble.anchor.width - popupContentSize.width) / 2
-                    val x = centeredX.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
-                    val below = bubble.anchor.bottom + 6
-                    val above = bubble.anchor.top - popupContentSize.height - 6
-                    val y = if (below + popupContentSize.height <= windowSize.height) below else above.coerceAtLeast(0)
-                    return IntOffset(x, y)
-                }
-            }
-        }
-        Popup(
-            popupPositionProvider = positionProvider,
-            onDismissRequest = onDismissAll,
-            properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = false),
-        ) {
+    if (!viewport.valid) return
+    val density = LocalDensity.current
+    val maxBubbleWidth = with(density) { viewport.width.toDp() }.coerceAtMost(440.dp)
+    val minBubbleWidth = maxBubbleWidth.coerceAtMost(260.dp)
+    val maxBubbleHeight = with(density) { viewport.height.toDp() }
+    val registerPetTarget = LocalRegisterPetTarget.current
+    Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
+        bubbles.forEachIndexed { index, bubble ->
+            var bubbleSize by remember(bubble.data.wordId, bubble.anchor) { mutableStateOf(IntSize.Zero) }
+            val gapPx = with(density) { 6.dp.roundToPx() }
             // Root content uses -1; a bubble's depth is its zero-based stack index.
             CompositionLocalProvider(
                 LocalBubbleDepth provides index,
                 LocalDismissWordBubbles provides { onCloseAfter(index) },
-                LocalRegisterPetTarget provides registerPetTarget,
             ) {
                 Box(
                     modifier = Modifier
-                        .widthIn(min = 260.dp, max = 440.dp)
-                        .onGloballyPositioned { coordinates ->
-                            petViewport = PetRect(
-                                0f,
-                                0f,
-                                coordinates.size.width.toFloat(),
-                                coordinates.size.height.toFloat(),
+                        .offset {
+                            wordBubbleOffset(
+                                anchor = bubble.anchor,
+                                hostOrigin = hostOrigin,
+                                viewport = viewport,
+                                bubbleSize = bubbleSize,
+                                gapPx = gapPx,
                             )
-                        },
+                        }
+                        .widthIn(min = minBubbleWidth, max = maxBubbleWidth)
+                        .heightIn(max = maxBubbleHeight)
+                        .onSizeChanged { bubbleSize = it },
                 ) {
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .petTarget(registerPetTarget, "$petId-frame", PetTargetKind.SURFACE)
+                            .petTarget(
+                                registerPetTarget,
+                                "word-bubble-${bubble.data.wordId}-$index",
+                                PetTargetKind.SURFACE,
+                            )
                             .pointerInput(index) {
                                 awaitPointerEventScope {
                                     while (true) {
                                         val event = awaitPointerEvent(PointerEventPass.Final)
-                                        if (event.changes.any { it.changedToUp() && !it.isConsumed }) {
+                                        event.changes.firstOrNull { it.changedToUp() && !it.isConsumed }?.let { change ->
                                             onCloseAfter(index)
+                                            change.consume()
                                         }
                                     }
                                 }
@@ -914,7 +1012,11 @@ private fun WordBubbleOverlay(
                                     contentPadding = PaddingValues(0.dp),
                                     modifier = Modifier
                                         .size(30.dp)
-                                        .petTarget(registerPetTarget, "$petId-close", PetTargetKind.CONTROL),
+                                        .petTarget(
+                                            registerPetTarget,
+                                            "word-bubble-${bubble.data.wordId}-$index-close",
+                                            PetTargetKind.CONTROL,
+                                        ),
                                 ) {
                                     Text("✕", color = MutedInk)
                                 }
@@ -947,13 +1049,6 @@ private fun WordBubbleOverlay(
                             }
                         }
                     }
-                    PetOverlay(
-                        viewport = petViewport,
-                        targets = petTargets.values.toList(),
-                        navigationKey = petWindowKey,
-                        onPointerActiveChange = {},
-                        visible = activePetWindowKey === petWindowKey,
-                    )
                 }
             }
         }

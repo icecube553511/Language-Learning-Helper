@@ -16,15 +16,18 @@ PET_TICK_MS = 16
 PET_DISPLAY_SIZE = 112
 MOTION_ACCELERATION = 0.5
 CRUISE_SPEED = 4.0
-FALL_GRAVITY = 0.55
-MAX_FALL_SPEED = 10.0
-HARD_LANDING_SPEED = 7.0
+FALL_TIME_STEP_SECONDS = PET_TICK_MS / 1000.0
+FALL_GRAVITY = 2148.4375
+MAX_FALL_SPEED = None
+HARD_LANDING_SPEED = 437.5
 BOUNCE_COUNT = 2
-FIRST_BOUNCE_SPEED = 5.0
+FIRST_BOUNCE_SPEED = 312.5
 BOUNCE_DECAY = 0.55
 CENTER_BIAS_WEIGHT = 0.65
 EDGE_PENALTY_RATIO = 0.15
 IDLE_TICKS = 24
+
+_VIEWPORT_BOTTOM_TARGET_ID = "__viewport-bottom__"
 
 
 class PetMode(str, Enum):
@@ -282,12 +285,22 @@ def move_drag(
     )
 
 
-def release_drag(state: PetState) -> PetState:
+def release_drag(
+    state: PetState,
+    targets: Iterable[PetTarget] = (),
+    viewport: PetRect | None = None,
+    pet_size: float = 0.0,
+) -> PetState:
+    margin = max(0.0, pet_size)
+    support = next((
+        target for target in targets
+        if target.valid and _is_on_support(target, state.position, margin, viewport)
+    ), None)
     return replace(
         state,
-        mode=PetMode.IDLE,
-        target_id=None,
-        idle_ticks_remaining=0,
+        mode=PetMode.IDLE if support is not None else PetMode.FALL,
+        target_id=support.id if support is not None else None,
+        idle_ticks_remaining=IDLE_TICKS if support is not None else 0,
         path_index=0,
         path_direction=1,
         roll_corners=0,
@@ -298,16 +311,74 @@ def release_drag(state: PetState) -> PetState:
     )
 
 
-def _fall_landing_point(position: PetPoint, target: PetTarget, pet_size: float) -> PetPoint:
+def _fall_landing_point(
+    position: PetPoint,
+    target: PetTarget,
+    pet_size: float,
+) -> PetPoint | None:
     if target.kind == PetTargetKind.CHART and target.path:
         path = target.shifted_path(pet_size)
-        below = tuple(point for point in path if point.y >= position.y)
-        candidates = below or path
-        return min(candidates, key=lambda point: math.hypot(
-            position.x - point.x,
-            position.y - point.y,
-        ))
-    return target.support_point(position, pet_size)
+        intersections: list[PetPoint] = []
+        if len(path) == 1:
+            if math.isclose(path[0].x, position.x, abs_tol=1e-6):
+                intersections.append(path[0])
+        else:
+            for start, end in zip(path, path[1:]):
+                minimum_x, maximum_x = sorted((start.x, end.x))
+                if not minimum_x - 1e-6 <= position.x <= maximum_x + 1e-6:
+                    continue
+                delta_x = end.x - start.x
+                if math.isclose(delta_x, 0.0, abs_tol=1e-6):
+                    if math.isclose(position.x, start.x, abs_tol=1e-6):
+                        minimum_y, maximum_y = sorted((start.y, end.y))
+                        intersections.append(PetPoint(
+                            position.x,
+                            min(max(position.y, minimum_y), maximum_y),
+                        ))
+                else:
+                    ratio = (position.x - start.x) / delta_x
+                    intersections.append(PetPoint(
+                        position.x,
+                        start.y + (end.y - start.y) * ratio,
+                    ))
+        below = tuple(point for point in intersections if point.y >= position.y - 1e-6)
+        return min(below, key=lambda point: point.y - position.y, default=None)
+
+    start, end = target.support_segment(position, pet_size)
+    if not math.isclose(start.y, end.y, abs_tol=1e-6):
+        return None
+    minimum_x, maximum_x = sorted((start.x, end.x))
+    if not minimum_x - 1e-6 <= position.x <= maximum_x + 1e-6:
+        return None
+    point = PetPoint(position.x, start.y)
+    return point if point.y >= position.y - 1e-6 else None
+
+
+def _is_on_support(
+    target: PetTarget,
+    position: PetPoint,
+    pet_size: float,
+    viewport: PetRect | None,
+) -> bool:
+    if target.kind == PetTargetKind.CHART and target.path:
+        points = target.shifted_path(pet_size)
+        if viewport is not None:
+            points = tuple(viewport.clamp(point, pet_size) for point in points)
+        return any(
+            math.hypot(position.x - point.x, position.y - point.y) <= 1e-6
+            for point in points
+        )
+    start, end = target.support_segment(position, pet_size)
+    if viewport is not None:
+        start = viewport.clamp(start, pet_size)
+        end = viewport.clamp(end, pet_size)
+    if math.isclose(start.x, end.x, abs_tol=1e-6):
+        low, high = sorted((start.y, end.y))
+        closest = PetPoint(start.x, min(max(position.y, low), high))
+    else:
+        low, high = sorted((start.x, end.x))
+        closest = PetPoint(min(max(position.x, low), high), start.y)
+    return math.hypot(position.x - closest.x, position.y - closest.y) <= 1e-6
 
 
 def _target_for_state(
@@ -316,7 +387,10 @@ def _target_for_state(
     pet_size: float,
     viewport: PetRect,
 ) -> PetTarget | None:
-    if state.target_id:
+    # A falling pet must re-evaluate the vertical ray every tick. Geometry can
+    # appear or move while it is falling; retaining an older, lower target
+    # would let the pet pass through a newly available support above it.
+    if state.target_id and state.mode != PetMode.FALL:
         for target in targets:
             if target.id == state.target_id and target.valid:
                 return target
@@ -328,9 +402,18 @@ def _target_for_state(
     if state.mode == PetMode.FALL:
         below = tuple(
             target for target in valid
-            if _fall_landing_point(state.position, target, pet_size).y > state.position.y + 1e-6
+            if (
+                (landing := _fall_landing_point(state.position, target, pet_size)) is not None
+                and landing.y >= state.position.y - 1e-6
+            )
         )
-        return nearest_pet_target(state.position, below or valid, pet_size)
+        return min(
+            below,
+            key=lambda target: (
+                _fall_landing_point(state.position, target, pet_size).y - state.position.y
+            ),
+            default=None,
+        )
     return nearest_pet_target(state.position, valid, pet_size, viewport)
 
 
@@ -438,21 +521,77 @@ def _move_along_path(
             return current, cursor, False
 
 
+def _gravity_step(vertical_velocity: float, *, allow_upward: bool = False) -> tuple[float, float]:
+    initial_velocity = vertical_velocity if allow_upward else max(0.0, vertical_velocity)
+    displacement = (
+        initial_velocity * FALL_TIME_STEP_SECONDS
+        + 0.5 * FALL_GRAVITY * FALL_TIME_STEP_SECONDS ** 2
+    )
+    return displacement, initial_velocity + FALL_GRAVITY * FALL_TIME_STEP_SECONDS
+
+
+def _fall_impact_velocity(vertical_velocity: float, distance: float) -> float:
+    initial_velocity = max(0.0, vertical_velocity)
+    return math.sqrt(max(
+        0.0,
+        initial_velocity * initial_velocity + 2.0 * FALL_GRAVITY * max(0.0, distance),
+    ))
+
+
 def _advance_bounce(
     state: PetState,
     target: PetTarget,
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    landing = viewport.clamp(_fall_landing_point(state.position, target, pet_size), pet_size)
-    velocity = min(MAX_FALL_SPEED, state.vertical_velocity + FALL_GRAVITY)
-    next_y = state.position.y + velocity
+    landing = viewport.clamp(
+        _fall_landing_point(state.position, target, pet_size)
+        or target.support_point(state.position, pet_size),
+        pet_size,
+    )
+    return _advance_bounce_at(
+        state,
+        landing,
+        target.id,
+        target.id,
+        viewport,
+        pet_size,
+    )
+
+
+def _advance_viewport_bottom_bounce(
+    state: PetState,
+    viewport: PetRect,
+    pet_size: float,
+) -> PetState:
+    landing = viewport.clamp(PetPoint(state.position.x, viewport.bottom), pet_size)
+    return _advance_bounce_at(
+        state,
+        landing,
+        _VIEWPORT_BOTTOM_TARGET_ID,
+        None,
+        viewport,
+        pet_size,
+    )
+
+
+def _advance_bounce_at(
+    state: PetState,
+    landing: PetPoint,
+    bounce_target_id: str,
+    resting_target_id: str | None,
+    viewport: PetRect,
+    pet_size: float,
+) -> PetState:
+    displacement, velocity = _gravity_step(state.vertical_velocity, allow_upward=True)
+    next_y = state.position.y + displacement
     if velocity > 0.0 and next_y >= landing.y:
         position = viewport.clamp(PetPoint(state.position.x, landing.y), pet_size)
         if state.bounces_remaining > 1:
             return replace(
                 state,
                 position=position,
+                target_id=bounce_target_id,
                 vertical_velocity=-(FIRST_BOUNCE_SPEED * BOUNCE_DECAY),
                 bounces_remaining=state.bounces_remaining - 1,
                 movement_speed=0.0,
@@ -461,13 +600,79 @@ def _advance_bounce(
             state,
             position=position,
             mode=PetMode.IDLE,
+            target_id=resting_target_id,
             idle_ticks_remaining=IDLE_TICKS,
             movement_speed=0.0,
             vertical_velocity=0.0,
             bounces_remaining=0,
         )
     position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
-    return replace(state, position=position, vertical_velocity=velocity, movement_speed=0.0)
+    return replace(
+        state,
+        position=position,
+        mode=PetMode.BOUNCE,
+        target_id=bounce_target_id,
+        vertical_velocity=velocity,
+        movement_speed=0.0,
+    )
+
+
+def _land_at_viewport_bottom(
+    state: PetState,
+    position: PetPoint,
+    impact_velocity: float,
+) -> PetState:
+    if impact_velocity >= HARD_LANDING_SPEED:
+        return replace(
+            state,
+            position=position,
+            mode=PetMode.BOUNCE,
+            target_id=_VIEWPORT_BOTTOM_TARGET_ID,
+            idle_ticks_remaining=0,
+            movement_speed=0.0,
+            vertical_velocity=-FIRST_BOUNCE_SPEED,
+            bounces_remaining=BOUNCE_COUNT,
+        )
+    return replace(
+        state,
+        position=position,
+        mode=PetMode.IDLE,
+        target_id=None,
+        idle_ticks_remaining=IDLE_TICKS,
+        movement_speed=0.0,
+        vertical_velocity=0.0,
+        bounces_remaining=0,
+    )
+
+
+def _advance_free_fall(
+    state: PetState,
+    viewport: PetRect,
+    pet_size: float,
+) -> PetState:
+    clamped = viewport.clamp(state.position, pet_size)
+    bottom = viewport.clamp(PetPoint(clamped.x, viewport.bottom), pet_size)
+    if clamped.y >= bottom.y - 1e-6:
+        return _land_at_viewport_bottom(state, bottom, state.vertical_velocity)
+    displacement, velocity = _gravity_step(state.vertical_velocity)
+    next_y = min(bottom.y, clamped.y + displacement)
+    landed = math.isclose(next_y, bottom.y, abs_tol=1e-6)
+    if landed:
+        impact_velocity = _fall_impact_velocity(
+            state.vertical_velocity,
+            bottom.y - clamped.y,
+        )
+        return _land_at_viewport_bottom(state, bottom, impact_velocity)
+    return replace(
+        state,
+        position=PetPoint(bottom.x, next_y),
+        mode=PetMode.FALL,
+        target_id=None,
+        idle_ticks_remaining=0,
+        movement_speed=0.0,
+        vertical_velocity=velocity,
+        bounces_remaining=0,
+    )
 
 
 def _advance_fall(
@@ -476,27 +681,25 @@ def _advance_fall(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    landing = viewport.clamp(_fall_landing_point(state.position, target, pet_size), pet_size)
-    if landing.y <= state.position.y + 1e-6:
-        return replace(
-            state,
-            mode=PetMode.FLY,
-            target_id=target.id,
-            movement_speed=0.0,
-            vertical_velocity=0.0,
-        )
-    velocity = min(MAX_FALL_SPEED, max(0.0, state.vertical_velocity) + FALL_GRAVITY)
-    next_y = state.position.y + velocity
-    if next_y < landing.y:
-        position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
-        return replace(
-            state,
-            position=position,
-            mode=PetMode.FALL,
-            target_id=target.id,
-            movement_speed=0.0,
-            vertical_velocity=velocity,
-        )
+    raw_landing = _fall_landing_point(state.position, target, pet_size)
+    if raw_landing is None:
+        return _advance_free_fall(replace(state, target_id=None), viewport, pet_size)
+    landing = viewport.clamp(raw_landing, pet_size)
+    if landing.y < state.position.y - 1e-6:
+        return _advance_free_fall(replace(state, target_id=None), viewport, pet_size)
+    if not math.isclose(landing.y, state.position.y, abs_tol=1e-6):
+        displacement, velocity = _gravity_step(state.vertical_velocity)
+        next_y = state.position.y + displacement
+        if next_y < landing.y:
+            position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
+            return replace(
+                state,
+                position=position,
+                mode=PetMode.FALL,
+                target_id=target.id,
+                movement_speed=0.0,
+                vertical_velocity=velocity,
+            )
     position = viewport.clamp(PetPoint(state.position.x, landing.y), pet_size)
     if not math.isclose(position.x, landing.x, abs_tol=1e-6):
         return replace(
@@ -507,7 +710,11 @@ def _advance_fall(
             movement_speed=0.0,
             vertical_velocity=0.0,
         )
-    if velocity >= HARD_LANDING_SPEED:
+    impact_velocity = _fall_impact_velocity(
+        state.vertical_velocity,
+        landing.y - state.position.y,
+    )
+    if impact_velocity >= HARD_LANDING_SPEED:
         return replace(
             state,
             position=position,
@@ -695,17 +902,36 @@ def advance_pet(
     pet_size: float = 0.0,
 ) -> PetState:
     margin = max(0.0, pet_size)
+    state = replace(state, position=viewport.clamp(state.position, margin))
     if state.mode == PetMode.DRAGGING:
-        return replace(state, position=viewport.clamp(state.position, margin))
+        return state
+    target_list = tuple(target for target in targets if target.valid)
+    if (
+        state.target_id
+        and state.target_id != _VIEWPORT_BOTTOM_TARGET_ID
+        and not any(target.id == state.target_id for target in target_list)
+    ):
+        state = replace(
+            state,
+            mode=PetMode.FALL,
+            target_id=None,
+            idle_ticks_remaining=0,
+            movement_speed=0.0,
+            vertical_velocity=max(0.0, state.vertical_velocity),
+            bounces_remaining=0,
+        )
     if state.idle_ticks_remaining > 0:
         return replace(
             state,
             idle_ticks_remaining=state.idle_ticks_remaining - 1,
             movement_speed=0.0,
         )
-    target_list = tuple(targets)
+    if state.mode == PetMode.BOUNCE and state.target_id == _VIEWPORT_BOTTOM_TARGET_ID:
+        return _advance_viewport_bottom_bounce(state, viewport, margin)
     target = _target_for_state(state, target_list, margin, viewport)
     if target is None:
+        if state.mode == PetMode.FALL:
+            return _advance_free_fall(state, viewport, margin)
         return replace(
             state,
             position=viewport.clamp(state.position, margin),
@@ -750,8 +976,12 @@ class PetCompanion:
         self.state = move_drag(self.state, pointer, viewport, self.pet_size)
         return self.state
 
-    def drag_release(self) -> PetState:
-        self.state = release_drag(self.state)
+    def drag_release(
+        self,
+        targets: Iterable[PetTarget] = (),
+        viewport: PetRect | None = None,
+    ) -> PetState:
+        self.state = release_drag(self.state, targets, viewport, self.pet_size)
         return self.state
 
     def tick(self, targets: Iterable[PetTarget], viewport: PetRect) -> PetState:

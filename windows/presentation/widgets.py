@@ -290,6 +290,8 @@ class WordBubbleManager:
         context_example: str,
         x_root: int,
         y_root: int,
+        *,
+        owner: tk.Misc | None = None,
     ) -> None:
         """Open a bubble from a concrete token, or clear on a blank click."""
         if token_text is None:
@@ -299,7 +301,7 @@ class WordBubbleManager:
                 self.clear()
             return
         token = WordToken(token_text, 0, len(token_text))
-        self._open(parent_depth, token, context_example, x_root, y_root)
+        self._open(parent_depth, token, context_example, x_root, y_root, owner=owner)
 
     def clear(self) -> None:
         self.stack = self.stack.close_all()
@@ -328,7 +330,14 @@ class WordBubbleManager:
         if token is None:
             self.clear()
             return "break"
-        self._open(-1, token, context, event.x_root, event.y_root)
+        self._open(
+            -1,
+            token,
+            context,
+            event.x_root,
+            event.y_root,
+            owner=widget.winfo_toplevel(),
+        )
         return "break"
 
     def _token_at(self, widget: tk.Label, text: str, x: int, y: int) -> WordToken | None:
@@ -387,6 +396,8 @@ class WordBubbleManager:
         context: str,
         x_root: int,
         y_root: int,
+        *,
+        owner: tk.Misc | None = None,
     ) -> None:
         definition = self.service.word_bubble(token.text, context)
         previous = self.stack
@@ -401,7 +412,13 @@ class WordBubbleManager:
         self._destroy_from(depth)
         if not self.stack.frames:
             return
-        self._create_popup(self.stack.frames[-1].definition, depth, x_root, y_root)
+        self._create_popup(
+            self.stack.frames[-1].definition,
+            depth,
+            x_root,
+            y_root,
+            owner=owner,
+        )
 
     def _destroy_from(self, depth: int) -> None:
         while self._windows and len(self._windows) > depth:
@@ -409,14 +426,27 @@ class WordBubbleManager:
             if window.winfo_exists():
                 window.destroy()
 
-    def _create_popup(self, definition: BubbleDefinition, depth: int, x_root: int, y_root: int) -> None:
+    def _create_popup(
+        self,
+        definition: BubbleDefinition,
+        depth: int,
+        x_root: int,
+        y_root: int,
+        *,
+        owner: tk.Misc | None,
+    ) -> None:
         # A proper, titled window (not an overrideredirect bubble) so it can be
         # moved/closed and stays above the main window; styled like the
         # word-learning reminder card.
-        popup = tk.Toplevel(self.root)
+        owner_window = (owner or self.root).winfo_toplevel()
+        popup = tk.Toplevel(owner_window)
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
-        popup.transient(self.root.winfo_toplevel())
+        popup.transient(owner_window)
+        try:
+            popup.wm_attributes("-topmost", bool(owner_window.wm_attributes("-topmost")))
+        except tk.TclError:
+            pass
         popup.minsize(360, 240)
         popup.geometry("640x480")
 
@@ -459,7 +489,7 @@ class WordBubbleManager:
             sentence = WordClickableText(
                 body,
                 on_token=lambda token, ctx, x_root, y_root, d=depth: self.open_from_token(
-                    d, token, ctx, x_root, y_root,
+                    d, token, ctx, x_root, y_root, owner=popup,
                 ),
                 context=english,
                 bg="#FFFFFF",
@@ -517,15 +547,41 @@ class WordBubbleManager:
         popup.geometry(f"+{x}+{max(4, y)}")
         popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_current(d))
         self._windows.append(popup)
+        popup.bind(
+            "<Destroy>",
+            lambda event, window=popup, d=depth: self._on_popup_destroyed(event, window, d),
+            add="+",
+        )
         if self._on_popup_created is not None:
             self._on_popup_created(popup, f"word-bubble-{depth}")
+
+    def _on_popup_destroyed(
+        self,
+        event: tk.Event,
+        popup: tk.Toplevel,
+        depth: int,
+    ) -> None:
+        """Keep the presentation stack aligned when an owner destroys a child."""
+        if event.widget is not popup or popup not in self._windows:
+            return
+        popup_index = self._windows.index(popup)
+        self._windows.pop(popup_index)
+        if popup_index <= depth:
+            self.stack = self.stack.close_bubble(popup_index)
 
     def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
         token = self._token_at(widget, example, event.x, event.y)
         if token is not None:
             x_root = widget.winfo_rootx() + event.x
             y_root = widget.winfo_rooty() + event.y
-            self._open(parent_depth, token, example, x_root, y_root)
+            self._open(
+                parent_depth,
+                token,
+                example,
+                x_root,
+                y_root,
+                owner=widget.winfo_toplevel(),
+            )
         else:
             self._close_after(parent_depth)
         return "break"
@@ -869,6 +925,10 @@ class PetOverlay(tk.Toplevel):
         self.overrideredirect(True)
         self.transient(parent)
         self.configure(bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
+        try:
+            self.wm_attributes("-topmost", bool(parent.wm_attributes("-topmost")))
+        except tk.TclError:
+            pass
         try:
             self.wm_attributes("-transparentcolor", self.TRANSPARENT_KEY)
         except tk.TclError:

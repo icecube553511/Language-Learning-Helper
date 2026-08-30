@@ -1,5 +1,9 @@
 package com.lexitrack.learning.presentation
 
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import com.lexitrack.learning.domain.BubbleDefinition
+import com.lexitrack.learning.domain.PetPoint
 import com.lexitrack.learning.domain.PetRect
 import com.lexitrack.learning.domain.PetTarget
 import com.lexitrack.learning.domain.PetTargetKind
@@ -9,6 +13,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PetPresentationTest {
+    private fun bubble(word: String) = BubbleDefinition(
+        wordId = word,
+        word = word,
+        partOfSpeech = "n.",
+        meaning = "释义",
+        examples = listOf("A $word example."),
+    )
+
     @Test
     fun `pet presentation uses the shared logical size and tick rate`() {
         assertEquals(112, PET_DISPLAY_SIZE_DP)
@@ -80,5 +92,94 @@ class PetPresentationTest {
 
         assertEquals(listOf("dialog"), stack)
         assertEquals("dialog", stack.lastOrNull())
+    }
+
+    @Test
+    fun `word bubble retains the host pet and dialog targets stay localized`() {
+        val stack = mutableListOf<Any>()
+
+        assertEquals("trigger-window-retained", WORD_BUBBLE_PET_SCOPE)
+        assertTrue(isMainPetWindowVisible(stack))
+
+        val viewport = PetRect(0f, 0f, 300f, 160f)
+        val localized = localizePetTargets(
+            listOf(
+                PetTarget("frame", PetTargetKind.SURFACE, PetRect(100f, 200f, 300f, 160f)),
+                PetTarget("clipped-close", PetTargetKind.CONTROL, PetRect(360f, 210f, 60f, 40f)),
+                PetTarget("outside", PetTargetKind.CONTROL, PetRect(50f, 50f, 20f, 20f)),
+            ),
+            origin = PetPoint(100f, 200f),
+            viewport = viewport,
+        )
+
+        assertEquals(setOf("frame", "clipped-close"), localized.map(PetTarget::id).toSet())
+        assertEquals(PetRect(0f, 0f, 300f, 160f), localized.first { it.id == "frame" }.rect)
+        assertEquals(PetRect(260f, 10f, 40f, 40f), localized.first { it.id == "clipped-close" }.rect)
+        assertTrue(localized.all { target ->
+            target.rect.left >= viewport.left && target.rect.top >= viewport.top &&
+                target.rect.right <= viewport.right && target.rect.bottom <= viewport.bottom
+        })
+    }
+
+    @Test
+    fun `word bubble positioning stays inside its host window`() {
+        val viewport = PetRect(0f, 0f, 300f, 220f)
+        val hostOrigin = PetPoint(100f, 200f)
+        val size = IntSize(180, 100)
+
+        val below = wordBubbleOffset(
+            anchor = IntRect(220, 230, 260, 250),
+            hostOrigin = hostOrigin,
+            viewport = viewport,
+            bubbleSize = size,
+            gapPx = 6,
+        )
+        val aboveAndClamped = wordBubbleOffset(
+            anchor = IntRect(380, 390, 430, 410),
+            hostOrigin = hostOrigin,
+            viewport = viewport,
+            bubbleSize = size,
+            gapPx = 6,
+        )
+
+        assertEquals(50, below.x)
+        assertEquals(56, below.y)
+        assertEquals(120, aboveAndClamped.x)
+        assertEquals(84, aboveAndClamped.y)
+    }
+
+    @Test
+    fun `learning reminder replaces main pet and closing it restores main pet`() {
+        val reminder = Any()
+        val stack = mutableListOf<Any>()
+
+        updatePetWindowStack(stack, reminder, active = true)
+        assertFalse(isMainPetWindowVisible(stack))
+        assertTrue(isPetWindowVisible(stack, reminder))
+        assertEquals(1, listOf(isMainPetWindowVisible(stack), isPetWindowVisible(stack, reminder)).count { it })
+
+        updatePetWindowStack(stack, reminder, active = false)
+        assertTrue(isMainPetWindowVisible(stack))
+        assertFalse(isPetWindowVisible(stack, reminder))
+        assertEquals(1, listOf(isMainPetWindowVisible(stack), isPetWindowVisible(stack, reminder)).count { it })
+    }
+
+    @Test
+    fun `reminder word bubbles use an independent host without replacing the reminder pet`() {
+        val anchor = IntRect(20, 30, 60, 50)
+        val rootHost = openWordBubbleHost(WordBubbleHostState(), bubble("root"), -1, anchor)
+        var reminderHost = openWordBubbleHost(WordBubbleHostState(), bubble("reminder"), -1, anchor)
+        reminderHost = openWordBubbleHost(reminderHost, bubble("child"), 0, anchor)
+
+        assertEquals(listOf("root"), rootHost.bubbles.map { it.data.word })
+        assertEquals(listOf("reminder", "child"), reminderHost.bubbles.map { it.data.word })
+
+        val reminder = Any()
+        val stack = mutableListOf<Any>()
+        updatePetWindowStack(stack, reminder, active = true)
+        assertTrue(isPetWindowVisible(stack, reminder))
+        assertFalse(isMainPetWindowVisible(stack))
+        assertEquals(listOf(reminder), stack)
+        assertEquals(listOf("reminder"), closeWordBubbleHostAt(reminderHost, 1).bubbles.map { it.data.word })
     }
 }

@@ -15,6 +15,9 @@ from domain.pet_companion import (
     BOUNCE_COUNT,
     CRUISE_SPEED,
     FALL_GRAVITY,
+    FALL_TIME_STEP_SECONDS,
+    FIRST_BOUNCE_SPEED,
+    HARD_LANDING_SPEED,
     IDLE_TICKS,
     MAX_FALL_SPEED,
     MOTION_ACCELERATION,
@@ -85,8 +88,12 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(golden["facings"], [facing.value for facing in PetFacing])
         self.assertEqual(motion["acceleration"], MOTION_ACCELERATION)
         self.assertEqual(motion["cruiseSpeed"], CRUISE_SPEED)
-        self.assertEqual(motion["fallGravity"], FALL_GRAVITY)
+        self.assertEqual(motion["fallTimeStepSeconds"], FALL_TIME_STEP_SECONDS)
+        self.assertEqual(motion["fallGravityLogicalUnitsPerSecondSquared"], FALL_GRAVITY)
         self.assertEqual(motion["maxFallSpeed"], MAX_FALL_SPEED)
+        self.assertEqual(motion["hardLandingSpeed"], HARD_LANDING_SPEED)
+        self.assertEqual(motion["fallVelocityUnits"], "logical-units-per-second")
+        self.assertEqual(motion["fallIntegration"], "closed-form-constant-acceleration")
         self.assertEqual(motion["bounceCount"], BOUNCE_COUNT)
         self.assertEqual(motion["bounceDecay"], BOUNCE_DECAY)
         self.assertEqual(motion["idleTicks"], IDLE_TICKS)
@@ -105,8 +112,18 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(on_navigation(navigation).mode.value, golden["vectors"][1]["expectedMode"])
         drag = golden["vectors"][2]
         dragging = begin_drag(PetState(PetPoint(*drag["position"])), PetPoint(*drag["release"]))
-        released = release_drag(dragging)
+        support = PetTarget(
+            "release-support",
+            PetTargetKind.SURFACE,
+            PetRect(0, drag["release"][1], drag["viewport"][0], 20),
+        )
+        released = release_drag(
+            dragging,
+            [support],
+            PetRect(0, 0, *drag["viewport"]),
+        )
         assert_point(self, released.position, drag["expectedPosition"])
+        self.assertEqual(released.mode.value, drag["expectedMode"])
         self.assertTrue(golden["drag"]["preserveGrabOffset"])
 
     def test_shared_behavior_vectors(self):
@@ -121,9 +138,14 @@ class PetCompanionTests(unittest.TestCase):
                 "chart-path-reverses",
                 "flight-is-vertical-first",
                 "navigation-prefers-below",
-                "navigation-fallback-ignores-center-bias",
+                "fall-without-below-target-uses-viewport-bottom",
                 "fall-accelerates",
                 "hard-landing-bounces-twice",
+                "fall-skips-horizontally-offset-support",
+                "fall-retargets-new-nearest-support-every-tick",
+                "fall-already-touching-support-lands",
+                "synthetic-bottom-hard-landing-bounces-twice",
+                "suspended-drag-release-enters-fall",
                 "center-bias-prefers-interior",
                 "center-bias-measures-nearest-support",
             },
@@ -214,15 +236,26 @@ class PetCompanionTests(unittest.TestCase):
         )
         self.assertEqual(navigation_result.target_id, navigation["expectedTarget"])
         assert_point(self, navigation_result.position, navigation["expectedPosition"])
+        self.assertAlmostEqual(
+            navigation_result.vertical_velocity,
+            navigation["expectedVerticalVelocity"],
+        )
 
-        fallback = behaviors["navigation-fallback-ignores-center-bias"]
+        fallback = behaviors["fall-without-below-target-uses-viewport-bottom"]
         fallback_viewport = PetRect(0, 0, *fallback["viewport"])
         fallback_result = advance_pet(
             on_navigation(PetState(PetPoint(*fallback["position"]))),
             [self.target_from(item) for item in fallback["targets"]],
             fallback_viewport,
+            pet_size=fallback["petHalfSize"],
         )
         self.assertEqual(fallback_result.target_id, fallback["expectedTarget"])
+        self.assertEqual(fallback_result.mode.value, fallback["expectedMode"])
+        self.assertGreaterEqual(fallback_result.position.y, fallback["position"][1])
+        self.assertEqual(
+            fallback_viewport.bottom - fallback["petHalfSize"],
+            fallback["expectedSyntheticSupportY"],
+        )
 
         falling = behaviors["fall-accelerates"]
         falling_target = self.target_from(falling["target"])
@@ -254,7 +287,99 @@ class PetCompanionTests(unittest.TestCase):
         )
         assert_point(self, hard_result.position, hard["expectedPosition"])
         self.assertEqual(hard_result.mode.value, hard["expectedMode"])
+        self.assertEqual(hard_result.vertical_velocity, hard["expectedBounceVerticalVelocity"])
         self.assertEqual(hard_result.bounces_remaining, hard["expectedBouncesRemaining"])
+
+        offset = behaviors["fall-skips-horizontally-offset-support"]
+        offset_result = advance_pet(
+            PetState(
+                PetPoint(*offset["position"]),
+                PetMode.FALL,
+                vertical_velocity=offset["verticalVelocity"],
+            ),
+            [self.target_from(item) for item in offset["targets"]],
+            PetRect(0, 0, *offset["viewport"]),
+            pet_size=offset["petHalfSize"],
+        )
+        self.assertEqual(offset_result.target_id, offset["expectedTarget"])
+        self.assertEqual(offset_result.mode.value, offset["expectedMode"])
+        assert_point(self, offset_result.position, offset["expectedPositionAfterOneTick"])
+        self.assertEqual(offset_result.vertical_velocity, offset["expectedVerticalVelocity"])
+
+        retarget = behaviors["fall-retargets-new-nearest-support-every-tick"]
+        retarget_result = advance_pet(
+            PetState(
+                PetPoint(*retarget["position"]),
+                PetMode.FALL,
+                target_id=retarget["previousTarget"],
+                vertical_velocity=retarget["verticalVelocity"],
+            ),
+            [self.target_from(item) for item in retarget["targets"]],
+            PetRect(0, 0, *retarget["viewport"]),
+            pet_size=retarget["petHalfSize"],
+        )
+        self.assertEqual(retarget_result.target_id, retarget["expectedTarget"])
+        self.assertEqual(retarget_result.mode.value, retarget["expectedMode"])
+        assert_point(self, retarget_result.position, retarget["expectedPositionAfterOneTick"])
+        self.assertEqual(
+            retarget_result.vertical_velocity,
+            retarget["expectedVerticalVelocity"],
+        )
+
+        touching = behaviors["fall-already-touching-support-lands"]
+        touching_result = advance_pet(
+            PetState(
+                PetPoint(*touching["position"]),
+                PetMode(touching["mode"]),
+                vertical_velocity=touching["verticalVelocity"],
+            ),
+            [self.target_from(touching["target"])],
+            PetRect(0, 0, *touching["viewport"]),
+            pet_size=touching["petHalfSize"],
+        )
+        assert_point(self, touching_result.position, touching["expectedPosition"])
+        self.assertEqual(touching_result.target_id, touching["expectedTarget"])
+        self.assertEqual(touching_result.mode.value, touching["expectedMode"])
+        self.assertEqual(
+            touching_result.vertical_velocity,
+            touching["expectedVerticalVelocity"],
+        )
+
+        synthetic = behaviors["synthetic-bottom-hard-landing-bounces-twice"]
+        synthetic_result = advance_pet(
+            PetState(
+                PetPoint(*synthetic["position"]),
+                PetMode.FALL,
+                vertical_velocity=synthetic["verticalVelocity"],
+            ),
+            [],
+            PetRect(0, 0, *synthetic["viewport"]),
+            pet_size=synthetic["petHalfSize"],
+        )
+        assert_point(self, synthetic_result.position, synthetic["expectedPosition"])
+        self.assertEqual(synthetic_result.mode.value, synthetic["expectedMode"])
+        self.assertEqual(
+            synthetic_result.vertical_velocity,
+            synthetic["expectedBounceVerticalVelocity"],
+        )
+        self.assertEqual(
+            synthetic_result.bounces_remaining,
+            synthetic["expectedBouncesRemaining"],
+        )
+
+        suspended = behaviors["suspended-drag-release-enters-fall"]
+        suspended_result = release_drag(
+            PetState(PetPoint(*suspended["position"]), PetMode.DRAGGING),
+            [self.target_from(item) for item in suspended["targets"]],
+            PetRect(0, 0, *suspended["viewport"]),
+            suspended["petHalfSize"],
+        )
+        self.assertEqual(suspended_result.mode.value, suspended["expectedMode"])
+        self.assertEqual(suspended_result.target_id, suspended["expectedTarget"])
+        self.assertEqual(
+            suspended_result.vertical_velocity,
+            suspended["expectedVerticalVelocity"],
+        )
 
         centre = behaviors["center-bias-prefers-interior"]
         centre_viewport = PetRect(0, 0, *centre["viewport"])
@@ -322,18 +447,19 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(state.position.y, 56)
         self.assertEqual(state.mode, PetMode.IDLE)
 
-    def test_fall_speed_is_capped_and_hard_landing_completes_two_bounces_without_drift(self):
+    def test_fall_has_no_speed_cap_and_hard_landing_completes_two_bounces_without_drift(self):
         target = PetTarget("landing", PetTargetKind.SURFACE, PetRect(20, 80, 60, 20))
-        capped = advance_pet(
-            PetState(PetPoint(50, 10), PetMode.FALL, vertical_velocity=9.8),
-            [target],
-            PetRect(0, 0, 120, 120),
+        uncapped = advance_pet(
+            PetState(PetPoint(50, 10), PetMode.FALL, vertical_velocity=1_000),
+            [PetTarget("far", PetTargetKind.SURFACE, PetRect(20, 400, 60, 20))],
+            PetRect(0, 0, 800, 700),
         )
-        self.assertEqual(capped.vertical_velocity, MAX_FALL_SPEED)
-        self.assertEqual(capped.position, PetPoint(50, 20))
+        self.assertIsNone(MAX_FALL_SPEED)
+        self.assertAlmostEqual(uncapped.vertical_velocity, 1_034.375)
+        self.assertAlmostEqual(uncapped.position.y, 26.275)
 
         state = advance_pet(
-            PetState(PetPoint(50, 75), PetMode.FALL, vertical_velocity=8),
+            PetState(PetPoint(50, 75), PetMode.FALL, vertical_velocity=500),
             [target],
             PetRect(0, 0, 120, 120),
         )
@@ -347,6 +473,128 @@ class PetCompanionTests(unittest.TestCase):
                 break
         self.assertEqual(bounce_counts, [2, 1, 0])
         self.assertEqual(state.mode, PetMode.IDLE)
+
+    def test_fall_matches_shared_closed_form_samples(self):
+        vector = self.golden["fallPhysicsVectors"][0]
+        target = PetTarget("landing", PetTargetKind.SURFACE, PetRect(0, 500, 200, 20))
+        state = PetState(
+            PetPoint(50, vector["initialPositionY"]),
+            PetMode.FALL,
+            vertical_velocity=vector["initialVerticalVelocity"],
+        )
+        previous_y = state.position.y
+        for sample in vector["samples"]:
+            state = advance_pet(state, [target], PetRect(0, 0, 800, 700))
+            self.assertAlmostEqual(state.position.y, sample["expectedY"])
+            self.assertAlmostEqual(
+                state.vertical_velocity,
+                sample["expectedVerticalVelocity"],
+            )
+            self.assertAlmostEqual(
+                state.position.y - previous_y,
+                sample["expectedTickDisplacement"],
+            )
+            previous_y = state.position.y
+
+    def test_landing_threshold_uses_velocity_at_contact_not_end_of_tick(self):
+        target = PetTarget("nearby", PetTargetKind.SURFACE, PetRect(0, 100, 200, 20))
+        state = advance_pet(
+            PetState(PetPoint(50, 99.5), PetMode.FALL, vertical_velocity=430),
+            [target],
+            PetRect(0, 0, 200, 160),
+        )
+
+        self.assertEqual(state.position, PetPoint(50, 100))
+        self.assertEqual(state.mode, PetMode.IDLE)
+        self.assertEqual(state.bounces_remaining, 0)
+
+    def test_synthetic_bottom_hard_landing_completes_two_bounces(self):
+        viewport = PetRect(0, 0, 800, 700)
+        state = advance_pet(
+            PetState(PetPoint(100, 643), PetMode.FALL, vertical_velocity=500),
+            [],
+            viewport,
+            pet_size=56,
+        )
+        bounce_counts = [state.bounces_remaining]
+        for _ in range(100):
+            state = advance_pet(state, [], viewport, pet_size=56)
+            if state.bounces_remaining != bounce_counts[-1]:
+                bounce_counts.append(state.bounces_remaining)
+            if state.mode == PetMode.IDLE:
+                break
+
+        self.assertEqual(bounce_counts, [2, 1, 0])
+        self.assertEqual(state.mode, PetMode.IDLE)
+        self.assertIsNone(state.target_id)
+        self.assertEqual(state.position, PetPoint(100, 644))
+
+    def test_lost_support_and_no_below_target_keep_falling_downward(self):
+        viewport = PetRect(0, 0, 800, 700)
+        above = PetTarget("above", PetTargetKind.SURFACE, PetRect(20, 20, 120, 20))
+        state = advance_pet(
+            PetState(PetPoint(60, 100), PetMode.FALL),
+            [above],
+            viewport,
+        )
+        self.assertEqual(state.mode, PetMode.FALL)
+        self.assertGreater(state.position.y, 100)
+        self.assertIsNone(state.target_id)
+
+        lost_target = advance_pet(
+            PetState(
+                PetPoint(60, 100),
+                PetMode.IDLE,
+                target_id="removed",
+                idle_ticks_remaining=IDLE_TICKS,
+            ),
+            [],
+            viewport,
+        )
+        self.assertEqual(lost_target.mode, PetMode.FALL)
+        self.assertGreater(lost_target.position.y, 100)
+        self.assertIsNone(lost_target.target_id)
+
+    def test_fall_reselects_the_nearest_support_on_every_tick(self):
+        viewport = PetRect(0, 0, 800, 700)
+        far = PetTarget("far", PetTargetKind.SURFACE, PetRect(20, 500, 120, 20))
+        near = PetTarget("near", PetTargetKind.SURFACE, PetRect(20, 220, 120, 20))
+        state = PetState(
+            PetPoint(60, 100),
+            PetMode.FALL,
+            target_id=far.id,
+            vertical_velocity=125.0,
+        )
+
+        result = advance_pet(state, [far, near], viewport)
+
+        self.assertEqual(result.target_id, near.id)
+        self.assertEqual(result.mode, PetMode.FALL)
+        self.assertEqual(result.position.x, state.position.x)
+        self.assertGreater(result.position.y, state.position.y)
+
+    def test_fall_lands_when_already_touching_the_nearest_support(self):
+        support = PetTarget("touching", PetTargetKind.SURFACE, PetRect(20, 100, 120, 20))
+
+        landed = advance_pet(
+            PetState(PetPoint(60, 100), PetMode.FALL, vertical_velocity=120),
+            [support],
+            PetRect(0, 0, 800, 700),
+        )
+
+        self.assertEqual(landed.position, PetPoint(60, 100))
+        self.assertEqual(landed.mode, PetMode.IDLE)
+        self.assertEqual(landed.target_id, support.id)
+
+        bounced = advance_pet(
+            PetState(PetPoint(60, 100), PetMode.FALL, vertical_velocity=500),
+            [support],
+            PetRect(0, 0, 800, 700),
+        )
+        self.assertEqual(bounced.position, PetPoint(60, 100))
+        self.assertEqual(bounced.mode, PetMode.BOUNCE)
+        self.assertEqual(bounced.vertical_velocity, -FIRST_BOUNCE_SPEED)
+        self.assertEqual(bounced.bounces_remaining, BOUNCE_COUNT)
 
     def test_navigation_uses_strict_landing_distance_without_center_bias(self):
         near_edge = PetTarget("near-edge", PetTargetKind.CONTROL, PetRect(0, 50, 20, 10))
@@ -400,12 +648,34 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(moved.position, PetPoint(10, 70))
         self.assertEqual(move_drag(release_drag(moved), PetPoint(90, 90), viewport).position, moved.position)
 
+    def test_drag_release_idles_on_support_and_falls_when_suspended(self):
+        viewport = PetRect(0, 0, 200, 160)
+        target = PetTarget("card", PetTargetKind.SURFACE, PetRect(20, 100, 120, 40))
+        on_support = release_drag(
+            PetState(PetPoint(60, 80), PetMode.DRAGGING),
+            [target],
+            viewport,
+            20,
+        )
+        suspended = release_drag(
+            PetState(PetPoint(60, 40), PetMode.DRAGGING),
+            [target],
+            viewport,
+            20,
+        )
+        self.assertEqual(on_support.mode, PetMode.IDLE)
+        self.assertEqual(on_support.target_id, target.id)
+        self.assertEqual(suspended.mode, PetMode.FALL)
+        self.assertIsNone(suspended.target_id)
+
     def test_reducer_wrapper_keeps_navigation_and_release_semantics(self):
         companion = PetCompanion(PetState(PetPoint(20, 20)), speed=4, pet_size=4)
         self.assertEqual(companion.navigate().mode, PetMode.FALL)
         companion.drag_start(PetPoint(40, 50))
         companion.drag_move(PetPoint(500, 600), PetRect(0, 0, 800, 700))
-        self.assertEqual(companion.drag_release().position, PetPoint(500, 600))
+        released = companion.drag_release()
+        self.assertEqual(released.position, PetPoint(500, 600))
+        self.assertEqual(released.mode, PetMode.FALL)
 
 
 if __name__ == "__main__":

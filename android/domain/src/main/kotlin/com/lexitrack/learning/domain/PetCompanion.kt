@@ -5,6 +5,7 @@ import kotlin.math.max
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.sqrt
 
 /**
  * Presentation-only state for the Bingzi companion.  The domain owns only
@@ -28,11 +29,11 @@ enum class PetFacing {
 
 const val PET_MOTION_ACCELERATION = 0.5f
 const val PET_CRUISE_SPEED = 4f
-const val PET_FALL_GRAVITY = 0.55f
-const val PET_MAX_FALL_SPEED = 10f
-const val PET_HARD_LANDING_SPEED = 7f
+const val PET_FALL_TIME_STEP_SECONDS = 0.016f
+const val PET_FALL_GRAVITY = 2148.4375f
+const val PET_HARD_LANDING_SPEED = 437.5f
 const val PET_BOUNCE_COUNT = 2
-const val PET_FIRST_BOUNCE_SPEED = 5f
+const val PET_FIRST_BOUNCE_SPEED = 312.5f
 const val PET_BOUNCE_DECAY = 0.55f
 const val PET_CENTER_BIAS_WEIGHT = 0.65f
 const val PET_EDGE_PENALTY_RATIO = 0.15f
@@ -40,6 +41,7 @@ const val PET_IDLE_TICKS = 24
 
 private const val PET_EPSILON = 1e-3f
 private const val PET_PATH_SNAP_EPSILON = 1f
+private const val PET_VIEWPORT_BOTTOM_TARGET_ID = "__viewport-bottom__"
 
 enum class PetTargetKind {
     CONTROL,
@@ -252,19 +254,29 @@ fun moveDrag(
     targetId = null,
 )
 
-fun releaseDrag(state: PetState): PetState = state.copy(
-    mode = PetMode.IDLE,
-    targetId = null,
-    idleTicksRemaining = 0,
-    pathIndex = 0,
-    pathDirection = 1,
-    rollCorners = 0,
-    avoidTargetId = null,
-    movementSpeed = 0f,
-    verticalVelocity = 0f,
-    bouncesRemaining = 0,
-    dragOffset = null,
-)
+fun releaseDrag(
+    state: PetState,
+    targets: List<PetTarget> = emptyList(),
+    viewport: PetRect? = null,
+    halfSize: Float = 0f,
+): PetState {
+    val support = targets.firstOrNull { target ->
+        target.valid && isOnSupport(target, state.position, max(0f, halfSize), viewport)
+    }
+    return state.copy(
+        mode = if (support == null) PetMode.FALL else PetMode.IDLE,
+        targetId = support?.id,
+        idleTicksRemaining = if (support == null) 0 else PET_IDLE_TICKS,
+        pathIndex = 0,
+        pathDirection = 1,
+        rollCorners = 0,
+        avoidTargetId = null,
+        movementSpeed = 0f,
+        verticalVelocity = 0f,
+        bouncesRemaining = 0,
+        dragOffset = null,
+    )
+}
 
 fun advancePet(
     state: PetState,
@@ -272,18 +284,43 @@ fun advancePet(
     viewport: PetRect,
     halfSize: Float,
     step: Float = PET_CRUISE_SPEED,
+    fallUnitScale: Float = 1f,
 ): PetState {
     val margin = max(0f, halfSize)
+    val unitScale = fallUnitScale.coerceAtLeast(PET_EPSILON)
     if (state.mode == PetMode.DRAGGING) return state.copy(position = viewport.clamp(state.position, margin))
-    if (state.idleTicksRemaining > 0) {
-        return state.copy(
-            idleTicksRemaining = state.idleTicksRemaining - 1,
-            movementSpeed = (state.movementSpeed - PET_MOTION_ACCELERATION).coerceAtLeast(0f),
+    val validTargets = targets.filter(PetTarget::valid)
+    val retainedTarget = state.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
+    val currentState = if (
+        state.targetId != null &&
+        state.targetId != PET_VIEWPORT_BOTTOM_TARGET_ID &&
+        retainedTarget == null
+    ) {
+        state.copy(
+            mode = PetMode.FALL,
+            targetId = null,
+            idleTicksRemaining = 0,
+            movementSpeed = 0f,
+            verticalVelocity = state.verticalVelocity.coerceAtLeast(0f),
+            bouncesRemaining = 0,
+        )
+    } else {
+        state
+    }
+    if (currentState.mode != PetMode.FALL && currentState.idleTicksRemaining > 0) {
+        return currentState.copy(
+            idleTicksRemaining = currentState.idleTicksRemaining - 1,
+            movementSpeed = (currentState.movementSpeed - PET_MOTION_ACCELERATION).coerceAtLeast(0f),
         )
     }
-    if (targets.none(PetTarget::valid)) {
-        return state.copy(
-            position = viewport.clamp(state.position, margin),
+    if (currentState.mode == PetMode.BOUNCE && currentState.targetId == PET_VIEWPORT_BOTTOM_TARGET_ID) {
+        return advanceViewportBottomBounce(currentState, viewport, margin, unitScale)
+    }
+    if (validTargets.isEmpty()) {
+        return if (currentState.mode == PetMode.FALL) {
+            advanceFreeFall(currentState, viewport, margin, unitScale)
+        } else currentState.copy(
+            position = viewport.clamp(currentState.position, margin),
             mode = PetMode.IDLE,
             targetId = null,
             movementSpeed = 0f,
@@ -291,38 +328,38 @@ fun advancePet(
             bouncesRemaining = 0,
         )
     }
-    val target = state.targetId?.let { id -> targets.firstOrNull { it.id == id && it.valid } }
-        ?: run {
-            val valid = targets.filter(PetTarget::valid)
-            val candidates = if (state.avoidTargetId != null) {
-                valid.filter { it.id != state.avoidTargetId }.ifEmpty { valid }
-            } else valid
-            val below = if (state.mode == PetMode.FALL) {
-                candidates.filter { target ->
-                    fallSupportPoint(target, state.position, margin)?.y?.let { it > state.position.y + PET_EPSILON } == true
-                }
-            } else emptyList()
-            nearestPetTarget(
-                state.position,
-                if (below.isNotEmpty()) below else candidates,
+    val candidates = if (currentState.avoidTargetId != null) {
+        validTargets.filter { it.id != currentState.avoidTargetId }.ifEmpty { validTargets }
+    } else validTargets
+    val target = if (currentState.mode == PetMode.FALL) {
+        nearestFallTarget(currentState.position, candidates, margin)
+    } else {
+        currentState.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
+            ?: nearestPetTarget(
+                currentState.position,
+                candidates,
                 margin,
-                if (state.mode == PetMode.FALL) null else viewport,
+                viewport,
             )
-        }
-        ?: return state.copy(position = viewport.clamp(state.position, margin), mode = PetMode.IDLE, targetId = null)
-
-    if (state.mode == PetMode.BOUNCE) {
-        return advanceBounce(state, target, viewport, margin)
     }
-    if (state.mode == PetMode.FALL) {
-        return advanceFall(state, target, viewport, margin, step)
+        ?: return if (currentState.mode == PetMode.FALL) {
+            advanceFreeFall(currentState.copy(targetId = null), viewport, margin, unitScale)
+        } else {
+            currentState.copy(position = viewport.clamp(currentState.position, margin), mode = PetMode.IDLE, targetId = null)
+        }
+
+    if (currentState.mode == PetMode.BOUNCE) {
+        return advanceBounce(currentState, target, viewport, margin, unitScale)
+    }
+    if (currentState.mode == PetMode.FALL) {
+        return advanceFall(currentState, target, viewport, margin, unitScale)
     }
 
     if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
-        return advanceChart(state, target, viewport, margin, step)
+        return advanceChart(currentState, target, viewport, margin, step)
     }
 
-    return advanceSupport(state, target, viewport, margin, step)
+    return advanceSupport(currentState, target, viewport, margin, step)
 }
 
 private data class PetMovement(
@@ -419,63 +456,127 @@ private fun advanceFall(
     target: PetTarget,
     viewport: PetRect,
     halfSize: Float,
-    maxSpeed: Float,
+    fallUnitScale: Float,
 ): PetState {
-    val goal = viewport.clamp(
-        fallSupportPoint(target, state.position, halfSize)
-            ?: closestSupportPoint(target, state.position, halfSize),
-        halfSize,
-    )
+    val rawGoal = fallSupportPoint(target, state.position, halfSize)
+        ?: return advanceFreeFall(state.copy(targetId = null), viewport, halfSize, fallUnitScale)
+    val goal = viewport.clamp(rawGoal, halfSize)
+    if (goal.y < state.position.y - PET_EPSILON) {
+        return advanceFreeFall(state.copy(targetId = null), viewport, halfSize, fallUnitScale)
+    }
     if (close(state.position.y, goal.y)) {
         if (close(state.position.x, goal.x)) {
-            return landedState(state, target.id, viewport.clamp(goal, halfSize), state.verticalVelocity)
-        }
-        val movement = moveSmoothly(state.position, goal, state.movementSpeed, maxSpeed, verticalFirst = false)
-        val position = viewport.clamp(movement.position, halfSize)
-        val facing = facingAfter(state.facing, position.x - state.position.x)
-        return if (movement.arrived) {
-            landedState(state.copy(facing = facing), target.id, position, state.verticalVelocity)
-        } else {
-            state.copy(
-                position = position,
-                mode = PetMode.FALL,
-                targetId = target.id,
-                movementSpeed = movement.speed,
-                verticalVelocity = 0f,
-                facing = facing,
+            return landedState(
+                state,
+                target.id,
+                viewport.clamp(goal, halfSize),
+                state.verticalVelocity,
+                fallUnitScale,
             )
         }
+        return advanceFreeFall(state.copy(targetId = null), viewport, halfSize, fallUnitScale)
     }
 
-    if (goal.y < state.position.y) {
-        val movement = moveSmoothly(state.position, goal, state.movementSpeed, maxSpeed, verticalFirst = true)
-        val position = viewport.clamp(movement.position, halfSize)
-        return if (movement.arrived) {
-            landedState(state, target.id, position, 0f)
-        } else {
-            state.copy(
-                position = position,
-                mode = PetMode.FALL,
-                targetId = target.id,
-                movementSpeed = movement.speed,
-                verticalVelocity = 0f,
-            )
-        }
-    }
-
-    val velocity = (state.verticalVelocity.coerceAtLeast(0f) + PET_FALL_GRAVITY)
-        .coerceAtMost(PET_MAX_FALL_SPEED)
-    val nextY = (state.position.y + velocity).coerceAtMost(goal.y)
+    val fall = nextFallStep(state.verticalVelocity, fallUnitScale)
+    val nextY = (state.position.y + fall.distance).coerceAtMost(goal.y)
     val position = viewport.clamp(PetPoint(state.position.x, nextY), halfSize)
     if (close(nextY, goal.y) && close(state.position.x, goal.x)) {
-        return landedState(state, target.id, position, velocity)
+        val impactVelocity = fallImpactVelocity(
+            state.verticalVelocity,
+            goal.y - state.position.y,
+            fallUnitScale,
+        )
+        return landedState(state, target.id, position, impactVelocity, fallUnitScale)
     }
     return state.copy(
         position = position,
         mode = PetMode.FALL,
         targetId = target.id,
         movementSpeed = 0f,
-        verticalVelocity = if (close(nextY, goal.y)) 0f else velocity,
+        verticalVelocity = fall.velocity,
+    )
+}
+
+private data class PetFallStep(val distance: Float, val velocity: Float)
+
+private fun nextFallStep(verticalVelocity: Float, fallUnitScale: Float): PetFallStep {
+    val initialVelocity = verticalVelocity.coerceAtLeast(0f)
+    val scaledGravity = PET_FALL_GRAVITY * fallUnitScale
+    val finalVelocity = initialVelocity + scaledGravity * PET_FALL_TIME_STEP_SECONDS
+    return PetFallStep(
+        distance = initialVelocity * PET_FALL_TIME_STEP_SECONDS +
+            0.5f * scaledGravity * PET_FALL_TIME_STEP_SECONDS * PET_FALL_TIME_STEP_SECONDS,
+        velocity = finalVelocity,
+    )
+}
+
+private fun fallImpactVelocity(
+    verticalVelocity: Float,
+    distance: Float,
+    fallUnitScale: Float,
+): Float {
+    val initialVelocity = verticalVelocity.coerceAtLeast(0f)
+    val scaledGravity = PET_FALL_GRAVITY * fallUnitScale
+    return sqrt(
+        (initialVelocity * initialVelocity + 2f * scaledGravity * distance.coerceAtLeast(0f))
+            .coerceAtLeast(0f),
+    )
+}
+
+private fun advanceFreeFall(
+    state: PetState,
+    viewport: PetRect,
+    halfSize: Float,
+    fallUnitScale: Float,
+): PetState {
+    val bottom = viewport.clamp(PetPoint(state.position.x, viewport.bottom), halfSize)
+    if (state.position.y >= bottom.y - PET_EPSILON) {
+        return landAtViewportBottom(state, bottom, state.verticalVelocity, fallUnitScale)
+    }
+    val fall = nextFallStep(state.verticalVelocity, fallUnitScale)
+    val nextY = (state.position.y + fall.distance).coerceAtMost(bottom.y)
+    if (close(nextY, bottom.y)) {
+        val impactVelocity = fallImpactVelocity(
+            state.verticalVelocity,
+            bottom.y - state.position.y,
+            fallUnitScale,
+        )
+        return landAtViewportBottom(state, bottom, impactVelocity, fallUnitScale)
+    }
+    return state.copy(
+        position = PetPoint(bottom.x, nextY),
+        mode = PetMode.FALL,
+        targetId = null,
+        movementSpeed = 0f,
+        verticalVelocity = fall.velocity,
+        bouncesRemaining = 0,
+    )
+}
+
+private fun landAtViewportBottom(
+    state: PetState,
+    position: PetPoint,
+    impactVelocity: Float,
+    fallUnitScale: Float,
+): PetState = if (impactVelocity >= PET_HARD_LANDING_SPEED * fallUnitScale) {
+    state.copy(
+        position = position,
+        mode = PetMode.BOUNCE,
+        targetId = PET_VIEWPORT_BOTTOM_TARGET_ID,
+        idleTicksRemaining = 0,
+        movementSpeed = 0f,
+        verticalVelocity = -PET_FIRST_BOUNCE_SPEED * fallUnitScale,
+        bouncesRemaining = PET_BOUNCE_COUNT,
+    )
+} else {
+    state.copy(
+        position = position,
+        mode = PetMode.IDLE,
+        targetId = null,
+        idleTicksRemaining = PET_IDLE_TICKS,
+        movementSpeed = 0f,
+        verticalVelocity = 0f,
+        bouncesRemaining = 0,
     )
 }
 
@@ -484,14 +585,15 @@ private fun landedState(
     targetId: String,
     position: PetPoint,
     impactVelocity: Float,
-): PetState = if (impactVelocity >= PET_HARD_LANDING_SPEED) {
+    fallUnitScale: Float,
+): PetState = if (impactVelocity >= PET_HARD_LANDING_SPEED * fallUnitScale) {
     state.copy(
         position = position,
         mode = PetMode.BOUNCE,
         targetId = targetId,
         idleTicksRemaining = 0,
         movementSpeed = 0f,
-        verticalVelocity = -PET_FIRST_BOUNCE_SPEED,
+        verticalVelocity = -PET_FIRST_BOUNCE_SPEED * fallUnitScale,
         bouncesRemaining = PET_BOUNCE_COUNT,
     )
 } else {
@@ -511,21 +613,60 @@ private fun advanceBounce(
     target: PetTarget,
     viewport: PetRect,
     halfSize: Float,
+    fallUnitScale: Float,
 ): PetState {
     val landing = viewport.clamp(
         fallSupportPoint(target, state.position, halfSize)
             ?: closestSupportPoint(target, state.position, halfSize),
         halfSize,
     )
-    val velocity = (state.verticalVelocity + PET_FALL_GRAVITY).coerceAtMost(PET_MAX_FALL_SPEED)
-    val rawY = state.position.y + velocity
+    return advanceBounceAt(
+        state = state,
+        landing = landing,
+        bounceTargetId = target.id,
+        restingTargetId = target.id,
+        viewport = viewport,
+        halfSize = halfSize,
+        fallUnitScale = fallUnitScale,
+    )
+}
+
+private fun advanceViewportBottomBounce(
+    state: PetState,
+    viewport: PetRect,
+    halfSize: Float,
+    fallUnitScale: Float,
+): PetState = advanceBounceAt(
+    state = state,
+    landing = viewport.clamp(PetPoint(state.position.x, viewport.bottom), halfSize),
+    bounceTargetId = PET_VIEWPORT_BOTTOM_TARGET_ID,
+    restingTargetId = null,
+    viewport = viewport,
+    halfSize = halfSize,
+    fallUnitScale = fallUnitScale,
+)
+
+private fun advanceBounceAt(
+    state: PetState,
+    landing: PetPoint,
+    bounceTargetId: String,
+    restingTargetId: String?,
+    viewport: PetRect,
+    halfSize: Float,
+    fallUnitScale: Float,
+): PetState {
+    val initialVelocity = state.verticalVelocity
+    val scaledGravity = PET_FALL_GRAVITY * fallUnitScale
+    val velocity = initialVelocity + scaledGravity * PET_FALL_TIME_STEP_SECONDS
+    val rawY = state.position.y + initialVelocity * PET_FALL_TIME_STEP_SECONDS +
+        0.5f * scaledGravity * PET_FALL_TIME_STEP_SECONDS * PET_FALL_TIME_STEP_SECONDS
     if (velocity >= 0f && rawY >= landing.y) {
         val landedPosition = viewport.clamp(PetPoint(state.position.x, landing.y), halfSize)
         if (state.bouncesRemaining <= 1) {
             return state.copy(
                 position = landedPosition,
                 mode = PetMode.IDLE,
-                targetId = target.id,
+                targetId = restingTargetId,
                 idleTicksRemaining = PET_IDLE_TICKS,
                 movementSpeed = 0f,
                 verticalVelocity = 0f,
@@ -533,11 +674,11 @@ private fun advanceBounce(
             )
         }
         val completedBounce = PET_BOUNCE_COUNT - state.bouncesRemaining + 1
-        val reboundSpeed = PET_FIRST_BOUNCE_SPEED * PET_BOUNCE_DECAY.pow(completedBounce)
+        val reboundSpeed = PET_FIRST_BOUNCE_SPEED * fallUnitScale * PET_BOUNCE_DECAY.pow(completedBounce)
         return state.copy(
             position = landedPosition,
             mode = PetMode.BOUNCE,
-            targetId = target.id,
+            targetId = bounceTargetId,
             movementSpeed = 0f,
             verticalVelocity = -reboundSpeed,
             bouncesRemaining = state.bouncesRemaining - 1,
@@ -546,7 +687,7 @@ private fun advanceBounce(
     return state.copy(
         position = viewport.clamp(PetPoint(state.position.x, rawY), halfSize),
         mode = PetMode.BOUNCE,
-        targetId = target.id,
+        targetId = bounceTargetId,
         movementSpeed = 0f,
         verticalVelocity = velocity,
     )
@@ -701,11 +842,69 @@ private fun closestSupportPoint(target: PetTarget, position: PetPoint, halfSize:
 private fun fallSupportPoint(target: PetTarget, position: PetPoint, halfSize: Float): PetPoint? {
     if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
         val shifted = target.path.map { PetPoint(it.x, it.y - halfSize) }
-        return shifted.filter { it.y >= position.y - PET_EPSILON }
-            .minByOrNull { distanceSquared(position, it) }
-            ?: shifted.minByOrNull { distanceSquared(position, it) }
+        val intersections = if (shifted.size == 1) {
+            shifted.filter { close(it.x, position.x) }
+        } else {
+            shifted.zipWithNext().mapNotNull { (start, end) ->
+                val minX = minOf(start.x, end.x) - PET_EPSILON
+                val maxX = maxOf(start.x, end.x) + PET_EPSILON
+                if (position.x !in minX..maxX) return@mapNotNull null
+                val dx = end.x - start.x
+                if (abs(dx) <= PET_EPSILON) {
+                    if (!close(position.x, start.x)) null else {
+                        val y = position.y.coerceIn(minOf(start.y, end.y), maxOf(start.y, end.y))
+                        PetPoint(position.x, y)
+                    }
+                } else {
+                    val ratio = (position.x - start.x) / dx
+                    PetPoint(position.x, start.y + (end.y - start.y) * ratio)
+                }
+            }
+        }
+        return intersections
+            .filter { it.y >= position.y - PET_EPSILON }
+            .minByOrNull { it.y - position.y }
     }
-    return closestSupportPoint(target, position, halfSize)
+    val endpoints = supportEndpoints(target, halfSize)
+    if (!close(endpoints.first.y, endpoints.second.y)) return null
+    val minX = minOf(endpoints.first.x, endpoints.second.x) - PET_EPSILON
+    val maxX = maxOf(endpoints.first.x, endpoints.second.x) + PET_EPSILON
+    if (position.x !in minX..maxX) return null
+    return PetPoint(position.x, endpoints.first.y).takeIf { it.y >= position.y - PET_EPSILON }
+}
+
+private fun nearestFallTarget(
+    position: PetPoint,
+    targets: List<PetTarget>,
+    halfSize: Float,
+): PetTarget? = targets
+    .asSequence()
+    .mapNotNull { target ->
+        fallSupportPoint(target, position, halfSize)?.let { support -> target to support }
+    }
+    .minByOrNull { (_, support) -> support.y - position.y }
+    ?.first
+
+private fun isOnSupport(
+    target: PetTarget,
+    position: PetPoint,
+    halfSize: Float,
+    viewport: PetRect?,
+): Boolean {
+    if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
+        val closest = target.path
+            .asSequence()
+            .map { PetPoint(it.x, it.y - halfSize) }
+            .map { point -> viewport?.clamp(point, halfSize) ?: point }
+            .minByOrNull { point -> distanceSquared(position, point) }
+            ?: return false
+        return distanceSquared(position, closest) <= PET_EPSILON * PET_EPSILON
+    }
+    val endpoints = supportEndpoints(target, halfSize)
+    val start = viewport?.clamp(endpoints.first, halfSize) ?: endpoints.first
+    val end = viewport?.clamp(endpoints.second, halfSize) ?: endpoints.second
+    val closest = closestPointOnSegment(position, start, end)
+    return distanceSquared(position, closest) <= PET_EPSILON * PET_EPSILON
 }
 
 private fun supportEndpoints(target: PetTarget, halfSize: Float): Pair<PetPoint, PetPoint> {
