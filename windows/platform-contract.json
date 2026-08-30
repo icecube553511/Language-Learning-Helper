@@ -34,7 +34,8 @@
     "dictationManualSelectionTable": "ready",
     "programTagOverrides": "ready",
     "wordBubbleInteraction": "ready",
-    "vocabularyGroupBrowser": "ready"
+    "vocabularyGroupBrowser": "ready",
+    "dictationGroupSelection": "ready"
   },
   "platforms": ["windows", "android"]
 }

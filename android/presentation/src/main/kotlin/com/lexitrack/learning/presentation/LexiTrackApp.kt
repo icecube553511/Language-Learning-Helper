@@ -1207,6 +1207,7 @@ private fun DictationScreen(
     var includeEvaluated by remember { mutableStateOf(false) }
     var countText by remember { mutableStateOf("10") }
     var manual by remember { mutableStateOf(false) }
+    var dictationGroup by remember { mutableStateOf<String?>(null) }
     var countError by remember { mutableStateOf(false) }
     var confirmationRequested by remember { mutableStateOf<Int?>(null) }
 
@@ -1277,7 +1278,7 @@ private fun DictationScreen(
                 onCountChange = { countText = it.filter(Char::isDigit); countError = false },
                 countError = countError,
                 manual = manual,
-                onManualChange = { manual = it },
+                onManualChange = { manual = it; if (!it) dictationGroup = null },
                 preparing = state.dictationPreparing,
                 onSubmit = ::submit,
             )
@@ -1304,12 +1305,32 @@ private fun DictationScreen(
                         color = MutedInk,
                     )
                     if (manual) {
-                        DictationSelectionTable(
-                            entries = candidateEntries,
-                            selectedIds = state.dictationSelectedIds,
-                            onToggleSelection = onToggleSelection,
-                            onSetSelection = onSetSelection,
-                        )
+                        val activeGroup = dictationGroup
+                        if (activeGroup == null) {
+                            val groups = remember(candidateEntries) { dictationGroupSummaries(candidateEntries) }
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                groups.forEach { group ->
+                                    VocabularyGroupCard(group = group, onClick = { dictationGroup = group.key })
+                                }
+                            }
+                        } else {
+                            val activeLabel = remember(candidateEntries, activeGroup) {
+                                dictationGroupSummaries(candidateEntries)
+                                    .firstOrNull { it.key == activeGroup }?.label ?: activeGroup
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { dictationGroup = null }) { Text("← 返回词书") }
+                                Spacer(Modifier.width(8.dp))
+                                Text(activeLabel, style = MaterialTheme.typography.labelLarge, color = Ink)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            DictationSelectionTable(
+                                entries = dictationEntriesInGroup(candidateEntries, activeGroup),
+                                selectedIds = state.dictationSelectedIds,
+                                onToggleSelection = onToggleSelection,
+                                onSetSelection = onSetSelection,
+                            )
+                        }
                     }
                     if (candidateEntries.isEmpty()) {
                         Text("当前筛选没有可用词条。", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)

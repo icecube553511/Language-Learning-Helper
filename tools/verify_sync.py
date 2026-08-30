@@ -232,6 +232,10 @@ def verify_vocabulary_groups_contract() -> None:
         fail("Parity manifest does not declare vocabulary-groups-v1")
     if parity.get("capabilities", {}).get("vocabularyGroupBrowser") != "ready":
         fail("Parity manifest does not declare vocabularyGroupBrowser ready")
+    if parity.get("capabilities", {}).get("dictationGroupSelection") != "ready":
+        fail("Parity manifest does not declare dictationGroupSelection ready")
+    if "Dictation manual word selection" not in contract_path.read_text(encoding="utf-8"):
+        fail("Vocabulary groups contract must govern the dictation manual word selection")
 
 
 def verify_catalog() -> None:

@@ -33,7 +33,9 @@ start button, dictation row-click and drag-range multi-select, dictation
 preview wheel paging, the recursive word bubble fixes below, and the library
 group browser (`vocabulary-groups-v1`): entering 词库 shows the wordbook groups
 first (全部, CET-4, CET-6, 中考/zk, 高考/gk, 自定义), then a group opens its words
-while preserving all existing library features.
+while preserving all existing library features. The same layering applies to
+the 默写纸 “从词库选择” manual selection, which first shows the candidate
+wordbook groups and opens a group's words for checking.
 
 ## Current word-bubble cross-platform contract
 

@@ -463,19 +463,19 @@ class LearningService:
 
     def library_groups(self) -> list[LibraryGroup]:
         """Return the ordered library groups (canonical first, then extras)."""
-        entries = self.repository.all_entries()
+        return self._group_summary(self.repository.all_entries())
+
+    def _group_summary(self, entries: list[VocabularyEntry]) -> list[LibraryGroup]:
         canonical_counts = {key: 0 for key in GROUP_ORDER}
         extra_counts: dict[str, int] = {}
         for entry in entries:
             memberships = {normalize_group_membership(value) for value in entry.levels}
-            group_keys = classify_groups(memberships, entry.tags)
-            for key in group_keys:
+            for key in classify_groups(memberships, entry.tags):
                 if key in canonical_counts:
                     canonical_counts[key] += 1
             for code in memberships:
                 if code not in canonical_memberships():
                     extra_counts[code] = extra_counts.get(code, 0) + 1
-
         result = [LibraryGroup("all", group_label("all"), canonical_counts["all"])]
         for key in GROUP_ORDER[1:]:
             result.append(LibraryGroup(key, group_label(key), canonical_counts[key]))
@@ -483,25 +483,26 @@ class LearningService:
             result.append(LibraryGroup(code, code, extra_counts[code]))
         return result
 
-    def words_in_group(self, key: str, query: str = "") -> list[VocabularyEntry]:
-        """Return the member words of a group, optionally filtered by query."""
-        entries = self.repository.all_entries()
+    def _entries_in_group(self, entries: list[VocabularyEntry], key: str) -> list[VocabularyEntry]:
         if key == "all":
-            selected = entries
-        elif key in GROUP_ORDER:
-            selected = [
+            return entries
+        if key in GROUP_ORDER:
+            return [
                 entry for entry in entries
                 if key in classify_groups(
                     {normalize_group_membership(value) for value in entry.levels},
                     entry.tags,
                 )
             ]
-        else:
-            code = normalize_group_membership(key)
-            selected = [
-                entry for entry in entries
-                if code in {normalize_group_membership(value) for value in entry.levels}
-            ]
+        code = normalize_group_membership(key)
+        return [
+            entry for entry in entries
+            if code in {normalize_group_membership(value) for value in entry.levels}
+        ]
+
+    def words_in_group(self, key: str, query: str = "") -> list[VocabularyEntry]:
+        """Return the member words of a group, optionally filtered by query."""
+        selected = self._entries_in_group(self.repository.all_entries(), key)
         needle = query.strip().casefold()
         if not needle:
             return selected
@@ -511,6 +512,23 @@ class LearningService:
             or needle in entry.meaning.casefold()
             or any(needle in tag.casefold() for tag in entry.tags)
         ]
+
+    def dictation_groups(
+        self,
+        levels: set[str] | None = None,
+        include_evaluated: bool = False,
+    ) -> list[LibraryGroup]:
+        """Return the ordered dictation-candidate groups for manual selection."""
+        return self._group_summary(self.dictation_pool(levels, include_evaluated))
+
+    def dictation_words_in_group(
+        self,
+        key: str,
+        levels: set[str] | None = None,
+        include_evaluated: bool = False,
+    ) -> list[VocabularyEntry]:
+        """Return the dictation-candidate words of a group for manual selection."""
+        return self._entries_in_group(self.dictation_pool(levels, include_evaluated), key)
 
     def import_csv(self, path) -> ImportReport:
         if self.csv_importer is None:
