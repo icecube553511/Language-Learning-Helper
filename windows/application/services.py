@@ -217,62 +217,73 @@ class LearningService:
     def dictation_candidates(
         self,
         count: int,
-        levels: set[str] | None = None,
         include_evaluated: bool = False,
+        group: str | None = None,
         rng: random.Random | None = None,
     ) -> list[VocabularyEntry]:
         if count < 0:
             raise ValueError("默写词数不能为负数")
-        selected = [
-            entry for entry in self.repository.all_entries()
-            if self._matches_levels(entry, levels or set())
-            and (include_evaluated or "evaluated" not in {tag.casefold() for tag in entry.tags})
-        ]
-        pool = sorted({entry.word_id: entry for entry in selected}.values(), key=lambda item: item.word_id)
+        pool = sorted(
+            {entry.word_id: entry for entry in self._dictation_pool(include_evaluated, group)}.values(),
+            key=lambda item: item.word_id,
+        )
         randomizer = rng or random.SystemRandom()
         result = []
         for _ in range(min(count, len(pool))):
             result.append(pool.pop(randomizer.randrange(len(pool))))
         return result
 
+    def _dictation_pool(
+        self,
+        include_evaluated: bool = False,
+        group: str | None = None,
+    ) -> list[VocabularyEntry]:
+        base = [
+            entry for entry in self.repository.all_entries()
+            if include_evaluated or "evaluated" not in {tag.casefold() for tag in entry.tags}
+        ]
+        if not group or group == "all":
+            return base
+        return self._entries_in_group(base, group)
+
     def dictation_pool(
         self,
-        levels: set[str] | None = None,
         include_evaluated: bool = False,
+        group: str | None = None,
     ) -> list[VocabularyEntry]:
-        return self.selected_dictation_candidates(
-            {entry.word_id for entry in self.repository.all_entries()},
-            levels,
-            include_evaluated,
-        )
+        return self._dictation_pool(include_evaluated, group)
 
     def selected_dictation_candidates(
         self,
         word_ids: set[str],
-        levels: set[str] | None = None,
         include_evaluated: bool = False,
+        group: str | None = None,
     ) -> list[VocabularyEntry]:
         wanted = set(word_ids)
-        return [entry for entry in self.repository.all_entries()
-                if entry.word_id in wanted
-                and self._matches_levels(entry, levels or set())
-                and (include_evaluated or "evaluated" not in {tag.casefold() for tag in entry.tags})]
+        base = [
+            entry for entry in self.repository.all_entries()
+            if entry.word_id in wanted
+            and (include_evaluated or "evaluated" not in {tag.casefold() for tag in entry.tags})
+        ]
+        if not group or group == "all":
+            return base
+        return self._entries_in_group(base, group)
 
     def build_dictation_document(
         self,
         options: DictationOptions,
         *,
         count: int | None = None,
-        levels: set[str] | None = None,
         include_evaluated: bool = False,
+        group: str | None = None,
         word_ids: set[str] | None = None,
         entries: list[VocabularyEntry] | None = None,
         rng: random.Random | None = None,
     ) -> DictationDocument:
         selected_entries = (entries if entries is not None else
-                            self.selected_dictation_candidates(word_ids, levels, include_evaluated)
+                            self.selected_dictation_candidates(word_ids, include_evaluated, group)
                             if word_ids is not None else
-                            self.dictation_candidates(count or 0, levels, include_evaluated, rng))
+                            self.dictation_candidates(count or 0, include_evaluated, group, rng))
         return build_document(selected_entries, options)
 
     def export_dictation(self, document: DictationDocument, exporter: DictationExporter | None = None) -> list[ExportedDictation]:
@@ -515,20 +526,18 @@ class LearningService:
 
     def dictation_groups(
         self,
-        levels: set[str] | None = None,
         include_evaluated: bool = False,
     ) -> list[LibraryGroup]:
         """Return the ordered dictation-candidate groups for manual selection."""
-        return self._group_summary(self.dictation_pool(levels, include_evaluated))
+        return self._group_summary(self.dictation_pool(include_evaluated))
 
     def dictation_words_in_group(
         self,
         key: str,
-        levels: set[str] | None = None,
         include_evaluated: bool = False,
     ) -> list[VocabularyEntry]:
         """Return the dictation-candidate words of a group for manual selection."""
-        return self._entries_in_group(self.dictation_pool(levels, include_evaluated), key)
+        return self._entries_in_group(self.dictation_pool(include_evaluated), key)
 
     def import_csv(self, path) -> ImportReport:
         if self.csv_importer is None:

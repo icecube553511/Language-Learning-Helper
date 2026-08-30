@@ -321,6 +321,23 @@ class LearningServiceTests(unittest.TestCase):
             {"adapt", "examined"},
         )
 
+    def test_dictation_random_scope_by_group(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create("adapt", "适应", examples, level="CET4"),
+            VocabularyEntry.create("abandon", "放弃", examples, level="CET6"),
+            VocabularyEntry.create("myword", "自定义词", examples, level="custom"),
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+
+        # Random sampling scoped to a single group only draws from that group.
+        self.assertEqual(service.dictation_candidates(3, group="cet4", rng=random.Random(0))[0].word_id, "adapt")
+        self.assertEqual(service.dictation_candidates(3, group="custom", rng=random.Random(0))[0].word_id, "myword")
+        self.assertEqual(len(service.dictation_candidates(3, group="all", rng=random.Random(0))), 3)
+        self.assertEqual(len(service.dictation_pool(group="cet4")), 1)
+        self.assertEqual(len(service.dictation_pool(group="cet6")), 1)
+        self.assertEqual(len(service.dictation_pool(group="all")), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

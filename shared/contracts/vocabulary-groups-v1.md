@@ -91,11 +91,17 @@ classifier diverges from the golden vector.
 
 ## Dictation manual word selection
 
-The same group browser governs the "从词库选择" (manual) word selection on the
-默写纸 (dictation worksheet). Entering manual selection shows the groups first;
-tapping a group shows that group's eligible words in the existing selection
-table, and a back control returns to the group browser. Group counts are
-computed from the current dictation candidate pool (respecting the active 词库
-level filters and the "包含已考察词" toggle). The group-selected state is
-transient presentation state and is never persisted; the already-selected
-word ids are kept across group switches.
+The same group browser is the single word-scope chooser for the 默写纸
+(dictation worksheet). The former top-level 词库 CET4/CET6/CUSTOM checkbox row is
+removed; both selection modes use the group browser instead:
+
+* **Random (随机填写)**: tapping a group (or "全部") sets the random sampling
+  scope; tap a group card to select it, then generate. The selected scope is a
+  single group key (default `all`).
+* **Manual (从词库选择)**: tapping a group opens that group's eligible words in
+  the existing selection table for ticking; a back control returns to the group
+  browser, and already-ticked word ids are kept across group switches.
+
+Group counts are computed from the current dictation candidate pool (respecting
+the "包含已考察词" toggle). Group-selection state is transient presentation state
+and is never persisted.

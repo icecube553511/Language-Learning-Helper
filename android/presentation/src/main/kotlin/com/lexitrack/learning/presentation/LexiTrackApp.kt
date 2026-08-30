@@ -1,6 +1,7 @@
 package com.lexitrack.learning.presentation
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -272,8 +273,8 @@ fun LexiTrackApp(
                                 state = state,
                                 onToggleSelection = viewModel::toggleDictationSelection,
                                 onSetSelection = viewModel::setDictationSelection,
-                                onBuild = { options, count, levels, includeEvaluated, manual, customExample ->
-                                    viewModel.buildDictation(options, count, levels, includeEvaluated, manual, customExample)
+                                onBuild = { options, count, group, includeEvaluated, manual, customExample ->
+                                    viewModel.buildDictation(options, count, group, includeEvaluated, manual, customExample)
                                     dictationPreviewOpen = true
                                 },
                             )
@@ -1194,7 +1195,7 @@ private fun DictationScreen(
     state: MainUiState,
     onToggleSelection: (String) -> Unit,
     onSetSelection: (Collection<String>, Boolean) -> Unit,
-    onBuild: (DictationDocumentOptions, Int, Set<String>, Boolean, Boolean, String) -> Unit,
+    onBuild: (DictationDocumentOptions, Int, String, Boolean, Boolean, String) -> Unit,
 ) {
     var formats by remember { mutableStateOf(setOf(DictationFormat.DOCX, DictationFormat.PDF)) }
     var fontSizeText by remember { mutableStateOf("12") }
@@ -1203,21 +1204,21 @@ private fun DictationScreen(
     var includeExamples by remember { mutableStateOf(false) }
     var includeExampleChinese by remember { mutableStateOf(false) }
     var customExample by remember { mutableStateOf("") }
-    var selectedLevels by remember { mutableStateOf(setOf("CET4", "CET6", "CUSTOM")) }
     var includeEvaluated by remember { mutableStateOf(false) }
     var countText by remember { mutableStateOf("10") }
     var manual by remember { mutableStateOf(false) }
+    var dictationScope by remember { mutableStateOf("all") }
     var dictationGroup by remember { mutableStateOf<String?>(null) }
     var countError by remember { mutableStateOf(false) }
     var confirmationRequested by remember { mutableStateOf<Int?>(null) }
 
-    val effectiveLevels = if (selectedLevels.isEmpty()) state.availableLevels.toSet() else selectedLevels
     val candidateEntries = state.dictationEntries.filter { entry ->
-        (effectiveLevels.isEmpty() || entry.levels.any { it.uppercase() in effectiveLevels }) &&
-            (includeEvaluated || entry.tags.none { it.equals("evaluated", ignoreCase = true) })
+        includeEvaluated || entry.tags.none { it.equals("evaluated", ignoreCase = true) }
     }
     val selectedCandidateIds = state.dictationSelectedIds.intersect(candidateEntries.mapTo(mutableSetOf()) { it.id })
     val selectedCount = selectedCandidateIds.size
+    val scopeGroupLabel = dictationGroupSummaries(candidateEntries)
+        .firstOrNull { it.key == dictationScope }?.label ?: dictationScope
 
     fun submit() {
         val count = countText.toIntOrNull()
@@ -1230,6 +1231,7 @@ private fun DictationScreen(
             confirmationRequested = count
             return
         }
+        val buildGroup = if (manual) "all" else dictationScope
         onBuild(
             DictationDocumentOptions(
                 formats = formats,
@@ -1240,7 +1242,7 @@ private fun DictationScreen(
                 includeExampleChinese = includeExampleChinese,
             ),
             count,
-            effectiveLevels,
+            buildGroup,
             includeEvaluated,
             manual,
             customExample,
@@ -1269,9 +1271,6 @@ private fun DictationScreen(
                 onIncludeExampleChineseChange = { includeExampleChinese = it },
                 customExample = customExample,
                 onCustomExampleChange = { customExample = it },
-                selectedLevels = selectedLevels,
-                availableLevels = state.availableLevels,
-                onLevelsChange = { selectedLevels = it },
                 includeEvaluated = includeEvaluated,
                 onIncludeEvaluatedChange = { includeEvaluated = it },
                 countText = countText,
@@ -1294,42 +1293,46 @@ private fun DictationScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("手选词条", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
                         Text(
-                            if (manual) "$selectedCount / ${countText.toIntOrNull() ?: 0}" else "随机模式",
+                            if (manual) "$selectedCount / ${countText.toIntOrNull() ?: 0}" else "随机范围：$scopeGroupLabel",
                             style = MaterialTheme.typography.labelLarge,
                             color = BrandTeal,
                         )
                     }
                     Text(
-                        if (manual) "仅使用勾选的词条；数量不足时会再次确认。" else "随机模式会在筛选结果中无重复取样。",
+                        if (manual) "仅使用勾选的词条；数量不足时会再次确认。" else "点击词书分组设置随机范围；取样时无重复。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MutedInk,
                     )
-                    if (manual) {
-                        val activeGroup = dictationGroup
-                        if (activeGroup == null) {
-                            val groups = remember(candidateEntries) { dictationGroupSummaries(candidateEntries) }
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                groups.forEach { group ->
-                                    VocabularyGroupCard(group = group, onClick = { dictationGroup = group.key })
-                                }
+                    val groups = remember(candidateEntries) { dictationGroupSummaries(candidateEntries) }
+                    val activeGroup = dictationGroup
+                    if (manual && activeGroup != null) {
+                        val activeLabel = remember(candidateEntries, activeGroup) {
+                            dictationGroupSummaries(candidateEntries)
+                                .firstOrNull { it.key == activeGroup }?.label ?: activeGroup
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { dictationGroup = null }) { Text("← 返回词书") }
+                            Spacer(Modifier.width(8.dp))
+                            Text(activeLabel, style = MaterialTheme.typography.labelLarge, color = Ink)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        DictationSelectionTable(
+                            entries = dictationEntriesInGroup(candidateEntries, activeGroup),
+                            selectedIds = state.dictationSelectedIds,
+                            onToggleSelection = onToggleSelection,
+                            onSetSelection = onSetSelection,
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            groups.forEach { group ->
+                                VocabularyGroupCard(
+                                    group = group,
+                                    selected = !manual && group.key == dictationScope,
+                                    onClick = {
+                                        if (manual) dictationGroup = group.key else dictationScope = group.key
+                                    },
+                                )
                             }
-                        } else {
-                            val activeLabel = remember(candidateEntries, activeGroup) {
-                                dictationGroupSummaries(candidateEntries)
-                                    .firstOrNull { it.key == activeGroup }?.label ?: activeGroup
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(onClick = { dictationGroup = null }) { Text("← 返回词书") }
-                                Spacer(Modifier.width(8.dp))
-                                Text(activeLabel, style = MaterialTheme.typography.labelLarge, color = Ink)
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            DictationSelectionTable(
-                                entries = dictationEntriesInGroup(candidateEntries, activeGroup),
-                                selectedIds = state.dictationSelectedIds,
-                                onToggleSelection = onToggleSelection,
-                                onSetSelection = onSetSelection,
-                            )
                         }
                     }
                     if (candidateEntries.isEmpty()) {
@@ -1360,7 +1363,7 @@ private fun DictationScreen(
                                 includeExampleChinese = includeExampleChinese,
                             ),
                             count,
-                            effectiveLevels,
+                            "all",
                             includeEvaluated,
                             true,
                             customExample,
@@ -1540,9 +1543,6 @@ private fun DictationOptionsPanel(
     onIncludeExampleChineseChange: (Boolean) -> Unit,
     customExample: String,
     onCustomExampleChange: (String) -> Unit,
-    selectedLevels: Set<String>,
-    availableLevels: List<String>,
-    onLevelsChange: (Set<String>) -> Unit,
     includeEvaluated: Boolean,
     onIncludeEvaluatedChange: (Boolean) -> Unit,
     countText: String,
@@ -1591,10 +1591,6 @@ private fun DictationOptionsPanel(
                     onMissingFieldsChange(if (field in missingFields && missingFields.size > 1) missingFields - field else missingFields + field)
                 },
             )
-            Row(modifier = Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                Text("词库", modifier = Modifier.width(64.dp), style = MaterialTheme.typography.labelLarge, color = MutedInk)
-                LevelFilterRow("", selectedLevels, availableLevels) { onLevelsChange(it) }
-            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("默写数量", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MutedInk)
                 OutlinedTextField(
@@ -1860,12 +1856,12 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun VocabularyGroupCard(group: LibraryGroup, onClick: () -> Unit) {
+private fun VocabularyGroupCard(group: LibraryGroup, selected: Boolean = false, onClick: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(8.dp),
-        border = CardDefaults.outlinedCardBorder(),
+        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else CardDefaults.outlinedCardBorder(),
         onClick = onClick,
     ) {
         Row(
@@ -1873,7 +1869,11 @@ private fun VocabularyGroupCard(group: LibraryGroup, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(group.label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
-            Text("${group.count} 词", style = MaterialTheme.typography.labelMedium, color = MutedInk)
+            Text(
+                "${group.count} 词" + if (selected) " · 已选" else "",
+                style = MaterialTheme.typography.labelMedium,
+                color = MutedInk,
+            )
         }
     }
 }

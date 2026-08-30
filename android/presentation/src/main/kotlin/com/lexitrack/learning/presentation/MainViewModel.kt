@@ -205,7 +205,7 @@ class MainViewModel(
     fun buildDictation(
         options: DictationDocumentOptions,
         count: Int,
-        levels: Set<String>,
+        group: String,
         includeEvaluated: Boolean,
         manual: Boolean,
         customExample: String,
@@ -223,11 +223,10 @@ class MainViewModel(
         val entries = if (manual) {
             useCases.selectDictationCandidates.selected(
                 _uiState.value.dictationSelectedIds,
-                levels,
                 includeEvaluated,
             )
         } else {
-            useCases.selectDictationCandidates.random(count, levels, includeEvaluated)
+            useCases.selectDictationCandidates.random(count, group, includeEvaluated)
         }
         if (entries.isEmpty()) {
             _uiState.value = _uiState.value.copy(transientMessage = "没有符合当前条件的词条")
