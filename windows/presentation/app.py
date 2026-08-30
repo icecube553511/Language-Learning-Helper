@@ -277,7 +277,11 @@ class LexiTrackApp(tk.Tk):
         self.forecast_days = 7
         self._dialog_pet_runtimes: dict[tk.Toplevel, DialogPetRuntime] = {}
         self._dialog_pet_stack: list[tk.Toplevel] = []
-        self.word_bubbles = WordBubbleManager(self, self.service)
+        self.word_bubbles = WordBubbleManager(
+            self,
+            self.service,
+            pet_half_size=PET_DISPLAY_SIZE // 2,
+        )
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()

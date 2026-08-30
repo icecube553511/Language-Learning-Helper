@@ -16,6 +16,68 @@ class _TextLine:
     width: int
 
 
+def popup_position_with_escape_corridor(
+    default_x: int,
+    default_y: int,
+    popup_width: int,
+    popup_height: int,
+    screen_width: int,
+    screen_height: int,
+    host_bounds: tuple[int, int, int, int],
+    pet_half_size: int,
+) -> tuple[int, int]:
+    """Keep at least one full pet sprite outside a popup when possible."""
+    screen_left = 4
+    screen_top = 4
+    screen_right = max(screen_left, screen_width - popup_width - 8)
+    screen_bottom = max(screen_top, screen_height - popup_height - 4)
+    default = (
+        min(max(default_x, screen_left), screen_right),
+        min(max(default_y, screen_top), screen_bottom),
+    )
+    host_x, host_y, host_width, host_height = host_bounds
+    half = max(0, pet_half_size)
+    left = host_x + half
+    right = max(left, host_x + host_width - half)
+    top = host_y + half
+    bottom = max(top, host_y + host_height - half)
+    legal_corners = (
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+    )
+
+    def leaves_escape(position: tuple[int, int]) -> bool:
+        x, y = position
+        return any(
+            point_x + half <= x
+            or point_x - half >= x + popup_width
+            or point_y + half <= y
+            or point_y - half >= y + popup_height
+            for point_x, point_y in legal_corners
+        )
+
+    if leaves_escape(default):
+        return default
+    candidates = {
+        (x, y)
+        for x in (default[0], screen_left, screen_right)
+        for y in (default[1], screen_top, screen_bottom)
+    }
+    viable = [position for position in candidates if leaves_escape(position)]
+    if not viable:
+        return default
+    return min(
+        viable,
+        key=lambda position: (
+            (position[0] - default[0]) ** 2 + (position[1] - default[1]) ** 2,
+            position[1],
+            position[0],
+        ),
+    )
+
+
 def _wrapped_text_lines(text: str, max_width: int, measure: Callable[[str], int]) -> tuple[_TextLine, ...]:
     """Approximate Tk label word wrapping while retaining source offsets."""
     lines: list[_TextLine] = []
@@ -266,10 +328,13 @@ class WordBubbleManager:
         root: tk.Misc,
         service,
         on_popup_created: Callable[[tk.Toplevel, str], None] | None = None,
+        *,
+        pet_half_size: int = 0,
     ):
         self.root = root
         self.service = service
         self._on_popup_created = on_popup_created
+        self._pet_half_size = max(0, pet_half_size)
         self.stack = BubbleStack()
         self._windows: list[tk.Toplevel] = []
         self._bound_widgets: set[tk.Widget] = set()
@@ -321,6 +386,21 @@ class WordBubbleManager:
                 return True
             current = current.master
         return False
+
+    def _pet_host_window(self, owner_window: tk.Misc) -> tk.Misc:
+        """Resolve recursive bubble owners back to the actual pet host."""
+        current = owner_window.winfo_toplevel()
+        visited: set[tk.Misc] = set()
+        while current in self._windows and current not in visited:
+            visited.add(current)
+            master = current.master
+            if master is None:
+                break
+            parent = master.winfo_toplevel()
+            if parent is current:
+                break
+            current = parent
+        return current
 
     def _on_example_click(self, event):
         widget = event.widget
@@ -544,7 +624,23 @@ class WordBubbleManager:
         below = y_root + 22
         y = above if above >= 4 else min(below, screen_height - height - 4)
         x = max(4, min(x_root - width // 2, screen_width - width - 8))
-        popup.geometry(f"+{x}+{max(4, y)}")
+        host_window = self._pet_host_window(owner_window)
+        x, y = popup_position_with_escape_corridor(
+            x,
+            max(4, y),
+            width,
+            height,
+            screen_width,
+            screen_height,
+            (
+                host_window.winfo_x(),
+                host_window.winfo_y(),
+                host_window.winfo_width(),
+                host_window.winfo_height(),
+            ),
+            self._pet_half_size,
+        )
+        popup.geometry(f"+{x}+{y}")
         popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_current(d))
         self._windows.append(popup)
         popup.bind(

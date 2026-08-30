@@ -26,9 +26,32 @@ from presentation.app import (
     scroll_contract_ready,
     visible_dictation_selection,
 )
+from presentation.widgets import popup_position_with_escape_corridor
 
 
 class SmokeContractTests(unittest.TestCase):
+    def test_word_bubble_keeps_a_pet_escape_corridor_on_small_screens(self):
+        position = popup_position_with_escape_corridor(
+            default_x=192,
+            default_y=56,
+            popup_width=640,
+            popup_height=708,
+            screen_width=1024,
+            screen_height=768,
+            host_bounds=(172, 4, 680, 760),
+            pet_half_size=56,
+        )
+        self.assertNotEqual(position, (192, 56))
+        popup_x, popup_y = position
+        host_corners = ((228, 60), (796, 60), (228, 708), (796, 708))
+        self.assertTrue(any(
+            x + 56 <= popup_x
+            or x - 56 >= popup_x + 640
+            or y + 56 <= popup_y
+            or y - 56 >= popup_y + 708
+            for x, y in host_corners
+        ))
+
     def test_dictation_table_layout_constants_keep_columns_scrollable(self):
         self.assertEqual(DICTATION_MEANING_COLUMN_WIDTH, 260)
         self.assertEqual(DICTATION_SELECTION_COLUMN_WIDTH, 76)

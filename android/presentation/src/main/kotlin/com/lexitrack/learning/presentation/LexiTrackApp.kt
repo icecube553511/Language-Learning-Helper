@@ -231,6 +231,33 @@ internal const val PET_DISPLAY_SIZE_DP = 112
 internal const val PET_TICK_MS = 16L
 internal const val WORD_BUBBLE_PET_SCOPE = "trigger-window-retained"
 
+internal data class WordBubbleReachability(
+    val placementViewport: PetRect,
+    val petCorridor: PetRect,
+)
+
+internal fun wordBubbleReachability(
+    viewport: PetRect,
+    petDiameterPx: Float,
+): WordBubbleReachability {
+    if (!viewport.valid) {
+        return WordBubbleReachability(viewport, PetRect(viewport.right, viewport.top, 0f, viewport.height))
+    }
+    val corridorWidth = petDiameterPx
+        .coerceAtLeast(0f)
+        .coerceAtMost((viewport.width - 1f).coerceAtLeast(0f))
+    val placementWidth = viewport.width - corridorWidth
+    return WordBubbleReachability(
+        placementViewport = PetRect(viewport.left, viewport.top, placementWidth, viewport.height),
+        petCorridor = PetRect(
+            viewport.right - corridorWidth,
+            viewport.top,
+            corridorWidth,
+            viewport.height,
+        ),
+    )
+}
+
 private fun Rect.toPetRect(): PetRect = PetRect(left, top, width, height)
 
 private fun Modifier.petTarget(
@@ -939,9 +966,15 @@ private fun WordBubbleOverlay(
 ) {
     if (!viewport.valid) return
     val density = LocalDensity.current
-    val maxBubbleWidth = with(density) { viewport.width.toDp() }.coerceAtMost(440.dp)
+    val reachability = wordBubbleReachability(
+        viewport = viewport,
+        petDiameterPx = with(density) { PET_DISPLAY_SIZE_DP.dp.toPx() },
+    )
+    val bubbleViewport = reachability.placementViewport
+    if (!bubbleViewport.valid) return
+    val maxBubbleWidth = with(density) { bubbleViewport.width.toDp() }.coerceAtMost(440.dp)
     val minBubbleWidth = maxBubbleWidth.coerceAtMost(260.dp)
-    val maxBubbleHeight = with(density) { viewport.height.toDp() }
+    val maxBubbleHeight = with(density) { bubbleViewport.height.toDp() }
     val registerPetTarget = LocalRegisterPetTarget.current
     Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
         bubbles.forEachIndexed { index, bubble ->
@@ -958,7 +991,7 @@ private fun WordBubbleOverlay(
                             wordBubbleOffset(
                                 anchor = bubble.anchor,
                                 hostOrigin = hostOrigin,
-                                viewport = viewport,
+                                viewport = bubbleViewport,
                                 bubbleSize = bubbleSize,
                                 gapPx = gapPx,
                             )

@@ -187,6 +187,7 @@ def verify_pet_contract() -> None:
         or payload.get("activeWindowBounds") != "pet-host-window"
         or payload.get("wordBubblePetScope") != "trigger-window-retained"
         or payload.get("wordBubbleExit") != "drag-and-autonomous"
+        or payload.get("wordBubbleEscapeClearance") != "full-display-size"
         or payload.get("learningReminderPetCount") != 1
         or payload.get("nestedPopupOwner") != "recursive-trigger-window"
         or payload.get("activeWindowSelection") != "focus-map-host-z-order"
@@ -679,6 +680,7 @@ def verify_pet_contract() -> None:
         "activeWindowBounds": "pet-host-window",
         "wordBubblePetScope": "trigger-window-retained",
         "wordBubbleExit": "drag-and-autonomous",
+        "wordBubbleEscapeClearance": "full-display-size",
         "learningReminderPetCount": 1,
         "nestedPopupOwner": "recursive-trigger-window",
         "activeWindowSelection": "focus-map-host-z-order",

@@ -43,6 +43,7 @@
     "activeWindowBounds": "pet-host-window",
     "wordBubblePetScope": "trigger-window-retained",
     "wordBubbleExit": "drag-and-autonomous",
+    "wordBubbleEscapeClearance": "full-display-size",
     "learningReminderPetCount": 1,
     "nestedPopupOwner": "recursive-trigger-window",
     "activeWindowSelection": "focus-map-host-z-order",

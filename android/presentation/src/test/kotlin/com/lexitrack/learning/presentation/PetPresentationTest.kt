@@ -149,6 +149,41 @@ class PetPresentationTest {
     }
 
     @Test
+    fun `word bubbles reserve a full pet corridor in a small reminder viewport`() {
+        val viewport = PetRect(0f, 0f, 280f, 220f)
+
+        val reachability = wordBubbleReachability(viewport, petDiameterPx = 112f)
+
+        assertEquals(PetRect(0f, 0f, 168f, 220f), reachability.placementViewport)
+        assertEquals(PetRect(168f, 0f, 112f, 220f), reachability.petCorridor)
+    }
+
+    @Test
+    fun `every bubble depth stays left of the shared pet corridor`() {
+        val viewport = PetRect(0f, 0f, 300f, 220f)
+        val reachability = wordBubbleReachability(viewport, petDiameterPx = 112f)
+        val bubbleSize = IntSize(180, 140)
+        val anchors = listOf(
+            IntRect(8, 20, 48, 40),
+            IntRect(140, 80, 180, 100),
+            IntRect(260, 170, 296, 190),
+        )
+
+        val offsets = anchors.map { anchor ->
+            wordBubbleOffset(
+                anchor = anchor,
+                hostOrigin = PetPoint(0f, 0f),
+                viewport = reachability.placementViewport,
+                bubbleSize = bubbleSize,
+                gapPx = 6,
+            )
+        }
+
+        assertTrue(offsets.all { it.x + bubbleSize.width <= reachability.petCorridor.left })
+        assertTrue(offsets.all { it.y >= viewport.top && it.y + bubbleSize.height <= viewport.bottom })
+    }
+
+    @Test
     fun `learning reminder replaces main pet and closing it restores main pet`() {
         val reminder = Any()
         val stack = mutableListOf<Any>()
