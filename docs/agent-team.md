@@ -6,10 +6,15 @@ can run them, in parallel; they never touch overlapping files.
 
 | Role | Scope | Owns |
 |---|---|---|
-| `grill_plan` | Plan & challenge | Sharpen the design with pointed questions, force trade-offs to be explicit, and reject single-platform-only proposals. |
-| `win_fix` | Windows | `windows/domain`, `windows/application`, `windows/infrastructure`, `windows/presentation`, `windows/tests`. |
-| `android_fix` | Android | `android/domain`, `android/application`, `android/infrastructure`, `android/presentation`, Android tests. |
-| root agent (orchestrator) | Cross-cutting | `shared/contracts`, `shared/content`, `shared/assets`, `tools/verify_sync.py`, docs, Git commits, and the GitHub pull request. |
+| `architecture_audit` | Architecture, challenge & Windows | Challenge assumptions, enforce onion dependencies, and own Windows implementation/tests. |
+| `pet_integration` | Android | Own Android domain/presentation integration and Android tests. |
+| `sync_ci_audit` | Parity & delivery | Audit manifests, sync automation, Git state, GitHub PR overlap, and CI evidence. |
+| root agent (orchestrator) | Cross-cutting | Own shared contracts/assets, resolve audit findings, run full verification, commit, push, and maintain the GitHub pull request. |
+
+The team also owns the `petCompanionInteraction` capability. `architecture_audit` and
+`pet_integration` may register platform UI bounds and render Bingzi, while the
+orchestrator keeps the pet contract, source/derived assets, and parity markers
+in sync.
 
 ## Rules
 
@@ -18,7 +23,7 @@ can run them, in parallel; they never touch overlapping files.
 - Every behavior change lands on Windows **and** Android in the same commit and
   PR, plus shared contracts, tests, and docs. Platform-only changes require an
   explicit exception in the request.
-- `win_fix` and `android_fix` never write to `shared/` or to each other's
+- Platform agents never write to `shared/` or to each other's
   directories. The orchestrator owns shared resources and treats them read-only
   for the platform roles.
 - Before handoff run, in order: `python tools/verify_sync.py`, Windows unit

@@ -1,0 +1,382 @@
+{
+  "contractVersion": "pet-companion-v1",
+  "name": "冰子",
+  "sourceAsset": "shared/assets/branding/pet_image.png",
+  "runtimeAsset": "shared/assets/pets/bingzi.png",
+  "runtimeAssetLeft": "shared/assets/pets/bingzi-left.png",
+  "tickMs": 16,
+  "displaySize": 112,
+  "rectangleFormat": "x-y-width-height",
+  "petSizeMeaning": "half-size",
+  "targetKinds": ["control", "surface", "chart", "edge"],
+  "modes": ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging"],
+  "facings": ["left", "right"],
+  "navigationTransition": "drop-to-nearest",
+  "windowScope": "application-owned-window",
+  "singleActivePet": true,
+  "activeWindowBounds": "pet-host-window",
+  "wordBubblePetScope": "trigger-window-retained",
+  "wordBubbleExit": "drag-and-autonomous",
+  "wordBubbleEscapeClearance": "full-display-size",
+  "learningReminderPetCount": 1,
+  "nestedPopupOwner": "recursive-trigger-window",
+  "activeWindowSelection": "focus-map-host-z-order",
+  "windowDeactivationFallback": "next-mapped-host-z-order",
+  "platformManagedUiExcluded": true,
+  "motion": {
+    "acceleration": 0.5,
+    "cruiseSpeed": 4.0,
+    "idleTicks": 24,
+    "fallTimeStepSeconds": 0.016,
+    "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
+    "fallVelocityUnits": "logical-units-per-second",
+    "fallIntegration": "closed-form-constant-acceleration",
+    "maxFallSpeed": null,
+    "hardLandingSpeed": 437.5,
+    "bounceCount": 2,
+    "firstBounceSpeed": 312.5,
+    "bounceDecay": 0.55,
+    "centerBiasWeight": 0.65,
+    "edgePenaltyRatio": 0.15,
+    "supportSide": "upper",
+    "screenEdges": ["left", "right", "bottom"],
+    "horizontalFlip": true,
+    "noUpwardFall": true,
+    "noBelowTargetPolicy": "fall-to-viewport-bottom-support",
+    "fallAxis": "vertical-only",
+    "fallTargetIntersection": "current-x-ray",
+    "fallTargetRefresh": "every-tick-nearest-current-x-ray",
+    "landingImpactVelocity": "continuous-contact",
+    "syntheticBottomLanding": "same-impact-and-bounce-rules"
+  },
+  "drag": {
+    "enabled": true,
+    "clampToViewport": true,
+    "releaseKeepsPosition": true,
+    "preserveGrabOffset": true,
+    "supportedReleaseMode": "idle",
+    "suspendedReleaseMode": "fall",
+    "suspendedReleaseTarget": null,
+    "suspendedReleaseVerticalVelocity": 0.0
+  },
+  "transientOnly": true,
+  "vectors": [
+    {
+      "name": "nearest-control",
+      "position": [100, 100],
+      "targets": [
+        { "id": "far", "kind": "control", "rect": [300, 300, 40, 40] },
+        { "id": "near", "kind": "control", "rect": [120, 120, 40, 40] }
+      ],
+      "expectedTarget": "near"
+    },
+    {
+      "name": "navigation-drop",
+      "modeBefore": "slide",
+      "expectedMode": "fall"
+    },
+    {
+      "name": "drag-release",
+      "position": [40, 50],
+      "release": [500, 600],
+      "viewport": [800, 700],
+      "releaseOnLegalSupport": true,
+      "expectedPosition": [500, 600],
+      "expectedMode": "idle"
+    }
+  ],
+  "behaviorVectors": [
+    {
+      "name": "surface-inside-moves-to-upper-support",
+      "position": [50, 40],
+      "target": { "id": "panel", "kind": "surface", "rect": [0, 0, 100, 80] },
+      "step": 5,
+      "expectedPosition": [50, 39.5],
+      "expectedMode": "fly"
+    },
+    {
+      "name": "upper-support-reverses",
+      "position": [40, 20],
+      "target": { "id": "control", "kind": "control", "rect": [20, 20, 60, 30] },
+      "step": 5,
+      "movementSpeed": 5,
+      "expectedPosition": [45, 20],
+      "expectedMode": "roll",
+      "expectedFacing": "right"
+    },
+    {
+      "name": "vertical-screen-edge-remains-traversable",
+      "position": [20, 40],
+      "target": { "id": "screen-left", "kind": "edge", "rect": [20, 20, 1, 80] },
+      "step": 5,
+      "movementSpeed": 5,
+      "expectedPosition": [20, 45],
+      "expectedMode": "roll"
+    },
+    {
+      "name": "horizontal-edge-moves-to-upper-support",
+      "position": [40, 100],
+      "target": { "id": "screen-bottom", "kind": "edge", "rect": [0, 99, 100, 1] },
+      "step": 5,
+      "expectedPosition": [40, 99.5],
+      "expectedMode": "fly"
+    },
+    {
+      "name": "chart-path-reverses",
+      "position": [10, 10],
+      "target": {
+        "id": "curve",
+        "kind": "chart",
+        "rect": [0, 0, 40, 40],
+        "path": [[10, 10], [20, 20], [30, 10]]
+      },
+      "step": 30,
+      "ticks": 10,
+      "expectedMode": "slide",
+      "mustReverse": true
+    },
+    {
+      "name": "flight-is-vertical-first",
+      "position": [10, 10],
+      "mode": "fly",
+      "target": { "id": "button", "kind": "control", "rect": [80, 70, 20, 20] },
+      "step": 5,
+      "movementSpeed": 5,
+      "expectedPosition": [10, 15],
+      "expectedMode": "fly"
+    },
+    {
+      "name": "navigation-prefers-below",
+      "position": [50, 50],
+      "targets": [
+        { "id": "above", "kind": "control", "rect": [40, 0, 20, 10] },
+        { "id": "below", "kind": "control", "rect": [40, 80, 20, 10] }
+      ],
+      "step": 5,
+      "expectedTarget": "below",
+      "expectedPosition": [50, 50.275],
+      "expectedVerticalVelocity": 34.375
+    },
+    {
+      "name": "fall-without-below-target-uses-viewport-bottom",
+      "position": [100, 500],
+      "verticalVelocity": 0.0,
+      "viewport": [800, 700],
+      "petHalfSize": 56,
+      "targets": [
+        { "id": "above", "kind": "control", "rect": [90, 400, 80, 20] },
+        { "id": "offset-below", "kind": "surface", "rect": [240, 600, 80, 20] }
+      ],
+      "expectedTarget": null,
+      "expectedSyntheticSupportY": 644,
+      "expectedPositionAfterOneTick": [100, 500.275],
+      "expectedVerticalVelocity": 34.375,
+      "expectedMode": "fall",
+      "expectedYDirection": "nondecreasing"
+    },
+    {
+      "name": "fall-accelerates",
+      "position": [50, 10],
+      "mode": "fall",
+      "verticalVelocity": 125.0,
+      "target": { "id": "landing", "kind": "surface", "rect": [20, 80, 60, 20] },
+      "step": 5,
+      "expectedPosition": [50, 12.275],
+      "expectedVerticalVelocity": 159.375,
+      "expectedMode": "fall"
+    },
+    {
+      "name": "hard-landing-bounces-twice",
+      "position": [50, 75],
+      "mode": "fall",
+      "verticalVelocity": 500.0,
+      "target": { "id": "landing", "kind": "surface", "rect": [20, 80, 60, 20] },
+      "step": 5,
+      "expectedPosition": [50, 80],
+      "expectedMode": "bounce",
+      "expectedImpactTimeSeconds": 0.009793920007753715,
+      "expectedImpactVerticalVelocity": 521.0416250166584,
+      "expectedBounceVerticalVelocity": -312.5,
+      "expectedBouncesRemaining": 2
+    },
+    {
+      "name": "fall-skips-horizontally-offset-support",
+      "position": [100, 100],
+      "verticalVelocity": 0.0,
+      "viewport": [800, 700],
+      "petHalfSize": 56,
+      "targets": [
+        { "id": "offset-near", "kind": "surface", "rect": [220, 200, 80, 20] },
+        { "id": "aligned-lower", "kind": "surface", "rect": [80, 340, 80, 20] }
+      ],
+      "expectedTarget": "aligned-lower",
+      "expectedPositionAfterOneTick": [100, 100.275],
+      "expectedVerticalVelocity": 34.375,
+      "expectedMode": "fall"
+    },
+    {
+      "name": "fall-retargets-new-nearest-support-every-tick",
+      "position": [100, 100],
+      "verticalVelocity": 125.0,
+      "viewport": [800, 700],
+      "petHalfSize": 56,
+      "previousTarget": "far-support",
+      "newlyAvailableTarget": "new-near-support",
+      "targets": [
+        { "id": "far-support", "kind": "surface", "rect": [80, 500, 80, 20] },
+        { "id": "new-near-support", "kind": "surface", "rect": [80, 240, 80, 20] }
+      ],
+      "expectedTarget": "new-near-support",
+      "expectedPositionAfterOneTick": [100, 102.275],
+      "expectedVerticalVelocity": 159.375,
+      "expectedMode": "fall"
+    },
+    {
+      "name": "fall-already-touching-support-lands",
+      "position": [100, 240],
+      "mode": "fall",
+      "verticalVelocity": 120.0,
+      "viewport": [800, 700],
+      "petHalfSize": 56,
+      "target": { "id": "touching-support", "kind": "surface", "rect": [80, 296, 80, 20] },
+      "expectedPosition": [100, 240],
+      "expectedTarget": "touching-support",
+      "expectedMode": "idle",
+      "expectedVerticalVelocity": 0.0
+    },
+    {
+      "name": "synthetic-bottom-hard-landing-bounces-twice",
+      "position": [100, 643],
+      "verticalVelocity": 500.0,
+      "viewport": [800, 700],
+      "petHalfSize": 56,
+      "targets": [],
+      "expectedTarget": null,
+      "expectedSyntheticSupportY": 644,
+      "expectedPosition": [100, 644],
+      "expectedImpactTimeSeconds": 0.0019914793186246904,
+      "expectedImpactVerticalVelocity": 504.27856884860773,
+      "expectedMode": "bounce",
+      "expectedBounceVerticalVelocity": -312.5,
+      "expectedBouncesRemaining": 2
+    },
+    {
+      "name": "suspended-drag-release-enters-fall",
+      "position": [400, 300],
+      "viewport": [800, 700],
+      "petHalfSize": 56,
+      "targets": [
+        { "id": "above", "kind": "surface", "rect": [320, 160, 160, 20] }
+      ],
+      "releaseOnLegalSupport": false,
+      "expectedMode": "fall",
+      "expectedTarget": null,
+      "expectedVerticalVelocity": 0.0
+    },
+    {
+      "name": "center-bias-prefers-interior",
+      "position": [100, 100],
+      "viewport": [800, 700],
+      "targets": [
+        { "id": "screen-edge", "kind": "edge", "rect": [0, 40, 1, 240] },
+        { "id": "interior", "kind": "control", "rect": [220, 120, 80, 20] }
+      ],
+      "expectedTarget": "interior"
+    },
+    {
+      "name": "center-bias-measures-nearest-support",
+      "position": [100, 100],
+      "viewport": [800, 700],
+      "targets": [
+        { "id": "long-support", "kind": "control", "rect": [0, 50, 800, 20] },
+        { "id": "nearby-short", "kind": "control", "rect": [250, 180, 40, 20] }
+      ],
+      "expectedTarget": "long-support"
+    }
+  ],
+  "fallPhysicsVectors": [
+    {
+      "name": "closed-form-constant-acceleration-consecutive-ticks",
+      "initialPositionY": 10.0,
+      "initialVerticalVelocity": 62.5,
+      "samples": [
+        { "tick": 1, "elapsedSeconds": 0.016, "expectedY": 11.275, "expectedVerticalVelocity": 96.875, "expectedTickDisplacement": 1.275 },
+        { "tick": 2, "elapsedSeconds": 0.032, "expectedY": 13.1, "expectedVerticalVelocity": 131.25, "expectedTickDisplacement": 1.825 },
+        { "tick": 3, "elapsedSeconds": 0.048, "expectedY": 15.475, "expectedVerticalVelocity": 165.625, "expectedTickDisplacement": 2.375 },
+        { "tick": 4, "elapsedSeconds": 0.064, "expectedY": 18.4, "expectedVerticalVelocity": 200.0, "expectedTickDisplacement": 2.925 }
+      ]
+    }
+  ],
+  "windowScopeVectors": [
+    {
+      "name": "word-bubble-retains-main-pet",
+      "windowStack": ["main", "word-bubble"],
+      "petHostStack": ["main"],
+      "ownerMap": { "word-bubble": "main" },
+      "triggerWindow": "main",
+      "expectedPopupOwner": "main",
+      "expectedActivePetHost": "main",
+      "expectedVisiblePetWindows": ["main"],
+      "expectedPetCount": 1,
+      "boundsPolicy": "pet-host-window",
+      "popupExitAllowed": true
+    },
+    {
+      "name": "learning-reminder-has-exactly-one-pet",
+      "windowStack": ["main", "learning-reminder"],
+      "petHostStack": ["main", "learning-reminder"],
+      "expectedActivePetHost": "learning-reminder",
+      "expectedVisiblePetWindows": ["learning-reminder"],
+      "expectedPetCount": 1,
+      "boundsPolicy": "pet-host-window"
+    },
+    {
+      "name": "learning-reminder-word-bubble-retains-reminder-pet",
+      "windowStack": ["main", "learning-reminder", "word-bubble"],
+      "petHostStack": ["main", "learning-reminder"],
+      "ownerMap": {
+        "learning-reminder": "main",
+        "word-bubble": "learning-reminder"
+      },
+      "triggerWindow": "learning-reminder",
+      "expectedPopupOwner": "learning-reminder",
+      "expectedActivePetHost": "learning-reminder",
+      "expectedVisiblePetWindows": ["learning-reminder"],
+      "expectedPetCount": 1,
+      "boundsPolicy": "pet-host-window",
+      "popupExitAllowed": true
+    },
+    {
+      "name": "recursive-word-bubbles-retain-main-pet",
+      "windowStack": ["main", "word-bubble-0", "word-bubble-1"],
+      "petHostStack": ["main"],
+      "ownerMap": {
+        "word-bubble-0": "main",
+        "word-bubble-1": "word-bubble-0"
+      },
+      "expectedActivePetHost": "main",
+      "expectedVisiblePetWindows": ["main"],
+      "expectedPetCount": 1,
+      "boundsPolicy": "pet-host-window",
+      "popupExitAllowed": true
+    },
+    {
+      "name": "destroyed-reminder-cleans-child-bubble-and-restores-main",
+      "windowStack": ["main", "learning-reminder", "word-bubble"],
+      "petHostStack": ["main", "learning-reminder"],
+      "ownerMap": {
+        "learning-reminder": "main",
+        "word-bubble": "learning-reminder"
+      },
+      "deactivatedWindow": "learning-reminder",
+      "deactivationEvents": ["destroy"],
+      "cascadeDestroyed": ["word-bubble"],
+      "expectedWindowStack": ["main"],
+      "expectedPetHostStack": ["main"],
+      "expectedActivePetHost": "main",
+      "expectedVisiblePetWindows": ["main"],
+      "expectedPetCount": 1,
+      "boundsPolicy": "pet-host-window"
+    }
+  ]
+}

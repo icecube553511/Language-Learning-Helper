@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 import sys
 import unicodedata
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from opencc import OpenCC
+
+from prepare_pet_asset import prepare as prepare_pet_asset
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -155,6 +159,545 @@ def verify_word_bubble_contract() -> None:
         fail("Parity manifest does not declare word-bubble-v1")
 
 
+def verify_pet_contract() -> None:
+    contract_path = CONTRACTS / "pet-companion-v1.md"
+    golden_path = CONTRACTS / "pet-companion-golden-v1.json"
+    if not contract_path.is_file() or "pet-companion-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet companion contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Pet companion golden file is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "pet-companion-v1" or payload.get("name") != "冰子":
+        fail("Pet companion identity differs from the shared contract")
+    if (
+        payload.get("sourceAsset") != "shared/assets/branding/pet_image.png"
+        or payload.get("runtimeAsset") != "shared/assets/pets/bingzi.png"
+        or payload.get("runtimeAssetLeft") != "shared/assets/pets/bingzi-left.png"
+    ):
+        fail("Pet companion asset paths differ")
+    if (
+        payload.get("tickMs") != 16
+        or payload.get("displaySize") != 112
+        or payload.get("navigationTransition") != "drop-to-nearest"
+    ):
+        fail("Pet companion timing or navigation transition differs")
+    if (
+        payload.get("windowScope") != "application-owned-window"
+        or payload.get("singleActivePet") is not True
+        or payload.get("activeWindowBounds") != "pet-host-window"
+        or payload.get("wordBubblePetScope") != "trigger-window-retained"
+        or payload.get("wordBubbleExit") != "drag-and-autonomous"
+        or payload.get("wordBubbleEscapeClearance") != "full-display-size"
+        or payload.get("learningReminderPetCount") != 1
+        or payload.get("nestedPopupOwner") != "recursive-trigger-window"
+        or payload.get("activeWindowSelection") != "focus-map-host-z-order"
+        or payload.get("windowDeactivationFallback") != "next-mapped-host-z-order"
+        or payload.get("platformManagedUiExcluded") is not True
+    ):
+        fail("Pet companion window scope differs")
+    if payload.get("rectangleFormat") != "x-y-width-height" or payload.get("petSizeMeaning") != "half-size":
+        fail("Pet companion geometry semantics differ")
+    if payload.get("targetKinds") != ["control", "surface", "chart", "edge"]:
+        fail("Pet companion target kinds differ")
+    if payload.get("modes") != ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging"]:
+        fail("Pet companion modes differ")
+    if payload.get("facings") != ["left", "right"]:
+        fail("Pet companion facing values differ")
+    if payload.get("motion") != {
+        "acceleration": 0.5,
+        "cruiseSpeed": 4.0,
+        "idleTicks": 24,
+        "fallTimeStepSeconds": 0.016,
+        "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "fallVelocityUnits": "logical-units-per-second",
+        "fallIntegration": "closed-form-constant-acceleration",
+        "maxFallSpeed": None,
+        "hardLandingSpeed": 437.5,
+        "bounceCount": 2,
+        "firstBounceSpeed": 312.5,
+        "bounceDecay": 0.55,
+        "centerBiasWeight": 0.65,
+        "edgePenaltyRatio": 0.15,
+        "supportSide": "upper",
+        "screenEdges": ["left", "right", "bottom"],
+        "horizontalFlip": True,
+        "noUpwardFall": True,
+        "noBelowTargetPolicy": "fall-to-viewport-bottom-support",
+        "fallAxis": "vertical-only",
+        "fallTargetIntersection": "current-x-ray",
+        "fallTargetRefresh": "every-tick-nearest-current-x-ray",
+        "landingImpactVelocity": "continuous-contact",
+        "syntheticBottomLanding": "same-impact-and-bounce-rules",
+    }:
+        fail("Pet companion motion semantics differ")
+    drag = payload.get("drag", {})
+    if drag != {
+        "enabled": True,
+        "clampToViewport": True,
+        "releaseKeepsPosition": True,
+        "preserveGrabOffset": True,
+        "supportedReleaseMode": "idle",
+        "suspendedReleaseMode": "fall",
+        "suspendedReleaseTarget": None,
+        "suspendedReleaseVerticalVelocity": 0.0,
+    }:
+        fail("Pet companion drag semantics differ")
+    if payload.get("transientOnly") is not True:
+        fail("Pet companion state must be transient")
+    expected_behaviors = {
+        "surface-inside-moves-to-upper-support",
+        "upper-support-reverses",
+        "vertical-screen-edge-remains-traversable",
+        "horizontal-edge-moves-to-upper-support",
+        "chart-path-reverses",
+        "flight-is-vertical-first",
+        "navigation-prefers-below",
+        "fall-without-below-target-uses-viewport-bottom",
+        "fall-accelerates",
+        "hard-landing-bounces-twice",
+        "fall-skips-horizontally-offset-support",
+        "fall-retargets-new-nearest-support-every-tick",
+        "fall-already-touching-support-lands",
+        "synthetic-bottom-hard-landing-bounces-twice",
+        "suspended-drag-release-enters-fall",
+        "center-bias-prefers-interior",
+        "center-bias-measures-nearest-support",
+    }
+    observed_behaviors = {item.get("name") for item in payload.get("behaviorVectors", [])}
+    if observed_behaviors != expected_behaviors:
+        fail("Pet companion behavior vectors differ")
+    behavior_fields = {
+        "surface-inside-moves-to-upper-support": {"position", "target", "step", "expectedPosition", "expectedMode"},
+        "upper-support-reverses": {"position", "target", "step", "movementSpeed", "expectedPosition", "expectedMode", "expectedFacing"},
+        "vertical-screen-edge-remains-traversable": {"position", "target", "step", "movementSpeed", "expectedPosition", "expectedMode"},
+        "horizontal-edge-moves-to-upper-support": {"position", "target", "step", "expectedPosition", "expectedMode"},
+        "chart-path-reverses": {"position", "target", "step", "ticks", "expectedMode", "mustReverse"},
+        "flight-is-vertical-first": {"position", "mode", "target", "step", "movementSpeed", "expectedPosition", "expectedMode"},
+        "navigation-prefers-below": {"position", "targets", "step", "expectedTarget", "expectedPosition", "expectedVerticalVelocity"},
+        "fall-without-below-target-uses-viewport-bottom": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode", "expectedYDirection"},
+        "fall-accelerates": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedVerticalVelocity", "expectedMode"},
+        "hard-landing-bounces-twice": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedMode", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
+        "fall-skips-horizontally-offset-support": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode"},
+        "fall-retargets-new-nearest-support-every-tick": {"position", "verticalVelocity", "viewport", "petHalfSize", "previousTarget", "newlyAvailableTarget", "targets", "expectedTarget", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode"},
+        "fall-already-touching-support-lands": {"position", "mode", "verticalVelocity", "viewport", "petHalfSize", "target", "expectedPosition", "expectedTarget", "expectedMode", "expectedVerticalVelocity"},
+        "synthetic-bottom-hard-landing-bounces-twice": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPosition", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedMode", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
+        "suspended-drag-release-enters-fall": {"position", "viewport", "petHalfSize", "targets", "releaseOnLegalSupport", "expectedMode", "expectedTarget", "expectedVerticalVelocity"},
+        "center-bias-prefers-interior": {"position", "viewport", "targets", "expectedTarget"},
+        "center-bias-measures-nearest-support": {"position", "viewport", "targets", "expectedTarget"},
+    }
+    for behavior in payload.get("behaviorVectors", []):
+        name = behavior.get("name")
+        missing = behavior_fields.get(name, set()) - behavior.keys()
+        if missing:
+            fail(f"Pet companion behavior vector {name} is missing fields: {sorted(missing)}")
+    behavior_by_name = {item["name"]: item for item in payload["behaviorVectors"]}
+
+    def support_intersects_fall_ray(target: dict, position: list, pet_half_size: float) -> bool:
+        rect = target["rect"]
+        current_x = float(position[0])
+        support_y = float(rect[1]) - pet_half_size
+        return (
+            support_y >= float(position[1])
+            and float(rect[0]) - pet_half_size <= current_x <= float(rect[0]) + float(rect[2]) + pet_half_size
+        )
+
+    no_below = behavior_by_name["fall-without-below-target-uses-viewport-bottom"]
+    viewport_bottom = float(no_below["viewport"][1])
+    expected_support_y = viewport_bottom - float(no_below["petHalfSize"])
+    fall_dt = float(payload["motion"]["fallTimeStepSeconds"])
+    fall_gravity = float(payload["motion"]["fallGravityLogicalUnitsPerSecondSquared"])
+    initial_velocity = float(no_below["verticalVelocity"])
+    expected_next_y = float(no_below["position"][1]) + initial_velocity * fall_dt + 0.5 * fall_gravity * fall_dt * fall_dt
+    expected_next_velocity = initial_velocity + fall_gravity * fall_dt
+    if (
+        no_below["expectedTarget"] is not None
+        or no_below["expectedMode"] != "fall"
+        or no_below["expectedYDirection"] != "nondecreasing"
+        or not math.isclose(float(no_below["expectedSyntheticSupportY"]), expected_support_y)
+        or not math.isclose(float(no_below["expectedPositionAfterOneTick"][0]), float(no_below["position"][0]))
+        or not math.isclose(float(no_below["expectedPositionAfterOneTick"][1]), expected_next_y)
+        or not math.isclose(float(no_below["expectedVerticalVelocity"]), expected_next_velocity)
+        or any(
+            support_intersects_fall_ray(target, no_below["position"], float(no_below["petHalfSize"]))
+            for target in no_below["targets"]
+        )
+    ):
+        fail("FALL without a legal below target must continue to the viewport bottom support")
+    offset_fall = behavior_by_name["fall-skips-horizontally-offset-support"]
+    legal_targets = [
+        target
+        for target in offset_fall["targets"]
+        if support_intersects_fall_ray(target, offset_fall["position"], float(offset_fall["petHalfSize"]))
+    ]
+    nearest_legal = min(
+        legal_targets,
+        key=lambda target: float(target["rect"][1]) - float(offset_fall["petHalfSize"]),
+        default=None,
+    )
+    offset_next_y = (
+        float(offset_fall["position"][1])
+        + float(offset_fall["verticalVelocity"]) * fall_dt
+        + 0.5 * fall_gravity * fall_dt * fall_dt
+    )
+    if (
+        nearest_legal is None
+        or offset_fall["expectedTarget"] != nearest_legal["id"]
+        or offset_fall["expectedMode"] != "fall"
+        or not math.isclose(float(offset_fall["expectedPositionAfterOneTick"][0]), float(offset_fall["position"][0]))
+        or not math.isclose(float(offset_fall["expectedPositionAfterOneTick"][1]), offset_next_y)
+        or not math.isclose(
+            float(offset_fall["expectedVerticalVelocity"]),
+            float(offset_fall["verticalVelocity"]) + fall_gravity * fall_dt,
+        )
+        or not any(
+            float(target["rect"][1]) - float(offset_fall["petHalfSize"]) >= float(offset_fall["position"][1])
+            and not support_intersects_fall_ray(target, offset_fall["position"], float(offset_fall["petHalfSize"]))
+            and float(target["rect"][1]) < float(nearest_legal["rect"][1])
+            for target in offset_fall["targets"]
+        )
+    ):
+        fail("FALL must skip horizontally offset supports and keep its x coordinate fixed")
+
+    retarget_fall = behavior_by_name["fall-retargets-new-nearest-support-every-tick"]
+    retarget_targets = {target["id"]: target for target in retarget_fall["targets"]}
+    previous_target = retarget_targets.get(retarget_fall["previousTarget"])
+    newly_available_target = retarget_targets.get(retarget_fall["newlyAvailableTarget"])
+    retarget_legal = [
+        target
+        for target in retarget_fall["targets"]
+        if support_intersects_fall_ray(target, retarget_fall["position"], float(retarget_fall["petHalfSize"]))
+    ]
+    nearest_retarget = min(
+        retarget_legal,
+        key=lambda target: float(target["rect"][1]) - float(retarget_fall["petHalfSize"]),
+        default=None,
+    )
+    retarget_next_y = (
+        float(retarget_fall["position"][1])
+        + float(retarget_fall["verticalVelocity"]) * fall_dt
+        + 0.5 * fall_gravity * fall_dt * fall_dt
+    )
+    if (
+        previous_target is None
+        or newly_available_target is None
+        or previous_target not in retarget_legal
+        or newly_available_target not in retarget_legal
+        or nearest_retarget is None
+        or retarget_fall["previousTarget"] == retarget_fall["expectedTarget"]
+        or retarget_fall["newlyAvailableTarget"] != retarget_fall["expectedTarget"]
+        or nearest_retarget["id"] != retarget_fall["expectedTarget"]
+        or float(newly_available_target["rect"][1]) >= float(previous_target["rect"][1])
+        or retarget_fall["expectedMode"] != "fall"
+        or not math.isclose(float(retarget_fall["expectedPositionAfterOneTick"][0]), float(retarget_fall["position"][0]))
+        or not math.isclose(float(retarget_fall["expectedPositionAfterOneTick"][1]), retarget_next_y)
+        or not math.isclose(
+            float(retarget_fall["expectedVerticalVelocity"]),
+            float(retarget_fall["verticalVelocity"]) + fall_gravity * fall_dt,
+        )
+    ):
+        fail("FALL must retarget every tick when a nearer support appears on the current x ray")
+
+    touching_fall = behavior_by_name["fall-already-touching-support-lands"]
+    touching_support_y = (
+        float(touching_fall["target"]["rect"][1])
+        - float(touching_fall["petHalfSize"])
+    )
+    if (
+        touching_fall["mode"] != "fall"
+        or not support_intersects_fall_ray(
+            touching_fall["target"],
+            touching_fall["position"],
+            float(touching_fall["petHalfSize"]),
+        )
+        or not math.isclose(touching_support_y, float(touching_fall["position"][1]))
+        or touching_fall["expectedPosition"] != touching_fall["position"]
+        or touching_fall["expectedTarget"] != touching_fall["target"]["id"]
+        or touching_fall["expectedMode"] != "idle"
+        or float(touching_fall["verticalVelocity"]) >= float(payload["motion"]["hardLandingSpeed"])
+        or float(touching_fall["expectedVerticalVelocity"]) != 0.0
+    ):
+        fail("FALL already touching a legal support must land without penetrating it")
+
+    def verify_hard_landing(vector: dict, support_y: float) -> None:
+        start_y = float(vector["position"][1])
+        initial_velocity = float(vector["verticalVelocity"])
+        distance = support_y - start_y
+        if distance < 0:
+            fail(f"Pet companion landing vector {vector['name']} has support above its position")
+        impact_velocity = math.sqrt(initial_velocity * initial_velocity + 2.0 * fall_gravity * distance)
+        impact_time = (impact_velocity - initial_velocity) / fall_gravity
+        if impact_time < 0 or impact_time > fall_dt:
+            fail(f"Pet companion landing vector {vector['name']} does not collide within one tick")
+        if (
+            not math.isclose(float(vector["expectedPosition"][0]), float(vector["position"][0]))
+            or not math.isclose(float(vector["expectedPosition"][1]), support_y)
+            or not math.isclose(float(vector["expectedImpactTimeSeconds"]), impact_time, rel_tol=1e-12, abs_tol=1e-12)
+            or not math.isclose(float(vector["expectedImpactVerticalVelocity"]), impact_velocity, rel_tol=1e-12, abs_tol=1e-9)
+            or impact_velocity < float(payload["motion"]["hardLandingSpeed"])
+            or vector["expectedMode"] != "bounce"
+            or not math.isclose(float(vector["expectedBounceVerticalVelocity"]), -float(payload["motion"]["firstBounceSpeed"]))
+            or int(vector["expectedBouncesRemaining"]) != int(payload["motion"]["bounceCount"])
+        ):
+            fail(f"Pet companion landing vector {vector['name']} differs from the hard-landing rule")
+
+    hard_landing = behavior_by_name["hard-landing-bounces-twice"]
+    verify_hard_landing(hard_landing, float(hard_landing["target"]["rect"][1]))
+    synthetic_landing = behavior_by_name["synthetic-bottom-hard-landing-bounces-twice"]
+    synthetic_support_y = float(synthetic_landing["viewport"][1]) - float(synthetic_landing["petHalfSize"])
+    if (
+        synthetic_landing["targets"] != []
+        or synthetic_landing["expectedTarget"] is not None
+        or not math.isclose(float(synthetic_landing["expectedSyntheticSupportY"]), synthetic_support_y)
+    ):
+        fail("Synthetic viewport-bottom landing vector does not use the viewport support")
+    verify_hard_landing(synthetic_landing, synthetic_support_y)
+    suspended_release = behavior_by_name["suspended-drag-release-enters-fall"]
+    if (
+        suspended_release["releaseOnLegalSupport"] is not False
+        or suspended_release["expectedMode"] != "fall"
+        or suspended_release["expectedTarget"] is not None
+        or float(suspended_release["expectedVerticalVelocity"]) != 0.0
+    ):
+        fail("Suspended drag release must begin a fresh targetless FALL")
+    drag_release = next((item for item in payload["vectors"] if item.get("name") == "drag-release"), None)
+    if drag_release is None or drag_release.get("releaseOnLegalSupport") is not True or drag_release.get("expectedMode") != "idle":
+        fail("Drag release on legal support must enter IDLE")
+
+    motion = payload["motion"]
+    dt = float(motion["fallTimeStepSeconds"])
+    gravity = float(motion["fallGravityLogicalUnitsPerSecondSquared"])
+    physics_vectors = payload.get("fallPhysicsVectors", [])
+    if {item.get("name") for item in physics_vectors} != {"closed-form-constant-acceleration-consecutive-ticks"}:
+        fail("Pet companion fixed-step fall physics vector differs")
+    for vector in physics_vectors:
+        initial_y = float(vector["initialPositionY"])
+        initial_velocity = float(vector["initialVerticalVelocity"])
+        samples = vector.get("samples", [])
+        if len(samples) < 3 or [sample.get("tick") for sample in samples] != list(range(1, len(samples) + 1)):
+            fail(f"Pet companion physics vector {vector['name']} must contain consecutive ticks")
+        previous_y = initial_y
+        displacements = []
+        for sample in samples:
+            tick = int(sample["tick"])
+            elapsed = tick * dt
+            expected_y = initial_y + initial_velocity * elapsed + 0.5 * gravity * elapsed * elapsed
+            expected_velocity = initial_velocity + gravity * elapsed
+            observed_y = float(sample["expectedY"])
+            observed_velocity = float(sample["expectedVerticalVelocity"])
+            observed_displacement = float(sample["expectedTickDisplacement"])
+            if not math.isclose(float(sample["elapsedSeconds"]), elapsed, rel_tol=1e-12, abs_tol=1e-12):
+                fail(f"Pet companion physics vector {vector['name']} has the wrong elapsed time at tick {tick}")
+            if not math.isclose(observed_y, expected_y, rel_tol=1e-12, abs_tol=1e-9):
+                fail(f"Pet companion physics vector {vector['name']} has the wrong position at tick {tick}")
+            if not math.isclose(observed_velocity, expected_velocity, rel_tol=1e-12, abs_tol=1e-9):
+                fail(f"Pet companion physics vector {vector['name']} has the wrong velocity at tick {tick}")
+            displacement = observed_y - previous_y
+            if not math.isclose(observed_displacement, displacement, rel_tol=1e-12, abs_tol=1e-9):
+                fail(f"Pet companion physics vector {vector['name']} has the wrong displacement at tick {tick}")
+            if displacement < 0:
+                fail(f"Pet companion physics vector {vector['name']} moves upward during FALL")
+            displacements.append(displacement)
+            previous_y = observed_y
+        if any(later <= earlier for earlier, later in zip(displacements, displacements[1:])):
+            fail(f"Pet companion physics vector {vector['name']} does not accelerate downward")
+        expected_second_difference = gravity * dt * dt
+        second_differences = [later - earlier for earlier, later in zip(displacements, displacements[1:])]
+        if any(not math.isclose(value, expected_second_difference, rel_tol=1e-12, abs_tol=1e-9) for value in second_differences):
+            fail(f"Pet companion physics vector {vector['name']} does not follow square-time displacement")
+
+    expected_window_vectors = {
+        "word-bubble-retains-main-pet": {
+            "name": "word-bubble-retains-main-pet",
+            "windowStack": ["main", "word-bubble"],
+            "petHostStack": ["main"],
+            "ownerMap": {"word-bubble": "main"},
+            "triggerWindow": "main",
+            "expectedPopupOwner": "main",
+            "expectedActivePetHost": "main",
+            "expectedVisiblePetWindows": ["main"],
+            "expectedPetCount": 1,
+            "boundsPolicy": "pet-host-window",
+            "popupExitAllowed": True,
+        },
+        "learning-reminder-has-exactly-one-pet": {
+            "name": "learning-reminder-has-exactly-one-pet",
+            "windowStack": ["main", "learning-reminder"],
+            "petHostStack": ["main", "learning-reminder"],
+            "expectedActivePetHost": "learning-reminder",
+            "expectedVisiblePetWindows": ["learning-reminder"],
+            "expectedPetCount": 1,
+            "boundsPolicy": "pet-host-window",
+        },
+        "learning-reminder-word-bubble-retains-reminder-pet": {
+            "name": "learning-reminder-word-bubble-retains-reminder-pet",
+            "windowStack": ["main", "learning-reminder", "word-bubble"],
+            "petHostStack": ["main", "learning-reminder"],
+            "ownerMap": {
+                "learning-reminder": "main",
+                "word-bubble": "learning-reminder",
+            },
+            "triggerWindow": "learning-reminder",
+            "expectedPopupOwner": "learning-reminder",
+            "expectedActivePetHost": "learning-reminder",
+            "expectedVisiblePetWindows": ["learning-reminder"],
+            "expectedPetCount": 1,
+            "boundsPolicy": "pet-host-window",
+            "popupExitAllowed": True,
+        },
+        "recursive-word-bubbles-retain-main-pet": {
+            "name": "recursive-word-bubbles-retain-main-pet",
+            "windowStack": ["main", "word-bubble-0", "word-bubble-1"],
+            "petHostStack": ["main"],
+            "ownerMap": {
+                "word-bubble-0": "main",
+                "word-bubble-1": "word-bubble-0",
+            },
+            "expectedActivePetHost": "main",
+            "expectedVisiblePetWindows": ["main"],
+            "expectedPetCount": 1,
+            "boundsPolicy": "pet-host-window",
+            "popupExitAllowed": True,
+        },
+        "destroyed-reminder-cleans-child-bubble-and-restores-main": {
+            "name": "destroyed-reminder-cleans-child-bubble-and-restores-main",
+            "windowStack": ["main", "learning-reminder", "word-bubble"],
+            "petHostStack": ["main", "learning-reminder"],
+            "ownerMap": {
+                "learning-reminder": "main",
+                "word-bubble": "learning-reminder",
+            },
+            "deactivatedWindow": "learning-reminder",
+            "deactivationEvents": ["destroy"],
+            "cascadeDestroyed": ["word-bubble"],
+            "expectedWindowStack": ["main"],
+            "expectedPetHostStack": ["main"],
+            "expectedActivePetHost": "main",
+            "expectedVisiblePetWindows": ["main"],
+            "expectedPetCount": 1,
+            "boundsPolicy": "pet-host-window",
+        },
+    }
+    window_vectors = {item.get("name"): item for item in payload.get("windowScopeVectors", [])}
+    if window_vectors != expected_window_vectors:
+        fail("Pet companion active-window ownership vectors differ")
+    for vector in window_vectors.values():
+        stack = vector.get("windowStack", [])
+        if not stack or stack[0] != "main" or len(stack) != len(set(stack)):
+            fail(f"Pet companion window vector {vector['name']} has an invalid window stack")
+        host_stack = vector.get("petHostStack", [])
+        if (
+            not host_stack
+            or host_stack[0] != "main"
+            or len(host_stack) != len(set(host_stack))
+            or any(host not in stack for host in host_stack)
+            or any("word-bubble" in host for host in host_stack)
+        ):
+            fail(f"Pet companion window vector {vector['name']} has an invalid pet-host stack")
+        visible = vector.get("expectedVisiblePetWindows")
+        active_host_stack = vector.get("expectedPetHostStack", host_stack)
+        if (
+            vector.get("expectedPetCount") != 1
+            or visible != [vector.get("expectedActivePetHost")]
+            or not active_host_stack
+            or vector.get("expectedActivePetHost") != active_host_stack[-1]
+            or vector.get("boundsPolicy") != "pet-host-window"
+        ):
+            fail(f"Pet companion window vector {vector['name']} violates single pet-host ownership")
+        owner_map = vector.get("ownerMap")
+        if owner_map is not None:
+            expected_owner_map = {window: stack[index - 1] for index, window in enumerate(stack[1:], start=1)}
+            if owner_map != expected_owner_map:
+                fail(f"Pet companion window vector {vector['name']} has a non-recursive owner map")
+            for window in stack[1:]:
+                seen: set[str] = set()
+                current = window
+                while current != "main":
+                    if current in seen or current not in owner_map:
+                        fail(f"Pet companion window vector {vector['name']} has a cyclic or orphaned owner chain")
+                    seen.add(current)
+                    current = owner_map[current]
+        trigger_window = vector.get("triggerWindow")
+        if trigger_window is not None:
+            if (
+                trigger_window not in stack[:-1]
+                or vector.get("expectedPopupOwner") != trigger_window
+                or "word-bubble" not in vector["windowStack"][-1]
+                or vector.get("expectedActivePetHost") != host_stack[-1]
+            ):
+                fail(f"Pet companion window vector {vector['name']} violates recursive popup ownership")
+        if vector.get("popupExitAllowed") is not None:
+            if (
+                vector.get("popupExitAllowed") is not True
+                or vector.get("boundsPolicy") != "pet-host-window"
+                or any("word-bubble" in host for host in host_stack)
+            ):
+                fail(f"Pet companion window vector {vector['name']} traps the pet in a popup")
+        deactivated_window = vector.get("deactivatedWindow")
+        if deactivated_window is not None:
+            cascade = vector.get("cascadeDestroyed", [])
+            expected_stack = vector.get("expectedWindowStack")
+            removed = {deactivated_window, *cascade}
+            if (
+                deactivated_window not in stack
+                or vector.get("deactivationEvents") != ["destroy"]
+                or expected_stack != [window for window in stack if window not in removed]
+                or vector.get("expectedPetHostStack") != [host for host in host_stack if host not in removed]
+                or vector.get("expectedActivePetHost") != vector.get("expectedPetHostStack", [])[-1]
+            ):
+                fail(f"Pet companion window vector {vector['name']} violates owner-destroy cleanup")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("petCompanionVersion") != "pet-companion-v1":
+        fail("Parity manifest does not declare pet-companion-v1")
+    pet = parity.get("petCompanion", {})
+    if pet != {
+        "name": "冰子",
+        "tickMs": 16,
+        "displaySize": 112,
+        "idleTicks": 24,
+        "targetKinds": ["control", "surface", "chart", "edge"],
+        "navigationTransition": "drop-to-nearest",
+        "supportSide": "upper",
+        "screenEdges": ["left", "right", "bottom"],
+        "acceleratedFall": True,
+        "fallTimeStepSeconds": 0.016,
+        "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "fallVelocityUnits": "logical-units-per-second",
+        "fallIntegration": "closed-form-constant-acceleration",
+        "maxFallSpeed": None,
+        "noUpwardFall": True,
+        "noBelowTargetPolicy": "fall-to-viewport-bottom-support",
+        "fallAxis": "vertical-only",
+        "fallTargetIntersection": "current-x-ray",
+        "fallTargetRefresh": "every-tick-nearest-current-x-ray",
+        "landingImpactVelocity": "continuous-contact",
+        "syntheticBottomLanding": "same-impact-and-bounce-rules",
+        "hardLandingBounces": 2,
+        "bounceDecay": 0.55,
+        "horizontalFlip": True,
+        "centerBiasedSelection": True,
+        "windowScope": "application-owned-window",
+        "singleActivePet": True,
+        "activeWindowBounds": "pet-host-window",
+        "wordBubblePetScope": "trigger-window-retained",
+        "wordBubbleExit": "drag-and-autonomous",
+        "wordBubbleEscapeClearance": "full-display-size",
+        "learningReminderPetCount": 1,
+        "nestedPopupOwner": "recursive-trigger-window",
+        "activeWindowSelection": "focus-map-host-z-order",
+        "windowDeactivationFallback": "next-mapped-host-z-order",
+        "platformManagedUiExcluded": True,
+        "dragPlacement": "preserve-grab-offset",
+        "suspendedDragRelease": "fall",
+        "transientOnly": True,
+    }:
+        fail("Parity manifest does not declare transient Bingzi state")
+    branding = parity.get("branding", {})
+    if (
+        branding.get("petImage") != payload.get("sourceAsset")
+        or branding.get("petRuntimeImage") != payload.get("runtimeAsset")
+        or branding.get("petRuntimeImageLeft") != payload.get("runtimeAssetLeft")
+    ):
+        fail("Parity and pet golden asset paths differ")
 GROUP_ORDER = ["all", "cet4", "cet6", "zk", "gk", "custom"]
 GROUP_RULES = [
     ("cet4", {"CET4"}, {"cet4"}),
@@ -301,6 +844,37 @@ def verify_branding() -> None:
         signature = image_file.read(8)
     if signature != b"\x89PNG\r\n\x1a\n":
         fail(f"Shared app image is not a PNG: {relative_path}")
+    pet_paths = parity.get("branding", {})
+    expected_hashes = {
+        "petImage": "ff8ce536c8ebf69f9f8990c94115842ac7c6fe3fac867265b031c396d18ec124",
+        "petRuntimeImage": "eea2733972136eca55c20fa58d86add1e5378422028f72d2f1209d396c2a5fb7",
+        "petRuntimeImageLeft": "e4b364dcd96c431df1962c3e9b12dc05f6787c1db52db330b43c07a7dea27294",
+    }
+    for key in ("petImage", "petRuntimeImage", "petRuntimeImageLeft"):
+        pet_relative = pet_paths.get(key)
+        if not pet_relative:
+            fail(f"Shared {key} is not declared")
+        pet_path = ROOT / pet_relative
+        if not pet_path.is_file():
+            fail(f"Shared pet image is missing: {pet_relative}")
+        with pet_path.open("rb") as pet_file:
+            pet_signature = pet_file.read(8)
+        if pet_signature != b"\x89PNG\r\n\x1a\n":
+            fail(f"Shared pet image is not a PNG: {pet_relative}")
+        observed_hash = hashlib.sha256(pet_path.read_bytes()).hexdigest()
+        if observed_hash != expected_hashes[key]:
+            fail(f"Shared pet image hash differs: {pet_relative}")
+    source_path = ROOT / pet_paths["petImage"]
+    runtime_path = ROOT / pet_paths["petRuntimeImage"]
+    runtime_left_path = ROOT / pet_paths["petRuntimeImageLeft"]
+    with TemporaryDirectory(prefix="lexitrack-pet-") as temp_dir:
+        generated_path = Path(temp_dir) / "bingzi.png"
+        generated_left_path = Path(temp_dir) / "bingzi-left.png"
+        prepare_pet_asset(source_path, generated_path, generated_left_path)
+        if generated_path.read_bytes() != runtime_path.read_bytes():
+            fail("Shared pet runtime image is not reproducible from the canonical source")
+        if generated_left_path.read_bytes() != runtime_left_path.read_bytes():
+            fail("Shared mirrored pet image is not reproducible from the canonical source")
 
 
 def verify_platform_markers() -> None:
@@ -310,10 +884,18 @@ def verify_platform_markers() -> None:
         if not marker_path.exists():
             fail(f"Missing platform marker: {marker_path.relative_to(ROOT)}")
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        for key in ("releaseVersion", "schemaVersion", "algorithmVersion", "wordBubbleVersion", "vocabularyGroupsVersion", "contentVersion"):
+        for key in (
+            "releaseVersion",
+            "schemaVersion",
+            "algorithmVersion",
+            "wordBubbleVersion",
+            "petCompanionVersion",
+            "vocabularyGroupsVersion",
+            "contentVersion",
+        ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
-        for key in ("branding", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+        for key in ("branding", "petCompanion", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
@@ -325,6 +907,7 @@ def main() -> int:
     verify_weighted_review()
     verify_dictation_contract()
     verify_word_bubble_contract()
+    verify_pet_contract()
     verify_vocabulary_groups_contract()
     verify_catalog()
     verify_branding()

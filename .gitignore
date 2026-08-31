@@ -7,13 +7,16 @@ __pycache__/
 .venv/
 windows/build/
 windows/dist/
-windows/.smoke-data/
+windows/.smoke-data*/
 windows/.exe-smoke/
 windows/.preview-debug/
 windows/.demo-*.png
 windows/LexiTrack.spec
+.windows/
+.android-build.log
 .win_smoke_loading/
 android/.gradle/
+android/.kotlin/
 android/**/build/
 android/local.properties
 *.jks

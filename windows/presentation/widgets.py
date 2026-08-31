@@ -5,6 +5,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from typing import Callable
 
+from domain.pet_companion import PetPoint
 from domain.word_bubbles import BubbleDefinition, BubbleStack, WordToken, normalize_token, tokenize_english
 
 
@@ -13,6 +14,68 @@ class _TextLine:
     start: int
     end: int
     width: int
+
+
+def popup_position_with_escape_corridor(
+    default_x: int,
+    default_y: int,
+    popup_width: int,
+    popup_height: int,
+    screen_width: int,
+    screen_height: int,
+    host_bounds: tuple[int, int, int, int],
+    pet_half_size: int,
+) -> tuple[int, int]:
+    """Keep at least one full pet sprite outside a popup when possible."""
+    screen_left = 4
+    screen_top = 4
+    screen_right = max(screen_left, screen_width - popup_width - 8)
+    screen_bottom = max(screen_top, screen_height - popup_height - 4)
+    default = (
+        min(max(default_x, screen_left), screen_right),
+        min(max(default_y, screen_top), screen_bottom),
+    )
+    host_x, host_y, host_width, host_height = host_bounds
+    half = max(0, pet_half_size)
+    left = host_x + half
+    right = max(left, host_x + host_width - half)
+    top = host_y + half
+    bottom = max(top, host_y + host_height - half)
+    legal_corners = (
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+    )
+
+    def leaves_escape(position: tuple[int, int]) -> bool:
+        x, y = position
+        return any(
+            point_x + half <= x
+            or point_x - half >= x + popup_width
+            or point_y + half <= y
+            or point_y - half >= y + popup_height
+            for point_x, point_y in legal_corners
+        )
+
+    if leaves_escape(default):
+        return default
+    candidates = {
+        (x, y)
+        for x in (default[0], screen_left, screen_right)
+        for y in (default[1], screen_top, screen_bottom)
+    }
+    viable = [position for position in candidates if leaves_escape(position)]
+    if not viable:
+        return default
+    return min(
+        viable,
+        key=lambda position: (
+            (position[0] - default[0]) ** 2 + (position[1] - default[1]) ** 2,
+            position[1],
+            position[0],
+        ),
+    )
 
 
 def _wrapped_text_lines(text: str, max_width: int, measure: Callable[[str], int]) -> tuple[_TextLine, ...]:
@@ -260,9 +323,18 @@ class WordClickableText(tk.Text):
 class WordBubbleManager:
     """Presentation-only controller for transient recursive vocabulary bubbles."""
 
-    def __init__(self, root: tk.Misc, service):
+    def __init__(
+        self,
+        root: tk.Misc,
+        service,
+        on_popup_created: Callable[[tk.Toplevel, str], None] | None = None,
+        *,
+        pet_half_size: int = 0,
+    ):
         self.root = root
         self.service = service
+        self._on_popup_created = on_popup_created
+        self._pet_half_size = max(0, pet_half_size)
         self.stack = BubbleStack()
         self._windows: list[tk.Toplevel] = []
         self._bound_widgets: set[tk.Widget] = set()
@@ -283,6 +355,8 @@ class WordBubbleManager:
         context_example: str,
         x_root: int,
         y_root: int,
+        *,
+        owner: tk.Misc | None = None,
     ) -> None:
         """Open a bubble from a concrete token, or clear on a blank click."""
         if token_text is None:
@@ -292,7 +366,7 @@ class WordBubbleManager:
                 self.clear()
             return
         token = WordToken(token_text, 0, len(token_text))
-        self._open(parent_depth, token, context_example, x_root, y_root)
+        self._open(parent_depth, token, context_example, x_root, y_root, owner=owner)
 
     def clear(self) -> None:
         self.stack = self.stack.close_all()
@@ -313,6 +387,21 @@ class WordBubbleManager:
             current = current.master
         return False
 
+    def _pet_host_window(self, owner_window: tk.Misc) -> tk.Misc:
+        """Resolve recursive bubble owners back to the actual pet host."""
+        current = owner_window.winfo_toplevel()
+        visited: set[tk.Misc] = set()
+        while current in self._windows and current not in visited:
+            visited.add(current)
+            master = current.master
+            if master is None:
+                break
+            parent = master.winfo_toplevel()
+            if parent is current:
+                break
+            current = parent
+        return current
+
     def _on_example_click(self, event):
         widget = event.widget
         english = getattr(widget, "_word_bubble_english", "")
@@ -321,7 +410,14 @@ class WordBubbleManager:
         if token is None:
             self.clear()
             return "break"
-        self._open(-1, token, context, event.x_root, event.y_root)
+        self._open(
+            -1,
+            token,
+            context,
+            event.x_root,
+            event.y_root,
+            owner=widget.winfo_toplevel(),
+        )
         return "break"
 
     def _token_at(self, widget: tk.Label, text: str, x: int, y: int) -> WordToken | None:
@@ -380,6 +476,8 @@ class WordBubbleManager:
         context: str,
         x_root: int,
         y_root: int,
+        *,
+        owner: tk.Misc | None = None,
     ) -> None:
         definition = self.service.word_bubble(token.text, context)
         previous = self.stack
@@ -394,7 +492,13 @@ class WordBubbleManager:
         self._destroy_from(depth)
         if not self.stack.frames:
             return
-        self._create_popup(self.stack.frames[-1].definition, depth, x_root, y_root)
+        self._create_popup(
+            self.stack.frames[-1].definition,
+            depth,
+            x_root,
+            y_root,
+            owner=owner,
+        )
 
     def _destroy_from(self, depth: int) -> None:
         while self._windows and len(self._windows) > depth:
@@ -402,14 +506,27 @@ class WordBubbleManager:
             if window.winfo_exists():
                 window.destroy()
 
-    def _create_popup(self, definition: BubbleDefinition, depth: int, x_root: int, y_root: int) -> None:
+    def _create_popup(
+        self,
+        definition: BubbleDefinition,
+        depth: int,
+        x_root: int,
+        y_root: int,
+        *,
+        owner: tk.Misc | None,
+    ) -> None:
         # A proper, titled window (not an overrideredirect bubble) so it can be
         # moved/closed and stays above the main window; styled like the
         # word-learning reminder card.
-        popup = tk.Toplevel(self.root)
+        owner_window = (owner or self.root).winfo_toplevel()
+        popup = tk.Toplevel(owner_window)
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
-        popup.transient(self.root.winfo_toplevel())
+        popup.transient(owner_window)
+        try:
+            popup.wm_attributes("-topmost", bool(owner_window.wm_attributes("-topmost")))
+        except tk.TclError:
+            pass
         popup.minsize(360, 240)
         popup.geometry("640x480")
 
@@ -452,7 +569,7 @@ class WordBubbleManager:
             sentence = WordClickableText(
                 body,
                 on_token=lambda token, ctx, x_root, y_root, d=depth: self.open_from_token(
-                    d, token, ctx, x_root, y_root,
+                    d, token, ctx, x_root, y_root, owner=popup,
                 ),
                 context=english,
                 bg="#FFFFFF",
@@ -507,16 +624,60 @@ class WordBubbleManager:
         below = y_root + 22
         y = above if above >= 4 else min(below, screen_height - height - 4)
         x = max(4, min(x_root - width // 2, screen_width - width - 8))
-        popup.geometry(f"+{x}+{max(4, y)}")
+        host_window = self._pet_host_window(owner_window)
+        x, y = popup_position_with_escape_corridor(
+            x,
+            max(4, y),
+            width,
+            height,
+            screen_width,
+            screen_height,
+            (
+                host_window.winfo_x(),
+                host_window.winfo_y(),
+                host_window.winfo_width(),
+                host_window.winfo_height(),
+            ),
+            self._pet_half_size,
+        )
+        popup.geometry(f"+{x}+{y}")
         popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_current(d))
         self._windows.append(popup)
+        popup.bind(
+            "<Destroy>",
+            lambda event, window=popup, d=depth: self._on_popup_destroyed(event, window, d),
+            add="+",
+        )
+        if self._on_popup_created is not None:
+            self._on_popup_created(popup, f"word-bubble-{depth}")
+
+    def _on_popup_destroyed(
+        self,
+        event: tk.Event,
+        popup: tk.Toplevel,
+        depth: int,
+    ) -> None:
+        """Keep the presentation stack aligned when an owner destroys a child."""
+        if event.widget is not popup or popup not in self._windows:
+            return
+        popup_index = self._windows.index(popup)
+        self._windows.pop(popup_index)
+        if popup_index <= depth:
+            self.stack = self.stack.close_bubble(popup_index)
 
     def _on_bubble_example(self, event, parent_depth: int, example: str, widget: tk.Label):
         token = self._token_at(widget, example, event.x, event.y)
         if token is not None:
             x_root = widget.winfo_rootx() + event.x
             y_root = widget.winfo_rooty() + event.y
-            self._open(parent_depth, token, example, x_root, y_root)
+            self._open(
+                parent_depth,
+                token,
+                example,
+                x_root,
+                y_root,
+                owner=widget.winfo_toplevel(),
+            )
         else:
             self._close_after(parent_depth)
         return "break"
@@ -698,6 +859,19 @@ class MemoryChart(tk.Canvas):
         self.curve = curve
         self.redraw()
 
+    def pet_curve_points(self) -> tuple[PetPoint, ...]:
+        """Return the rendered memory curve in this widget's local coordinates."""
+        if len(self.curve) < 2:
+            return ()
+        width = max(320, self.winfo_width())
+        height = max(220, self.winfo_height())
+        left, right, top, bottom = 48, width - 20, 24, height - 38
+        curve_step = (right - left) / max(1, len(self.curve) - 1)
+        return tuple(
+            PetPoint(left + index * curve_step, bottom - retention * (bottom - top))
+            for index, retention in enumerate(self.curve)
+        )
+
     def redraw(self):
         self.delete("all")
         width = max(320, self.winfo_width())
@@ -823,3 +997,86 @@ class DictationLoadingOverlay(tk.Frame):
     def destroy(self) -> None:
         self.stop()
         super().destroy()
+
+
+class PetOverlay(tk.Toplevel):
+    """A stable-size transparent sprite window reporting drag gestures."""
+
+    TRANSPARENT_KEY = "#ff00ff"
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        image: tk.PhotoImage,
+        on_press,
+        on_move,
+        on_release,
+        *,
+        display_size: int,
+    ):
+        self._pet_image = image
+        self._display_size = max(1, display_size)
+        super().__init__(parent)
+        self.withdraw()
+        self.overrideredirect(True)
+        self.transient(parent)
+        self.configure(bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
+        try:
+            self.wm_attributes("-topmost", bool(parent.wm_attributes("-topmost")))
+        except tk.TclError:
+            pass
+        try:
+            self.wm_attributes("-transparentcolor", self.TRANSPARENT_KEY)
+        except tk.TclError:
+            pass
+        self._sprite = tk.Label(
+            self,
+            image=image,
+            width=self._display_size,
+            height=self._display_size,
+            bg=self.TRANSPARENT_KEY,
+            bd=0,
+            highlightthickness=0,
+            relief=tk.FLAT,
+            padx=0,
+            pady=0,
+            cursor="hand2",
+        )
+        self._sprite.pack(fill=tk.BOTH, expand=True)
+        self._on_pet_press = on_press
+        self._on_pet_move = on_move
+        self._on_pet_release = on_release
+        self._sprite.bind("<ButtonPress-1>", self._on_press, add="+")
+        self._sprite.bind("<B1-Motion>", self._on_move, add="+")
+        self._sprite.bind("<ButtonRelease-1>", self._on_release, add="+")
+
+    @property
+    def sprite_size(self) -> tuple[int, int]:
+        return self._display_size, self._display_size
+
+    def set_image(self, image: tk.PhotoImage) -> None:
+        if image is self._pet_image:
+            return
+        self._pet_image = image
+        self._sprite.configure(image=image)
+
+    def place(self, *, x: int, y: int, width: int | None = None, height: int | None = None) -> None:
+        width = width or self._display_size
+        height = height or self._display_size
+        root_x = self.master.winfo_rootx() + x
+        root_y = self.master.winfo_rooty() + y
+        self.geometry(f"{width}x{height}+{root_x}+{root_y}")
+        if self.state() == "withdrawn":
+            self.deiconify()
+
+    def _on_press(self, event):
+        self._on_pet_press(event)
+        return "break"
+
+    def _on_move(self, event):
+        self._on_pet_move(event)
+        return "break"
+
+    def _on_release(self, event):
+        self._on_pet_release(event)
+        return "break"
