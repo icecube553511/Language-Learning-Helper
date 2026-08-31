@@ -1502,6 +1502,183 @@ GROUP_RULES = [
 ]
 
 
+def verify_pet_vitals_contract() -> None:
+    contract_path = CONTRACTS / "pet-vitals-v1.md"
+    golden_path = CONTRACTS / "pet-vitals-golden-v1.json"
+    if not contract_path.is_file() or "pet-vitals-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet vitals contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Pet vitals golden file is missing")
+
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "pet-vitals-v1":
+        fail("Unexpected pet vitals contract version")
+    if payload.get("defaults") != {
+        "satiety": 50.0,
+        "foodReserve": 0.0,
+        "mood": "calm",
+    }:
+        fail("Pet vitals defaults differ")
+    if payload.get("bounds") != {
+        "satietyMinimum": 0.0,
+        "satietyMaximum": 100.0,
+        "foodReserveMinimum": 0.0,
+        "foodReserveMaximum": 200.0,
+    }:
+        fail("Pet vitals bounds differ")
+    hunger = payload.get("hunger", {})
+    if hunger != {
+        "hungryBelow": 30.0,
+        "satedFromInclusive": 30.0,
+        "satisfiedFromInclusive": 70.0,
+        "reserveRefillTarget": 50.0,
+        "reserveTransferRatio": 1.0,
+    }:
+        fail("Pet hunger thresholds differ")
+    moods = payload.get("moods", [])
+    if [(item.get("name"), item.get("label")) for item in moods] != [
+        ("sad", "悲伤"),
+        ("worried", "担忧"),
+        ("happy", "开心"),
+        ("excited", "兴奋"),
+        ("bored", "无聊"),
+        ("calm", "平静"),
+    ]:
+        fail("Pet mood values differ")
+
+    overflow = payload.get("overflow", {})
+    if (
+        overflow.get("satietyToFoodReserveRatio") != 0.2
+        or overflow.get("directFoodReserveRatio") != 1.0
+        or overflow.get("order") != [
+            "apply-satiety-and-convert-overflow",
+            "apply-direct-food-reserve",
+            "clamp-food-reserve",
+            "auto-refill-if-hungry",
+        ]
+    ):
+        fail("Pet vitals overflow order or ratios differ")
+
+    tags = payload.get("temporaryReviewTags", {})
+    forgot = "ToBeReviewed_Forgot"
+    vague = "ToBeReviewed_Vague"
+    if tags != {
+        "forgot": forgot,
+        "vague": vague,
+        "cardinality": "zero-or-one",
+        "malformedConflictPrecedence": [forgot, vague],
+        "vocabularyTag": False,
+        "persisted": True,
+        "visible": False,
+    }:
+        fail("Temporary review tag semantics differ")
+
+    expected_rewards = {
+        ("study", None, "again"): (0.0, 0.0, forgot),
+        ("study", None, "hard"): (0.0, 0.0, vague),
+        ("study", None, "good"): (2.0, 0.0, None),
+        ("study", None, "easy"): (3.0, 0.0, None),
+        ("review", None, "again"): (0.0, 0.0, forgot),
+        ("review", None, "hard"): (0.0, 0.0, vague),
+        ("review", None, "good"): (0.2, 0.5, None),
+        ("review", None, "easy"): (0.3, 0.8, None),
+        ("review", vague, "again"): (0.0, 0.0, forgot),
+        ("review", vague, "hard"): (0.0, 0.0, vague),
+        ("review", vague, "good"): (1.0, 0.7, None),
+        ("review", vague, "easy"): (1.2, 1.0, None),
+        ("review", forgot, "again"): (0.0, 0.0, forgot),
+        ("review", forgot, "hard"): (0.0, 0.0, vague),
+        ("review", forgot, "good"): (1.5, 0.9, None),
+        ("review", forgot, "easy"): (2.0, 1.4, None),
+    }
+    actual_rewards = {}
+    for rule in payload.get("rewardRules", []):
+        key = (rule.get("phase"), rule.get("priorTag"), rule.get("rating"))
+        if key in actual_rewards:
+            fail(f"Duplicate pet rating reward rule: {key}")
+        actual_rewards[key] = (
+            float(rule.get("satietyGain", -1.0)),
+            float(rule.get("foodReserveGain", -1.0)),
+            rule.get("nextTag"),
+        )
+    if actual_rewards != expected_rewards:
+        fail("Pet rating reward matrix differs")
+
+    def hunger_state(satiety: float) -> str:
+        if satiety < float(hunger["hungryBelow"]):
+            return "hungry"
+        if satiety < float(hunger["satisfiedFromInclusive"]):
+            return "sated"
+        return "satisfied"
+
+    for vector in payload.get("hungerStateVectors", []):
+        if hunger_state(float(vector["satiety"])) != vector.get("expected"):
+            fail(f"Pet hunger vector differs at {vector['satiety']}")
+
+    bounds = payload["bounds"]
+    for vector in payload.get("vitalChangeVectors", []):
+        raw_satiety = float(vector["satiety"]) + float(vector["satietyGain"])
+        overflow_amount = max(0.0, raw_satiety - float(bounds["satietyMaximum"]))
+        satiety = min(float(bounds["satietyMaximum"]), max(float(bounds["satietyMinimum"]), raw_satiety))
+        reserve = min(
+            float(bounds["foodReserveMaximum"]),
+            max(
+                float(bounds["foodReserveMinimum"]),
+                float(vector["foodReserve"])
+                + float(vector["foodReserveGain"])
+                + overflow_amount * float(overflow["satietyToFoodReserveRatio"]),
+            ),
+        )
+        if satiety < float(hunger["hungryBelow"]):
+            transfer = min(float(hunger["reserveRefillTarget"]) - satiety, reserve)
+            satiety += transfer
+            reserve -= transfer
+        if not math.isclose(satiety, float(vector["expectedSatiety"]), abs_tol=1e-9):
+            fail(f"Pet vital vector {vector['name']} differs at satiety")
+        if not math.isclose(reserve, float(vector["expectedFoodReserve"]), abs_tol=1e-9):
+            fail(f"Pet vital vector {vector['name']} differs at food reserve")
+
+    effect = payload.get("rewardFlight", {})
+    expected_effect = {
+        "studyColor": "#F4C542",
+        "reviewColor": "platform-primary-teal",
+        "sourceAnchor": "pointer-down-screen-position",
+        "targetTracking": "rendered-pet-center-every-frame",
+        "frameMs": 16,
+        "spiralDurationMs": 180,
+        "spiralTurns": 1.0,
+        "spiralRadiusStart": 4.0,
+        "spiralRadiusEnd": 18.0,
+        "homingInitialSpeed": 180.0,
+        "homingAcceleration": 2400.0,
+        "homingMaximumSpeed": 2800.0,
+        "orbRadius": 6.0,
+        "trailLifetimeMs": 180,
+        "trailMaximumPoints": 20,
+        "trailLengthFormula": "clamp(18,96,speed*0.04)",
+        "burstParticleCount": 18,
+        "burstDurationMs": 350,
+        "maximumLifetimeMs": 2500,
+        "missingTargetTimeoutMs": 500,
+        "minimumVerifiedConcurrentFlights": 32,
+        "contactRadius": "pet-half-size-plus-orb-radius",
+        "concurrency": "independent-no-replacement",
+        "persisted": False,
+    }
+    if effect != expected_effect:
+        fail("Pet reward-flight parameters differ")
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    for marker in ("20%", "single-value enum", "not a vocabulary/catalog", "current rendered center"):
+        if marker not in contract_text:
+            fail(f"Pet vitals contract is missing {marker}")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("petVitalsVersion") != "pet-vitals-v1":
+        fail("Parity manifest does not declare pet-vitals-v1")
+    if parity.get("petVitals", {}).get("temporaryReviewTagCardinality") != "zero-or-one":
+        fail("Parity manifest does not enforce temporary review-tag exclusivity")
+
+
 def normalize_group_membership(code: str) -> str:
     normalized = unicodedata.normalize("NFKC", code.strip()).upper()
     return "".join(ch for ch in normalized if ch not in " -_.")
@@ -1742,12 +1919,21 @@ def verify_platform_markers() -> None:
             "algorithmVersion",
             "wordBubbleVersion",
             "petCompanionVersion",
+            "petVitalsVersion",
             "vocabularyGroupsVersion",
             "contentVersion",
         ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
-        for key in ("branding", "petCompanion", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+        for key in (
+            "branding",
+            "petCompanion",
+            "petVitals",
+            "fontScale",
+            "learningReminder",
+            "studyOrder",
+            "vocabularyFilters",
+        ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
@@ -1761,6 +1947,7 @@ def main() -> int:
     verify_dictation_presentation_contract()
     verify_word_bubble_contract()
     verify_pet_contract()
+    verify_pet_vitals_contract()
     verify_vocabulary_groups_contract()
     verify_catalog()
     verify_branding()

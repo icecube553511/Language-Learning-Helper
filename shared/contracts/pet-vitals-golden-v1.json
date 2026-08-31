@@ -1,0 +1,108 @@
+{
+  "contractVersion": "pet-vitals-v1",
+  "defaults": {
+    "satiety": 50.0,
+    "foodReserve": 0.0,
+    "mood": "calm"
+  },
+  "bounds": {
+    "satietyMinimum": 0.0,
+    "satietyMaximum": 100.0,
+    "foodReserveMinimum": 0.0,
+    "foodReserveMaximum": 200.0
+  },
+  "hunger": {
+    "hungryBelow": 30.0,
+    "satedFromInclusive": 30.0,
+    "satisfiedFromInclusive": 70.0,
+    "reserveRefillTarget": 50.0,
+    "reserveTransferRatio": 1.0
+  },
+  "moods": [
+    { "name": "sad", "label": "悲伤" },
+    { "name": "worried", "label": "担忧" },
+    { "name": "happy", "label": "开心" },
+    { "name": "excited", "label": "兴奋" },
+    { "name": "bored", "label": "无聊" },
+    { "name": "calm", "label": "平静" }
+  ],
+  "overflow": {
+    "satietyToFoodReserveRatio": 0.2,
+    "directFoodReserveRatio": 1.0,
+    "order": [
+      "apply-satiety-and-convert-overflow",
+      "apply-direct-food-reserve",
+      "clamp-food-reserve",
+      "auto-refill-if-hungry"
+    ]
+  },
+  "temporaryReviewTags": {
+    "forgot": "ToBeReviewed_Forgot",
+    "vague": "ToBeReviewed_Vague",
+    "cardinality": "zero-or-one",
+    "malformedConflictPrecedence": ["ToBeReviewed_Forgot", "ToBeReviewed_Vague"],
+    "vocabularyTag": false,
+    "persisted": true,
+    "visible": false
+  },
+  "rewardRules": [
+    { "phase": "study", "priorTag": null, "rating": "again", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Forgot" },
+    { "phase": "study", "priorTag": null, "rating": "hard", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Vague" },
+    { "phase": "study", "priorTag": null, "rating": "good", "satietyGain": 2.0, "foodReserveGain": 0.0, "nextTag": null },
+    { "phase": "study", "priorTag": null, "rating": "easy", "satietyGain": 3.0, "foodReserveGain": 0.0, "nextTag": null },
+    { "phase": "review", "priorTag": null, "rating": "again", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Forgot" },
+    { "phase": "review", "priorTag": null, "rating": "hard", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Vague" },
+    { "phase": "review", "priorTag": null, "rating": "good", "satietyGain": 0.2, "foodReserveGain": 0.5, "nextTag": null },
+    { "phase": "review", "priorTag": null, "rating": "easy", "satietyGain": 0.3, "foodReserveGain": 0.8, "nextTag": null },
+    { "phase": "review", "priorTag": "ToBeReviewed_Vague", "rating": "again", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Forgot" },
+    { "phase": "review", "priorTag": "ToBeReviewed_Vague", "rating": "hard", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Vague" },
+    { "phase": "review", "priorTag": "ToBeReviewed_Vague", "rating": "good", "satietyGain": 1.0, "foodReserveGain": 0.7, "nextTag": null },
+    { "phase": "review", "priorTag": "ToBeReviewed_Vague", "rating": "easy", "satietyGain": 1.2, "foodReserveGain": 1.0, "nextTag": null },
+    { "phase": "review", "priorTag": "ToBeReviewed_Forgot", "rating": "again", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Forgot" },
+    { "phase": "review", "priorTag": "ToBeReviewed_Forgot", "rating": "hard", "satietyGain": 0.0, "foodReserveGain": 0.0, "nextTag": "ToBeReviewed_Vague" },
+    { "phase": "review", "priorTag": "ToBeReviewed_Forgot", "rating": "good", "satietyGain": 1.5, "foodReserveGain": 0.9, "nextTag": null },
+    { "phase": "review", "priorTag": "ToBeReviewed_Forgot", "rating": "easy", "satietyGain": 2.0, "foodReserveGain": 1.4, "nextTag": null }
+  ],
+  "hungerStateVectors": [
+    { "satiety": 0.0, "expected": "hungry" },
+    { "satiety": 29.999, "expected": "hungry" },
+    { "satiety": 30.0, "expected": "sated" },
+    { "satiety": 69.999, "expected": "sated" },
+    { "satiety": 70.0, "expected": "satisfied" },
+    { "satiety": 100.0, "expected": "satisfied" }
+  ],
+  "vitalChangeVectors": [
+    { "name": "satiety-overflow-converts-at-twenty-percent", "satiety": 99.0, "foodReserve": 10.0, "satietyGain": 3.0, "foodReserveGain": 0.0, "expectedSatiety": 100.0, "expectedFoodReserve": 10.4 },
+    { "name": "direct-food-reserve-is-not-discounted", "satiety": 50.0, "foodReserve": 0.0, "satietyGain": 0.0, "foodReserveGain": 5.0, "expectedSatiety": 50.0, "expectedFoodReserve": 5.0 },
+    { "name": "combined-gains-respect-reserve-cap", "satiety": 100.0, "foodReserve": 199.0, "satietyGain": 5.0, "foodReserveGain": 0.5, "expectedSatiety": 100.0, "expectedFoodReserve": 200.0 },
+    { "name": "hungry-state-refills-to-fifty", "satiety": 20.0, "foodReserve": 50.0, "satietyGain": 0.0, "foodReserveGain": 0.0, "expectedSatiety": 50.0, "expectedFoodReserve": 20.0 },
+    { "name": "insufficient-reserve-is-fully-consumed", "satiety": 20.0, "foodReserve": 5.0, "satietyGain": 0.0, "foodReserveGain": 0.0, "expectedSatiety": 25.0, "expectedFoodReserve": 0.0 },
+    { "name": "threshold-does-not-trigger-refill", "satiety": 30.0, "foodReserve": 50.0, "satietyGain": 0.0, "foodReserveGain": 0.0, "expectedSatiety": 30.0, "expectedFoodReserve": 50.0 }
+  ],
+  "rewardFlight": {
+    "studyColor": "#F4C542",
+    "reviewColor": "platform-primary-teal",
+    "sourceAnchor": "pointer-down-screen-position",
+    "targetTracking": "rendered-pet-center-every-frame",
+    "frameMs": 16,
+    "spiralDurationMs": 180,
+    "spiralTurns": 1.0,
+    "spiralRadiusStart": 4.0,
+    "spiralRadiusEnd": 18.0,
+    "homingInitialSpeed": 180.0,
+    "homingAcceleration": 2400.0,
+    "homingMaximumSpeed": 2800.0,
+    "orbRadius": 6.0,
+    "trailLifetimeMs": 180,
+    "trailMaximumPoints": 20,
+    "trailLengthFormula": "clamp(18,96,speed*0.04)",
+    "burstParticleCount": 18,
+    "burstDurationMs": 350,
+    "maximumLifetimeMs": 2500,
+    "missingTargetTimeoutMs": 500,
+    "minimumVerifiedConcurrentFlights": 32,
+    "contactRadius": "pet-half-size-plus-orb-radius",
+    "concurrency": "independent-no-replacement",
+    "persisted": false
+  }
+}

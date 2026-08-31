@@ -1,9 +1,10 @@
 {
   "releaseVersion": "0.2.0",
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "algorithmVersion": "lexi-sm2-v1",
   "wordBubbleVersion": "word-bubble-v1",
   "petCompanionVersion": "pet-companion-v1",
+  "petVitalsVersion": "pet-vitals-v1",
   "vocabularyGroupsVersion": "vocabulary-groups-v1",
   "contentVersion": "cet-2026.08-v2",
   "branding": {
@@ -90,6 +91,25 @@
     "flingCollision": "continuous-contact",
     "transientOnly": true
   },
+  "petVitals": {
+    "satiety": { "minimum": 0.0, "maximum": 100.0, "default": 50.0 },
+    "foodReserve": { "minimum": 0.0, "maximum": 200.0, "default": 0.0 },
+    "hunger": { "hungryBelow": 30.0, "satisfiedFromInclusive": 70.0, "reserveRefillTarget": 50.0 },
+    "overflowToFoodReserveRatio": 0.2,
+    "moods": ["sad", "worried", "happy", "excited", "bored", "calm"],
+    "defaultMood": "calm",
+    "temporaryReviewTags": ["ToBeReviewed_Forgot", "ToBeReviewed_Vague"],
+    "temporaryReviewTagCardinality": "zero-or-one",
+    "persisted": true,
+    "visible": false,
+    "rewardFlight": {
+      "studyColor": "#F4C542",
+      "reviewColor": "platform-primary-teal",
+      "sourceAnchor": "pointer-down-screen-position",
+      "targetTracking": "rendered-pet-center-every-frame",
+      "concurrency": "independent-no-replacement"
+    }
+  },
   "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
   "learningReminder": { "minimumMinutes": 0.5, "maximumMinutes": 120.0, "defaultMinutes": 30.0 },
   "studyOrder": { "default": "random", "allowed": ["random", "alphabetical"] },
@@ -123,7 +143,9 @@
     "dictationGroupSelection": "ready",
     "dictationRandomGroupDrillDown": "ready",
     "dictationBookLoadingAnimation": "ready",
-    "petCurveLandingPhysics": "ready"
+    "petCurveLandingPhysics": "ready",
+    "petVitalsAndRatingRewards": "planned",
+    "ratingRewardFlightEffect": "planned"
   },
   "platforms": ["windows", "android"]
 }

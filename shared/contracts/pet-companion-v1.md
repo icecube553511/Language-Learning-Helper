@@ -1,7 +1,8 @@
 # 冰子宠物交互契约 v1
 
-`pet-companion-v1` 定义 LexiTrack 的跨端陪伴宠物语义。冰子是只存在于
-presentation 的瞬态 UI 状态，不写入词库、学习进度、设置或任何持久化文件。
+`pet-companion-v1` 定义 LexiTrack 的跨端陪伴宠物运动语义。冰子的位置、速度、
+拖拽、目标与动画实例只存在于 presentation，不写入任何持久化文件。冰子的
+持久化成长属性由独立的 `pet-vitals-v1` 约束，不得混入本契约的运动 `PetState`。
 
 ## 身份与资源
 
