@@ -142,6 +142,7 @@ class MainViewModel(
     }
 
     fun selectSection(section: MainSection) {
+        if (section != MainSection.DICTATION) stopDictationLoading()
         _uiState.value = _uiState.value.copy(section = section)
         if (section == MainSection.STUDY) ensureCurrentCard()
         if (section == MainSection.DICTATION) startDictationLoading()
@@ -152,6 +153,15 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(dictationLoading = true)
         dictationLoadingJob = viewModelScope.launch {
             delay(dictationLoadingDelayMs())
+            _uiState.value = _uiState.value.copy(dictationLoading = false)
+            dictationLoadingJob = null
+        }
+    }
+
+    private fun stopDictationLoading() {
+        dictationLoadingJob?.cancel()
+        dictationLoadingJob = null
+        if (_uiState.value.dictationLoading) {
             _uiState.value = _uiState.value.copy(dictationLoading = false)
         }
     }

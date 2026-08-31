@@ -89,15 +89,22 @@ reproduce the expected `groupCounts` and per-fixture `expectedGroups` exactly
 (group keys compared as sorted sets). A platform test must fail if its group
 classifier diverges from the golden vector.
 
-## Dictation manual word selection
+## Dictation word selection
 
 The same group browser is the single word-scope chooser for the 默写纸
 (dictation worksheet). The former top-level 词库 CET4/CET6/CUSTOM checkbox row is
 removed; both selection modes use the group browser instead:
 
 * **Random (随机填写)**: tapping a group (or "全部") sets the random sampling
-  scope; tap a group card to select it, then generate. The selected scope is a
-  single group key (default `all`).
+  scope and opens that group's eligible words in the existing selection table
+  for read-only inspection. The selected scope is a single group key (default
+  `all`), and random generation samples from the whole selected group without
+  consulting any retained manual selections. A back control returns to the
+  group browser without clearing or changing the selected random scope.
+* While inspecting a random scope, the word-selection controls are disabled and
+  an explicit `从该词书手选` action is shown. Activating it switches to manual
+  mode, keeps the currently open group and all already-ticked word ids, and
+  enables the existing row/drag selection behavior immediately.
 * **Manual (从词库选择)**: tapping a group opens that group's eligible words in
   the existing selection table for ticking; a back control returns to the group
   browser, and already-ticked word ids are kept across group switches.

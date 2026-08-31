@@ -41,8 +41,10 @@ first (全部, CET-4, CET-6, 中考/zk, 高考/gk, 自定义), then a group open
 while preserving all existing library features. The same layering applies to
 the 默写纸, whose former top 四级/六级/自定义 checkboxes are removed; the group
 browser is the single scope chooser for both 随机填写 (tap a group/all to set
-the sample scope) and 从词库选择 (open a group to tick its words, persisting
-selections across groups).
+the sample scope and inspect its words read-only, with an explicit handoff to
+manual selection) and 从词库选择 (open a group to tick its words, persisting
+selections across groups). Both platforms also render the transient dictation
+entry loader as a visibly turning book page rather than a spinner or static icon.
 
 ## Current word-bubble cross-platform contract
 

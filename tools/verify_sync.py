@@ -1192,8 +1192,65 @@ def verify_vocabulary_groups_contract() -> None:
         fail("Parity manifest does not declare vocabularyGroupBrowser ready")
     if parity.get("capabilities", {}).get("dictationGroupSelection") != "ready":
         fail("Parity manifest does not declare dictationGroupSelection ready")
-    if "Dictation manual word selection" not in contract_path.read_text(encoding="utf-8"):
-        fail("Vocabulary groups contract must govern the dictation manual word selection")
+    if parity.get("capabilities", {}).get("dictationRandomGroupDrillDown") != "ready":
+        fail("Parity manifest does not declare dictationRandomGroupDrillDown ready")
+    if "Dictation word selection" not in contract_path.read_text(encoding="utf-8"):
+        fail("Vocabulary groups contract must govern dictation word selection")
+    contract_text = contract_path.read_text(encoding="utf-8")
+    if "从该词书手选" not in contract_text or "read-only inspection" not in contract_text:
+        fail("Vocabulary groups contract must define random-group drill-down and manual handoff")
+
+    windows_source = (ROOT / "windows" / "presentation" / "app.py").read_text(encoding="utf-8")
+    android_source = (
+        ROOT / "android" / "presentation" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "presentation" / "LexiTrackApp.kt"
+    ).read_text(encoding="utf-8")
+    for marker in ("open_dictation_group", "close_dictation_group", "从该词书手选"):
+        if marker not in windows_source:
+            fail(f"Windows dictation group drill-down is missing {marker}")
+    for marker in ("openDictationGroup", "closeDictationGroup", "selectionEnabled = manual", "从该词书手选"):
+        if marker not in android_source:
+            fail(f"Android dictation group drill-down is missing {marker}")
+
+
+def verify_dictation_presentation_contract() -> None:
+    contract_path = CONTRACTS / "dictation-export-v1.md"
+    contract_text = contract_path.read_text(encoding="utf-8")
+    if "vocabulary-groups-v1" not in contract_text or "group scope" not in contract_text:
+        fail("Dictation contract must use the shared single-group scope")
+    required_scope_markers = ("`all`", "`cet4`", "`cet6`", "`zk`", "`gk`", "`custom`")
+    if any(marker not in contract_text for marker in required_scope_markers):
+        fail("Dictation contract must name every canonical vocabulary group scope")
+    if "额外规范化 membership group key" not in contract_text:
+        fail("Dictation contract must allow additional normalized membership groups")
+    if "筛选支持多选" in contract_text or "支持值为 `CET4`、`CET6`、`CUSTOM`" in contract_text:
+        fail("Dictation contract still contains the legacy memberships multi-select scope")
+    if "进入页面的加载动画" not in contract_text or "1000..2000 ms" not in contract_text:
+        fail("Dictation contract must define the entry loading duration")
+    if "圆环 spinner" not in contract_text or "打开书本" not in contract_text:
+        fail("Dictation contract must require a visible book-turning animation")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("capabilities", {}).get("dictationBookLoadingAnimation") != "ready":
+        fail("Parity manifest does not declare dictationBookLoadingAnimation ready")
+
+    windows_source = (ROOT / "windows" / "presentation" / "widgets.py").read_text(encoding="utf-8")
+    android_root = (
+        ROOT / "android" / "presentation" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "presentation"
+    )
+    android_screen = (android_root / "LexiTrackApp.kt").read_text(encoding="utf-8")
+    android_geometry = (android_root / "DictationPresentation.kt").read_text(encoding="utf-8")
+    android_view_model = (android_root / "MainViewModel.kt").read_text(encoding="utf-8")
+    for marker in ("book_turning_frame", "book_turning_progress", "BOOK_TURNING_TICK_MS"):
+        if marker not in windows_source:
+            fail(f"Windows book-turning loader is missing {marker}")
+    for marker in ("dictationBookFrame", "DICTATION_BOOK_PAGE_TURN_MS"):
+        if marker not in android_geometry:
+            fail(f"Android book-turning geometry is missing {marker}")
+    if "RepeatMode.Restart" not in android_screen or "RepeatMode.Reverse" in android_screen:
+        fail("Android book-turning loader must restart each right-to-left page turn")
+    if "stopDictationLoading()" not in android_view_model or "dictationLoadingJob?.cancel()" not in android_view_model:
+        fail("Android must cancel the dictation loading job when leaving the page")
 
 
 def verify_catalog() -> None:
@@ -1321,6 +1378,7 @@ def main() -> int:
     verify_scheduler()
     verify_weighted_review()
     verify_dictation_contract()
+    verify_dictation_presentation_contract()
     verify_word_bubble_contract()
     verify_pet_contract()
     verify_vocabulary_groups_contract()

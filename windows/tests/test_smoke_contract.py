@@ -16,20 +16,53 @@ from presentation.app import (
     DICTATION_CHECKBOX_PAD_Y,
     DICTATION_MEANING_COLUMN_WIDTH,
     DICTATION_SELECTION_COLUMN_WIDTH,
+    DictationGroupNavigation,
     LexiTrackApp,
     RED,
+    close_dictation_group,
     dictation_candidate_display,
     dictation_preview_blocks,
     dictation_preview_scroll_units,
     dictation_render_range,
     distribute_dictation_columns,
+    open_dictation_group,
     scroll_contract_ready,
+    set_dictation_group_mode,
     visible_dictation_selection,
 )
 from presentation.widgets import popup_position_with_escape_corridor
 
 
 class SmokeContractTests(unittest.TestCase):
+    def test_random_dictation_group_opens_read_only_scope_then_switches_to_manual(self):
+        state = open_dictation_group(DictationGroupNavigation(), "cet4")
+
+        self.assertEqual(state.mode, "random")
+        self.assertEqual(state.scope_group, "cet4")
+        self.assertEqual(state.open_group, "cet4")
+
+        state = set_dictation_group_mode(state, "manual")
+        self.assertEqual(state.mode, "manual")
+        self.assertEqual(state.scope_group, "cet4")
+        self.assertEqual(state.open_group, "cet4")
+
+        state = close_dictation_group(state)
+        self.assertIsNone(state.open_group)
+        self.assertEqual(state.scope_group, "cet4")
+
+    def test_switching_an_open_manual_group_to_random_uses_that_group_as_scope(self):
+        manual = DictationGroupNavigation(
+            mode="manual",
+            scope_group="all",
+            open_group="custom",
+        )
+
+        random_state = set_dictation_group_mode(manual, "random")
+
+        self.assertEqual(random_state.mode, "random")
+        self.assertEqual(random_state.scope_group, "custom")
+        self.assertEqual(random_state.open_group, "custom")
+
     def test_word_bubble_keeps_a_pet_escape_corridor_on_small_screens(self):
         position = popup_position_with_escape_corridor(
             default_x=192,

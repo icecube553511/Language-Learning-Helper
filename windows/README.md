@@ -2,6 +2,8 @@
 
 Windows 客户端使用 Python 3.10+ 标准库与 Tkinter，核心学习完全离线。内置词库从仓库根目录的 `shared/content/catalog.json` 加载；文件缺失或损坏时应用会以空库正常启动，用户仍可导入自定义词库。
 
+默写纸以翻书动画进入；随机模式可打开所选词书检查候选词，并可从该词书直接切换为手选。
+
 ## 安装预发布版
 
 在 GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 下载 `LexiTrack.exe` 与同包的 `SHA256SUMS.txt`。当前预发布包支持 Windows 10/11 x64，是无需安装的便携 EXE；双击即可运行。该文件尚未进行 Authenticode 签名，Windows 可能显示“未知发布者”或 SmartScreen 提示，请只使用本仓库 Release 中附带校验和的文件。

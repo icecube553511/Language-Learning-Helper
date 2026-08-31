@@ -98,6 +98,43 @@ class DictationCandidateDisplay:
     evaluation_color: str
 
 
+@dataclass(frozen=True)
+class DictationGroupNavigation:
+    """Transient group-browser state for the dictation page."""
+
+    mode: str = "random"
+    scope_group: str = "all"
+    open_group: str | None = None
+
+
+def open_dictation_group(
+    state: DictationGroupNavigation,
+    group: str,
+) -> DictationGroupNavigation:
+    """Open a wordbook, and make it the random scope in random mode."""
+    return replace(
+        state,
+        scope_group=group if state.mode == "random" else state.scope_group,
+        open_group=group,
+    )
+
+
+def set_dictation_group_mode(
+    state: DictationGroupNavigation,
+    mode: str,
+) -> DictationGroupNavigation:
+    """Switch modes without losing the wordbook currently being inspected."""
+    normalized_mode = "manual" if mode == "manual" else "random"
+    scope_group = state.scope_group
+    if normalized_mode == "random" and state.open_group is not None:
+        scope_group = state.open_group
+    return replace(state, mode=normalized_mode, scope_group=scope_group)
+
+
+def close_dictation_group(state: DictationGroupNavigation) -> DictationGroupNavigation:
+    return replace(state, open_group=None)
+
+
 @dataclass
 class DialogPetRuntime:
     key: str
@@ -2405,12 +2442,36 @@ class LexiTrackApp(tk.Tk):
 
         selection = self._card(body)
         selection.pack(fill=tk.BOTH, expand=True)
-        tk.Label(selection, text="手选词条", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=16, pady=(13, 2))
+        self.dictation_selection_heading = tk.Frame(selection, bg=SURFACE)
+        self.dictation_selection_heading.pack(fill=tk.X, padx=16, pady=(8, 2))
+        self.dictation_selection_title = tk.Label(
+            self.dictation_selection_heading,
+            text="选词范围",
+            bg=SURFACE,
+            fg=TEXT,
+            font="LexiHeading",
+        )
+        self.dictation_selection_title.pack(side=tk.LEFT)
         self.dictation_group: str | None = None
         self.dictation_scope_group: str = "all"
-        self.dictation_back_button = self._outline_button(selection, "← 返回词书", self._back_to_dictation_groups, width=12)
         self.dictation_selection_count = tk.Label(selection, text="随机模式不需要手选", bg=SURFACE, fg=MUTED, font="LexiSmall")
         self.dictation_selection_count.pack(anchor="w", padx=16, pady=(0, 8))
+        self.dictation_group_actions = tk.Frame(self.dictation_selection_heading, bg=SURFACE)
+        self.dictation_back_button = self._outline_button(
+            self.dictation_group_actions, "← 返回词书", self._back_to_dictation_groups, width=12,
+        )
+        self.dictation_back_button.pack(side=tk.LEFT)
+        self.dictation_open_group_label = tk.Label(
+            self.dictation_group_actions, text="", bg=SURFACE, fg=TEXT, font="LexiBodyBold",
+        )
+        self.dictation_open_group_label.pack(side=tk.LEFT, padx=12)
+        self.dictation_manual_group_button = self._primary_button(
+            self.dictation_group_actions,
+            "从该词书手选",
+            self._select_open_dictation_group_manually,
+            width=13,
+        )
+        self.dictation_manual_group_button.pack(side=tk.RIGHT)
         self.dictation_groups_frame = tk.Frame(selection, bg=SURFACE)
         self.dictation_groups_header = tk.Label(self.dictation_groups_frame, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
         self.dictation_groups_header.pack(anchor="w", padx=16, pady=(0, 8))
@@ -2485,12 +2546,14 @@ class LexiTrackApp(tk.Tk):
     def _refresh_dictation_candidates(self):
         if not hasattr(self, "dictation_table_canvas"):
             return
-        if self.dictation_mode_var.get() != "manual":
-            self.dictation_group = None
+        self._apply_dictation_navigation(set_dictation_group_mode(
+            self._dictation_navigation(),
+            self.dictation_mode_var.get(),
+        ))
         include = self.dictation_include_evaluated_var.get()
         pool = self.service.dictation_pool(include)
         self.dictation_selected_ids = visible_dictation_selection(self.dictation_selected_ids, pool)
-        if self.dictation_mode_var.get() == "manual" and self.dictation_group is not None:
+        if self.dictation_group is not None:
             pool = self.service.dictation_words_in_group(self.dictation_group, include)
             self.dictation_candidates = pool[:2000]
             self._show_dictation_sel_view("words")
@@ -2503,15 +2566,26 @@ class LexiTrackApp(tk.Tk):
     def _show_dictation_sel_view(self, view: str):
         if view == "groups":
             self.dictation_table_frame.pack_forget()
-            self.dictation_back_button.pack_forget()
+            self.dictation_group_actions.pack_forget()
+            self.dictation_selection_title.configure(text="选词范围")
             self.dictation_groups_frame.pack(fill=tk.BOTH, expand=True)
         else:
             self.dictation_groups_frame.pack_forget()
+            self.dictation_table_frame.pack_forget()
+            self.dictation_group_actions.pack_forget()
+            manual = self.dictation_mode_var.get() == "manual"
+            self.dictation_selection_title.configure(
+                text="手选词条" if manual else "随机词书内容",
+            )
+            self.dictation_open_group_label.configure(
+                text=self._dictation_group_label(self.dictation_group or "all"),
+            )
+            if manual:
+                self.dictation_manual_group_button.pack_forget()
+            elif not self.dictation_manual_group_button.winfo_manager():
+                self.dictation_manual_group_button.pack(side=tk.RIGHT)
+            self.dictation_group_actions.pack(side=tk.RIGHT)
             self.dictation_table_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-            if self.dictation_mode_var.get() == "manual" and self.dictation_group is not None:
-                self.dictation_back_button.pack(anchor="w", padx=16, pady=(0, 8))
-            else:
-                self.dictation_back_button.pack_forget()
 
     def _render_dictation_groups(self):
         for child in self.dictation_groups_inner.winfo_children():
@@ -2544,21 +2618,43 @@ class LexiTrackApp(tk.Tk):
                 widget.bind("<Button-1>", lambda _e, key=group.key: self._click_dictation_group(key))
 
     def _click_dictation_group(self, key: str):
-        if self.dictation_mode_var.get() == "manual":
-            self.dictation_group = key
-        else:
-            self.dictation_scope_group = key
+        self._apply_dictation_navigation(open_dictation_group(
+            self._dictation_navigation(),
+            key,
+        ))
         self._refresh_dictation_candidates()
 
     def _back_to_dictation_groups(self):
-        self.dictation_group = None
+        self._apply_dictation_navigation(close_dictation_group(self._dictation_navigation()))
         self._refresh_dictation_candidates()
 
-    def _dictation_scope_label(self) -> str:
+    def _select_open_dictation_group_manually(self):
+        self._apply_dictation_navigation(set_dictation_group_mode(
+            self._dictation_navigation(),
+            "manual",
+        ))
+        self._refresh_dictation_candidates()
+
+    def _dictation_navigation(self) -> DictationGroupNavigation:
+        return DictationGroupNavigation(
+            mode=self.dictation_mode_var.get(),
+            scope_group=self.dictation_scope_group,
+            open_group=self.dictation_group,
+        )
+
+    def _apply_dictation_navigation(self, state: DictationGroupNavigation) -> None:
+        self.dictation_mode_var.set(state.mode)
+        self.dictation_scope_group = state.scope_group
+        self.dictation_group = state.open_group
+
+    def _dictation_group_label(self, key: str) -> str:
         for group in self.service.dictation_groups(self.dictation_include_evaluated_var.get()):
-            if group.key == self.dictation_scope_group:
+            if group.key == key:
                 return group.label
-        return self.dictation_scope_group
+        return key
+
+    def _dictation_scope_label(self) -> str:
+        return self._dictation_group_label(self.dictation_scope_group)
 
     def _render_dictation_candidates(self):
         if not hasattr(self, "dictation_table_canvas"):
@@ -2712,6 +2808,7 @@ class LexiTrackApp(tk.Tk):
         column_widths = self._dictation_table_column_widths
         total_width = sum(column_widths)
         displays = self._dictation_displays
+        manual = self.dictation_mode_var.get() == "manual"
         for index in range(render_start, render_end + 1):
             if canvas.find_withtag(f"dictation_row_{index}"):
                 continue
@@ -2720,7 +2817,7 @@ class LexiTrackApp(tk.Tk):
             top = row_tops[index]
             row_height = row_heights[index]
             background = "#F8FAFB" if index % 2 else SURFACE
-            if entry.word_id in self.dictation_selected_ids:
+            if manual and entry.word_id in self.dictation_selected_ids:
                 background = "#E2F1EC"
             rectangle = canvas.create_rectangle(
                 0, top, total_width, top + row_height,
@@ -2749,6 +2846,7 @@ class LexiTrackApp(tk.Tk):
         for left in column_lefts[1:]:
             canvas.create_line(left, 0, left, self._dictation_body_height, fill=BORDER, tags=("dictation_separator",))
         self._refresh_visible_dictation_checkboxes()
+        self._schedule_pet_target_refresh()
 
     def _scroll_dictation_horizontally(self, *args):
         self.dictation_table_header.xview(*args)
@@ -2816,7 +2914,7 @@ class LexiTrackApp(tk.Tk):
             if row_top + row_height < viewport_top - row_height or row_top > viewport_bottom + row_height:
                 continue
             entry = self.dictation_candidates[index]
-            selected = entry.word_id in self.dictation_selected_ids
+            selected = manual and entry.word_id in self.dictation_selected_ids
             background = "#E2F1EC" if selected else ("#F8FAFB" if index % 2 else SURFACE)
             variable = tk.BooleanVar(value=selected)
             checkbox = tk.Checkbutton(
@@ -2936,7 +3034,10 @@ class LexiTrackApp(tk.Tk):
         if self.dictation_mode_var.get() == "manual":
             self.dictation_selection_count.configure(text=f"已选择 {len(self.dictation_selected_ids)} 个词条")
         else:
-            self.dictation_selection_count.configure(text=f"随机范围：{self._dictation_scope_label()}")
+            suffix = " · 当前词条表为只读" if self.dictation_group is not None else ""
+            self.dictation_selection_count.configure(
+                text=f"随机范围：{self._dictation_scope_label()}{suffix}",
+            )
 
     def _dictation_options(self) -> DictationOptions:
         formats = frozenset(value for value, variable in self.dictation_format_vars.items() if variable.get())
@@ -4495,6 +4596,9 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             app._scroll_dictation_vertically("moveto", 0)
             app.update_idletasks()
             app.update()
+            # Capture the post-scroll snapshot deterministically instead of
+            # depending on the next 16 ms pet tick to refresh virtualized rows.
+            app._refresh_pet_targets()
             after_pet_ids = {
                 target.id.removeprefix(selection_prefix): target.id
                 for target in app._pet_targets

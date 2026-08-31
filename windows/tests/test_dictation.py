@@ -140,6 +140,82 @@ class DictationLoadingTests(unittest.TestCase):
             self.assertEqual(value % 100, 0)
         self.assertGreater(len(seen), 1)
 
+    def test_book_turning_frame_sweeps_from_right_page_to_left_page(self):
+        from presentation.widgets import (
+            BOOK_TURNING_FRAMES_PER_PAGE,
+            BOOK_TURNING_TICK_MS,
+            book_turning_frame,
+            book_turning_progress,
+        )
+
+        right = book_turning_frame(0.0, 56)
+        edge_on = book_turning_frame(0.5, 56)
+        left = book_turning_frame(1.0, 56)
+
+        self.assertGreater(right.edge_x, right.spine_x)
+        self.assertAlmostEqual(edge_on.edge_x, edge_on.spine_x)
+        self.assertGreater(edge_on.lift, right.lift)
+        self.assertLess(left.edge_x, left.spine_x)
+        self.assertAlmostEqual(right.edge_x - right.spine_x, left.spine_x - left.edge_x)
+        page_progress = [
+            book_turning_progress(frame_index)
+            for frame_index in range(BOOK_TURNING_FRAMES_PER_PAGE)
+        ]
+        self.assertEqual(page_progress[0], 0.0)
+        self.assertEqual(page_progress[-1], 1.0)
+        self.assertTrue(all(left < right for left, right in zip(page_progress, page_progress[1:])))
+        self.assertEqual(book_turning_progress(BOOK_TURNING_FRAMES_PER_PAGE), 0.0)
+        self.assertLessEqual(BOOK_TURNING_FRAMES_PER_PAGE * BOOK_TURNING_TICK_MS, 1000)
+
+    def test_book_turning_frame_clamps_progress_and_stays_inside_canvas(self):
+        from presentation.widgets import book_turning_frame
+
+        before = book_turning_frame(-5.0, 56)
+        after = book_turning_frame(5.0, 56)
+
+        self.assertEqual(before.progress, 0.0)
+        self.assertEqual(after.progress, 1.0)
+        for frame in (before, after):
+            self.assertLessEqual(frame.left, frame.edge_x)
+            self.assertLessEqual(frame.edge_x, frame.right)
+            self.assertLess(frame.top, frame.bottom)
+
+    def test_loading_overlay_draws_a_moving_page_without_tk_display(self):
+        from presentation.widgets import BOOK_TURNING_FRAMES_PER_PAGE, DictationLoadingOverlay
+
+        class RecordingCanvas:
+            def __init__(self):
+                self.polygons = []
+
+            def delete(self, *_args, **_kwargs):
+                self.polygons.clear()
+
+            def create_rectangle(self, *_args, **_kwargs):
+                return None
+
+            def create_line(self, *_args, **_kwargs):
+                return None
+
+            def create_polygon(self, *coords, **_kwargs):
+                self.polygons.append(coords)
+
+        overlay = object.__new__(DictationLoadingOverlay)
+        overlay._spinner = RecordingCanvas()
+        overlay._size = 56
+        overlay._surface = "#FFFFFF"
+        overlay._border = "#DDE3E8"
+        overlay._accent = "#16866F"
+
+        overlay._draw(BOOK_TURNING_FRAMES_PER_PAGE - 1)
+        finishing_page = overlay._spinner.polygons[-1]
+        overlay._draw(BOOK_TURNING_FRAMES_PER_PAGE)
+        next_page = overlay._spinner.polygons[-1]
+
+        self.assertNotEqual(finishing_page, next_page)
+        self.assertLess(finishing_page[2], finishing_page[0])
+        self.assertGreater(next_page[2], next_page[0])
+        self.assertGreaterEqual(len(overlay._spinner.polygons), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

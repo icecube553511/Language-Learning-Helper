@@ -59,10 +59,10 @@ n,v,vt,vi,adj,adv,prep,pron,conj,interj,aux,num,art,abbr,a
 
 ## 候选池与选择
 
-- 候选词条按 catalog `memberships` 过滤，筛选支持多选。空选择表示全部支持的 memberships；支持值为 `CET4`、`CET6`、`CUSTOM`，比较大小写不敏感。tags 中的 `cet4`/`cet6` 不得替代 memberships。
-- `excludeEvaluated=true` 时，排除有效本地 tags 包含 `evaluated` 的词条；为 false 时不排除。
-- 随机模式只能在完成 memberships 和 evaluated 过滤后的候选池上 shuffle/sample，然后无放回取 `min(requestedCount, candidateCount)` 个词条。同一文档内不得重复词条；契约不规定 Python/Kotlin 在相同 seed 下产生相同顺序。
-- 手选模式只使用用户明确选择且仍满足过滤条件的词条，不得自动补充。所选数量为零时禁止导出。
+- 候选词条的词书归属与分组顺序由 `vocabulary-groups-v1` 定义。随机范围是单个 group key，默认 `all`；规范 key 为 `all`、`cet4`、`cet6`、`zk`、`gk`、`custom`，也允许该契约定义的额外规范化 membership group key，不得回退为旧的 memberships 多选筛选。`all` 包含全部候选词条，其他 key 使用该契约规范化后的 memberships/tags 分类结果。
+- `excludeEvaluated=true` 时，先从可浏览、可随机及可手选的候选池中排除有效本地 tags 包含 `evaluated` 的词条；为 false 时不排除。词书计数、只读预览与手选表必须使用相同的过滤结果。
+- 随机模式只能在完成 group scope 和 evaluated 过滤后的候选池上 shuffle/sample，然后无放回取 `min(requestedCount, candidateCount)` 个词条。同一文档内不得重复词条；契约不规定 Python/Kotlin 在相同 seed 下产生相同顺序。
+- 手选模式只使用用户明确选择且仍满足 evaluated 过滤条件的词条，不得自动补充；当前打开的 group 只限制浏览表，不清除或限制从其他 group 已选的词条。所选数量为零时禁止导出。
 - 手选数量大于零但少于 `requestedCount` 时，必须显示以下精确确认文案模板；花括号参数以十进制整数替换，不保留花括号：
 
 ```text
@@ -70,6 +70,12 @@ n,v,vt,vi,adj,adv,prep,pron,conj,interj,aux,num,art,abbr,a
 ```
 
 按钮文案固定为 `确定选择` 和 `返回选择`。选择 `返回选择` 时不得写文件或更新 tags。
+
+### 进入页面的加载动画
+
+- 每次从其他主页面进入“默写纸”时，先显示 presentation-only 的阻塞加载层，持续时间从 `1000..2000 ms`（含边界）按 `100 ms` 步长随机选择；离开页面必须取消计时与后续动画帧。
+- 加载层中央必须是可辨识的打开书本，并持续显示书页从右页翻到左页再开始下一页的运动。动画帧必须实际改变书页外缘、阴影或可见页宽，不能退化为静态书本或圆环 spinner。
+- 加载层结束后才展示默写设置与词书选择器。动画只属于瞬态 presentation 状态，不得写入设置、词库或学习记录。
 
 ### 手选词条表格
 

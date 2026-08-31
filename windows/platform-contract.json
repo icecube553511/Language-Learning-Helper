@@ -109,7 +109,9 @@
     "wordBubbleInteraction": "ready",
     "petCompanionInteraction": "ready",
     "vocabularyGroupBrowser": "ready",
-    "dictationGroupSelection": "ready"
+    "dictationGroupSelection": "ready",
+    "dictationRandomGroupDrillDown": "ready",
+    "dictationBookLoadingAnimation": "ready"
   },
   "platforms": ["windows", "android"]
 }
