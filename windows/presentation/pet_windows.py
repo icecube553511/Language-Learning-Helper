@@ -428,6 +428,7 @@ class PetWindowCoordinator:
                     target_id=None,
                     idle_ticks_remaining=0,
                     avoid_target_id=None,
+                    curve_velocity=None,
                 )
         self.active_window_id = fallback.id if fallback is not None else None
 
@@ -494,6 +495,7 @@ class PetWindowCoordinator:
                     target_id=None,
                     idle_ticks_remaining=0,
                     avoid_target_id=None,
+                    curve_velocity=None,
                 )
         self.active_window_id = target.id
         return True
@@ -658,6 +660,7 @@ class PetWindowCoordinator:
             facing=entry.facing,
             drag_offset=source.drag_offset,
             horizontal_velocity=entry.velocity.x,
+            curve_velocity=None,
         )
 
 

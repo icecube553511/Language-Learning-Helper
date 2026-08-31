@@ -465,6 +465,7 @@ class PetWindowCoordinator(initialState: PetState? = null) {
                         targetId = null,
                         idleTicksRemaining = 0,
                         avoidTargetId = null,
+                        curveVelocity = null,
                     )
                 }
             }
@@ -521,6 +522,7 @@ class PetWindowCoordinator(initialState: PetState? = null) {
                     targetId = null,
                     idleTicksRemaining = 0,
                     avoidTargetId = null,
+                    curveVelocity = null,
                 )
             }
         }
@@ -713,6 +715,7 @@ class PetWindowCoordinator(initialState: PetState? = null) {
         horizontalVelocity = entry.velocity.x,
         verticalVelocity = entry.velocity.y,
         facing = entry.facing,
+        curveVelocity = null,
     )
 
     private fun clampInner(value: Float, extent: Float, petHalfSize: Float): Float {

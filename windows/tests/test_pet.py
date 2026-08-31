@@ -136,8 +136,15 @@ class PetCompanionTests(unittest.TestCase):
             nearest_pet_target(PetPoint(*nearest["position"]), targets).id,
             nearest["expectedTarget"],
         )
-        navigation = PetState(PetPoint(10, 20), PetMode.SLIDE, "chart")
-        self.assertEqual(on_navigation(navigation).mode.value, golden["vectors"][1]["expectedMode"])
+        navigation = PetState(
+            PetPoint(10, 20),
+            PetMode.SLIDE,
+            "chart",
+            curve_velocity=2.0,
+        )
+        navigated = on_navigation(navigation)
+        self.assertEqual(navigated.mode.value, golden["vectors"][1]["expectedMode"])
+        self.assertIsNone(navigated.curve_velocity)
         drag = golden["vectors"][2]
         dragging = begin_drag(PetState(PetPoint(*drag["position"])), PetPoint(*drag["release"]))
         support = PetTarget(
@@ -461,21 +468,258 @@ class PetCompanionTests(unittest.TestCase):
         self.assertLess(state.position.y, 50)
 
     def test_chart_segment_midpoint_is_a_legal_release_support(self):
+        vector = next(
+            item
+            for item in self.golden["curveLandingVectors"]
+            if item["name"] == "zero-speed-mid-segment-starts-downhill-without-vertex-snap"
+        )
         target = PetTarget(
             "curve",
             PetTargetKind.CHART,
             PetRect(0, 0, 200, 160),
-            path=(PetPoint(20, 100), PetPoint(100, 140)),
+            path=tuple(PetPoint(*point) for point in vector["segment"]),
         )
         released = release_drag(
-            PetState(PetPoint(60, 110), PetMode.DRAGGING),
+            PetState(PetPoint(*vector["contactPoint"]), PetMode.DRAGGING),
             [target],
-            PetRect(0, 0, 200, 160),
-            pet_size=10,
+            PetRect(0, 0, 200, 200),
         )
-        self.assertEqual(released.mode, PetMode.IDLE)
+        self.assertEqual(released.mode.value, vector["expectedMode"])
         self.assertEqual(released.target_id, "curve")
-        self.assertEqual(released.position, PetPoint(60, 110))
+        assert_point(self, released.position, vector["contactPoint"])
+        self.assertAlmostEqual(
+            released.curve_velocity,
+            vector["expectedInitialCurveVelocity"],
+        )
+        self.assertEqual(released.path_direction, vector["expectedPathDirection"])
+
+        advanced = advance_pet(released, [target], PetRect(0, 0, 200, 200))
+
+        self.assertAlmostEqual(
+            advanced.curve_velocity,
+            vector["expectedNextCurveVelocity"],
+        )
+        assert_point(self, advanced.position, vector["expectedNextPosition"])
+        self.assertGreater(advanced.position.x, released.position.x)
+        self.assertGreater(advanced.position.y, released.position.y)
+
+    def test_flat_curve_release_ignores_stale_direction(self):
+        vector = next(
+            item
+            for item in self.golden["curveLandingVectors"]
+            if item["name"] == "flat-segment-rest-uses-registration-direction"
+        )
+        viewport = PetRect(0, 0, 200, 200)
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            tuple(PetPoint(*point) for point in vector["segment"]),
+        )
+        contact = PetPoint(*vector["contactPoint"])
+        landed = release_drag(
+            PetState(
+                contact,
+                PetMode.DRAGGING,
+                path_direction=vector["initialPathDirection"],
+            ),
+            [target],
+            viewport,
+        )
+
+        self.assertEqual(landed.mode.value, vector["expectedMode"])
+        self.assertAlmostEqual(
+            landed.curve_velocity,
+            vector["expectedInitialCurveVelocity"],
+        )
+        self.assertEqual(landed.path_direction, vector["expectedPathDirection"])
+
+        advanced = advance_pet(landed, [target], viewport)
+
+        self.assertAlmostEqual(
+            advanced.curve_velocity,
+            vector["expectedNextCurveVelocity"],
+        )
+        assert_point(self, advanced.position, vector["expectedNextPosition"])
+
+    def test_curve_landing_projection_clamps_uphill_speed(self):
+        vector = next(
+            item
+            for item in self.golden["curveLandingVectors"]
+            if item["name"] == "fling-projection-clamps-uphill-speed"
+        )
+        viewport = PetRect(0, 0, 200, 200)
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            tuple(PetPoint(*point) for point in vector["segment"]),
+        )
+        contact = PetPoint(*vector["contactPoint"])
+        landed = advance_pet(
+            PetState(
+                contact,
+                PetMode.FLING,
+                horizontal_velocity=vector["incomingVelocity"][0],
+                vertical_velocity=vector["incomingVelocity"][1],
+            ),
+            [target],
+            viewport,
+        )
+
+        self.assertEqual(landed.mode.value, vector["expectedMode"])
+        self.assertAlmostEqual(
+            landed.curve_velocity,
+            vector["expectedInitialCurveVelocity"],
+        )
+        self.assertEqual(landed.path_direction, vector["expectedPathDirection"])
+
+        advanced = advance_pet(landed, [target], viewport)
+
+        self.assertAlmostEqual(
+            advanced.curve_velocity,
+            vector["expectedNextCurveVelocity"],
+        )
+        assert_point(self, advanced.position, vector["expectedNextPosition"])
+
+    def test_vertical_curve_landing_projects_velocity_without_sliding_uphill(self):
+        vectors = {
+            item["name"]: item for item in self.golden["curveLandingVectors"]
+        }
+        viewport = PetRect(0, 0, 200, 200)
+        for name in (
+            "vertical-fall-projects-onto-descending-tangent",
+            "vertical-fall-uses-reverse-order-downhill-on-ascending-segment",
+        ):
+            with self.subTest(name=name):
+                vector = vectors[name]
+                target = PetTarget(
+                    name,
+                    PetTargetKind.CHART,
+                    PetRect(0, 0, 200, 160),
+                    tuple(PetPoint(*point) for point in vector["segment"]),
+                )
+                contact = PetPoint(*vector["contactPoint"])
+                landed = advance_pet(
+                    PetState(
+                        contact,
+                        PetMode.FALL,
+                        vertical_velocity=vector["incomingVelocity"][1],
+                    ),
+                    [target],
+                    viewport,
+                )
+
+                self.assertEqual(landed.mode.value, vector["expectedMode"])
+                self.assertEqual(landed.target_id, target.id)
+                assert_point(self, landed.position, vector["contactPoint"])
+                self.assertAlmostEqual(
+                    landed.curve_velocity,
+                    vector["expectedInitialCurveVelocity"],
+                )
+                self.assertEqual(
+                    landed.path_direction,
+                    vector["expectedPathDirection"],
+                )
+
+                advanced = advance_pet(landed, [target], viewport)
+
+                self.assertAlmostEqual(
+                    advanced.curve_velocity,
+                    vector["expectedNextCurveVelocity"],
+                )
+                self.assertGreater(advanced.position.y, landed.position.y)
+                if "expectedNextPosition" in vector:
+                    assert_point(self, advanced.position, vector["expectedNextPosition"])
+
+    def test_uphill_fling_slows_then_reverses_downhill(self):
+        vector = next(
+            item
+            for item in self.golden["curveLandingVectors"]
+            if item["name"] == "uphill-fling-slows-before-reversing-downhill"
+        )
+        viewport = PetRect(0, 0, 200, 200)
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            tuple(PetPoint(*point) for point in vector["segment"]),
+        )
+        landed = advance_pet(
+            PetState(
+                PetPoint(*vector["contactPoint"]),
+                PetMode.FLING,
+                horizontal_velocity=vector["incomingVelocity"][0],
+                vertical_velocity=vector["incomingVelocity"][1],
+            ),
+            [target],
+            viewport,
+        )
+
+        self.assertEqual(landed.mode.value, vector["expectedMode"])
+        self.assertAlmostEqual(
+            landed.curve_velocity,
+            vector["expectedInitialCurveVelocity"],
+        )
+        self.assertEqual(landed.path_direction, vector["expectedPathDirection"])
+
+        first_slide = advance_pet(landed, [target], viewport)
+        self.assertAlmostEqual(
+            first_slide.curve_velocity,
+            vector["expectedNextCurveVelocity"],
+        )
+        assert_point(self, first_slide.position, vector["expectedNextPosition"])
+        self.assertLess(first_slide.position.y, landed.position.y)
+
+        state = first_slide
+        downhill_tick = None
+        for tick in range(2, vector["expectedDownhillByTick"] + 1):
+            state = advance_pet(state, [target], viewport)
+            if state.curve_velocity > 0.0:
+                downhill_tick = tick
+                break
+
+        self.assertIsNotNone(downhill_tick)
+        self.assertEqual(downhill_tick, vector["expectedDownhillByTick"])
+        downhill_position = advance_pet(state, [target], viewport)
+        self.assertGreater(downhill_position.position.y, state.position.y)
+
+    def test_landed_curve_acceleration_decreases_toward_terminal_speed(self):
+        vector = next(
+            item
+            for item in self.golden["curveLandingVectors"]
+            if item["name"] == "zero-speed-mid-segment-starts-downhill-without-vertex-snap"
+        )
+        viewport = PetRect(0, 0, 200, 200)
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            tuple(PetPoint(*point) for point in vector["segment"]),
+        )
+        state = release_drag(
+            PetState(PetPoint(*vector["contactPoint"]), PetMode.DRAGGING),
+            [target],
+            viewport,
+        )
+        velocities = [state.curve_velocity]
+        positions = [state.position]
+        for _ in range(8):
+            state = advance_pet(state, [target], viewport)
+            velocities.append(state.curve_velocity)
+            positions.append(state.position)
+
+        increments = [
+            later - earlier for earlier, later in zip(velocities, velocities[1:])
+        ]
+        self.assertAlmostEqual(increments[0], vector["expectedNextCurveVelocity"])
+        self.assertTrue(all(increment > 0.0 for increment in increments))
+        self.assertTrue(
+            all(later < earlier for earlier, later in zip(increments, increments[1:]))
+        )
+        self.assertTrue(
+            all(later.y > earlier.y for earlier, later in zip(positions, positions[1:]))
+        )
 
     def test_support_above_the_viewport_is_clamped_instead_of_stalling(self):
         target = PetTarget("header", PetTargetKind.CONTROL, PetRect(20, 20, 80, 30))
@@ -772,6 +1016,29 @@ class PetCompanionTests(unittest.TestCase):
             limit_fling_velocity(PetPoint(float("inf"), -10.0)),
             PetPoint(0.0, 0.0),
         )
+
+    def test_non_finite_curve_velocity_recovers_downhill(self):
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            path=(PetPoint(0, 100), PetPoint(100, 120)),
+        )
+        advanced = advance_pet(
+            PetState(
+                PetPoint(50, 110),
+                PetMode.SLIDE,
+                target_id=target.id,
+                path_index=1,
+                curve_velocity=float("nan"),
+            ),
+            [target],
+            PetRect(0, 0, 200, 200),
+        )
+
+        self.assertAlmostEqual(advanced.curve_velocity, 0.25)
+        self.assertTrue(math.isfinite(advanced.curve_velocity))
+        self.assertGreater(advanced.position.y, 110)
 
     def test_shared_drag_velocity_vectors_and_curve_acceleration(self):
         vectors = {item["name"]: item for item in self.golden.get("dragVelocityVectors", [])}
@@ -1323,6 +1590,7 @@ class PetCompanionTests(unittest.TestCase):
                 idle_ticks_remaining=4,
                 avoid_target_id="old-target",
                 horizontal_velocity=180,
+                curve_velocity=1.5,
             )
         )
         coordinator.register_window(PetWindow("main", PetRect(0, 0, 400, 300)), active=True, pet_half_size=56)
@@ -1334,6 +1602,7 @@ class PetCompanionTests(unittest.TestCase):
         self.assertIsNone(coordinator.state.target_id)
         self.assertEqual(coordinator.state.idle_ticks_remaining, 0)
         self.assertIsNone(coordinator.state.avoid_target_id)
+        self.assertIsNone(coordinator.state.curve_velocity)
 
     def test_window_coordinator_migrates_fling_through_top_edge(self):
         coordinator = PetWindowCoordinator(
@@ -1361,6 +1630,7 @@ class PetCompanionTests(unittest.TestCase):
                 idle_ticks_remaining=8,
                 avoid_target_id="source-avoid",
                 drag_offset=PetPoint(-12, 7),
+                curve_velocity=-1.25,
             )
         )
         coordinator.register_window(
@@ -1376,6 +1646,7 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(coordinator.state.idle_ticks_remaining, 0)
         self.assertIsNone(coordinator.state.avoid_target_id)
         self.assertEqual(coordinator.state.drag_offset, PetPoint(-12, 7))
+        self.assertIsNone(coordinator.state.curve_velocity)
 
     def test_window_coordinator_allows_dialog_to_main_return(self):
         dialog = PetWindow("study-dialog", PetRect(400, 0, 400, 300), order=1)

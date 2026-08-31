@@ -738,6 +738,7 @@ class LexiTrackApp(tk.Tk):
                 target_id=None,
                 idle_ticks_remaining=0,
                 avoid_target_id=None,
+                curve_velocity=None,
             )
         entry = map_pet_entry(
             source_rect,
@@ -758,6 +759,7 @@ class LexiTrackApp(tk.Tk):
             idle_ticks_remaining=0,
             vertical_velocity=entry.velocity.y,
             horizontal_velocity=entry.velocity.x,
+            curve_velocity=None,
             facing=entry.facing,
         )
 

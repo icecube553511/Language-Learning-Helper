@@ -19,6 +19,14 @@
     "idleTicks": 24,
     "curveAcceleration": 0.25,
     "curveAccelerationPolicy": "constant-independent-of-requested-step",
+    "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
+    "curveVelocityUnits": "logical-units-per-tick",
+    "curveLandingSpeedLimit": 8.0,
+    "curveDownhillTerminalSpeed": 4.0,
+    "curveDownhillResponsePerTick": 0.0625,
+    "curveDirectionEpsilon": 0.000001,
+    "curveLandingRestDirection": "local-positive-y-downhill",
+    "curveLandingInitialUphillMotion": true,
     "targetKinds": ["control", "surface", "chart", "edge"],
     "navigationTransition": "drop-to-nearest",
     "supportSide": "upper",
@@ -67,7 +75,8 @@
       "rayMissPolicy": "reject",
       "overlapPolicy": "autonomous-reject-explicit-drag-allow",
       "positionMapping": "full-display-inner-edge",
-      "stateTransfer": "preserve-velocity-and-grab-offset"
+      "stateTransfer": "preserve-velocity-and-grab-offset",
+      "curveContactTransfer": "clear-source-local-target-and-velocity"
     },
     "dragPlacement": "preserve-grab-offset",
     "suspendedDragRelease": "fall",
@@ -111,7 +120,8 @@
     "vocabularyGroupBrowser": "ready",
     "dictationGroupSelection": "ready",
     "dictationRandomGroupDrillDown": "ready",
-    "dictationBookLoadingAnimation": "ready"
+    "dictationBookLoadingAnimation": "ready",
+    "petCurveLandingPhysics": "ready"
   },
   "platforms": ["windows", "android"]
 }

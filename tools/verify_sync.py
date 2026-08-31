@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
@@ -208,6 +209,14 @@ def verify_pet_contract() -> None:
         "cruiseSpeed": 4.0,
         "curveAcceleration": 0.25,
         "curveAccelerationPolicy": "constant-independent-of-requested-step",
+        "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
+        "curveVelocityUnits": "logical-units-per-tick",
+        "curveLandingSpeedLimit": 8.0,
+        "curveDownhillTerminalSpeed": 4.0,
+        "curveDownhillResponsePerTick": 0.0625,
+        "curveDirectionEpsilon": 0.000001,
+        "curveLandingRestDirection": "local-positive-y-downhill",
+        "curveLandingInitialUphillMotion": True,
         "idleTicks": 24,
         "fallTimeStepSeconds": 0.016,
         "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -267,6 +276,7 @@ def verify_pet_contract() -> None:
         "overlapPolicy": "autonomous-reject-explicit-drag-allow",
         "positionMapping": "full-display-inner-edge",
         "stateTransfer": "preserve-velocity-and-grab-offset",
+        "curveContactTransfer": "clear-source-local-target-and-velocity",
     }:
         fail("Pet companion window migration semantics differ")
     if payload.get("transientOnly") is not True:
@@ -751,6 +761,226 @@ def verify_pet_contract() -> None:
             ):
                 fail("Pet companion curve step override changes acceleration or loses corner budget")
 
+    curve_landing_vectors = payload.get("curveLandingVectors", [])
+    if {item.get("name") for item in curve_landing_vectors} != {
+        "vertical-fall-projects-onto-descending-tangent",
+        "zero-speed-mid-segment-starts-downhill-without-vertex-snap",
+        "uphill-fling-slows-before-reversing-downhill",
+        "vertical-fall-uses-reverse-order-downhill-on-ascending-segment",
+        "flat-segment-rest-uses-registration-direction",
+        "fling-projection-clamps-uphill-speed",
+    }:
+        fail("Pet companion curve landing vectors differ")
+    response = float(motion["curveDownhillResponsePerTick"])
+    terminal_speed = float(motion["curveDownhillTerminalSpeed"])
+    landing_limit = float(motion["curveLandingSpeedLimit"])
+    direction_epsilon = float(motion["curveDirectionEpsilon"])
+    tick_seconds = float(payload["tickMs"]) / 1000.0
+    for vector in curve_landing_vectors:
+        start, end = vector["segment"]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        if length <= 1e-12:
+            fail(f"Pet companion curve landing vector {vector['name']} has a degenerate segment")
+        tangent = (dx / length, dy / length)
+        expected_tangent = vector.get("expectedUnitTangent")
+        if expected_tangent is not None and any(
+            not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-12)
+            for actual, wanted in zip(expected_tangent, tangent)
+        ):
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong tangent")
+        incoming = [float(value) for value in vector["incomingVelocity"]]
+        projected = (incoming[0] * tangent[0] + incoming[1] * tangent[1]) * tick_seconds
+        projected = max(-landing_limit, min(landing_limit, projected))
+        if abs(projected) <= direction_epsilon:
+            projected = 0.0
+        initial = float(vector["expectedInitialCurveVelocity"])
+        if not math.isclose(initial, projected, rel_tol=1e-12, abs_tol=1e-9):
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong projected speed")
+        downhill_direction = (
+            1 if tangent[1] > direction_epsilon
+            else -1 if tangent[1] < -direction_epsilon
+            else 1
+        )
+        expected_direction = (
+            1 if initial > direction_epsilon
+            else -1 if initial < -direction_epsilon
+            else downhill_direction
+        )
+        if int(vector["expectedPathDirection"]) != expected_direction:
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong initial direction")
+        if (
+            vector["name"] == "flat-segment-rest-uses-registration-direction"
+            and int(vector.get("initialPathDirection", 1)) != -1
+        ):
+            fail("Pet companion flat curve vector does not guard against stale reverse direction")
+        terminal = downhill_direction * terminal_speed
+        next_velocity = initial + (terminal - initial) * response
+        if not math.isclose(
+            float(vector["expectedNextCurveVelocity"]),
+            next_velocity,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        ):
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong relaxed speed")
+        expected_position = vector.get("expectedNextPosition")
+        if expected_position is not None:
+            contact = [float(value) for value in vector["contactPoint"]]
+            next_position = (
+                contact[0] + tangent[0] * next_velocity,
+                contact[1] + tangent[1] * next_velocity,
+            )
+            if any(
+                not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-9)
+                for actual, wanted in zip(expected_position, next_position)
+            ):
+                fail(f"Pet companion curve landing vector {vector['name']} snaps away from its contact segment")
+        if vector.get("expectedMode") != "slide":
+            fail(f"Pet companion curve landing vector {vector['name']} must enter slide")
+        downhill_tick = vector.get("expectedDownhillByTick")
+        if downhill_tick is not None:
+            velocity = initial
+            first_positive_tick = None
+            for tick in range(1, int(downhill_tick) + 1):
+                velocity += (terminal - velocity) * response
+                if velocity > 0.0 and first_positive_tick is None:
+                    first_positive_tick = tick
+            if first_positive_tick != int(downhill_tick):
+                fail("Pet companion uphill curve landing reverses on the wrong tick")
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    for marker in ("dot(V_hit,T)*dt", "u_next=u+(u_terminal-u)*0.0625", "不得用“最近顶点”"):
+        if marker not in contract_text:
+            fail(f"Pet companion curve landing contract is missing {marker}")
+    windows_pet_source = (ROOT / "windows" / "domain" / "pet_companion.py").read_text(encoding="utf-8")
+    android_pet_source = (
+        ROOT / "android" / "domain" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "domain" / "PetCompanion.kt"
+    ).read_text(encoding="utf-8")
+    windows_tree = ast.parse(windows_pet_source)
+    windows_functions = {
+        node.name: node
+        for node in windows_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    windows_constants: dict[str, float] = {}
+    for node in windows_tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, (int, float))
+        ):
+            windows_constants[node.targets[0].id] = float(node.value.value)
+    expected_windows_constants = {
+        "CURVE_LANDING_SPEED_LIMIT": landing_limit,
+        "CURVE_DOWNHILL_TERMINAL_SPEED": terminal_speed,
+        "CURVE_DOWNHILL_RESPONSE_PER_TICK": response,
+        "CURVE_DIRECTION_EPSILON": direction_epsilon,
+    }
+    for name, expected in expected_windows_constants.items():
+        actual = windows_constants.get(name)
+        if actual is None or not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Windows curve landing constant {name} differs from the contract")
+
+    def verify_windows_helper(name: str, constants: set[str], calls: set[str]) -> None:
+        function = windows_functions.get(name)
+        if function is None:
+            fail(f"Windows curve landing helper {name} is missing")
+        used_names = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)}
+        used_calls = {
+            node.func.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if not constants <= used_names:
+            fail(f"Windows curve landing helper {name} is not wired to its contract constants")
+        if not calls <= used_calls:
+            fail(f"Windows curve landing helper {name} does not call its direction helper")
+
+    direction_helper = windows_functions.get("_curve_downhill_direction")
+    if direction_helper is None or len(direction_helper.args.args) != 1:
+        fail("Windows curve downhill helper must derive flat direction without fallback state")
+    verify_windows_helper(
+        "_curve_downhill_direction",
+        {"CURVE_DIRECTION_EPSILON"},
+        set(),
+    )
+    verify_windows_helper(
+        "_chart_landing_state",
+        {"FALL_TIME_STEP_SECONDS", "CURVE_LANDING_SPEED_LIMIT", "CURVE_DIRECTION_EPSILON"},
+        {"_curve_downhill_direction"},
+    )
+    verify_windows_helper(
+        "_advance_landed_chart",
+        {
+            "CURVE_LANDING_SPEED_LIMIT",
+            "CURVE_DOWNHILL_TERMINAL_SPEED",
+            "CURVE_DOWNHILL_RESPONSE_PER_TICK",
+            "CURVE_DIRECTION_EPSILON",
+        },
+        {"_curve_downhill_direction"},
+    )
+    verify_windows_helper("_advance_chart", set(), {"_curve_downhill_direction"})
+
+    expected_android_constants = {
+        "PET_CURVE_LANDING_SPEED_LIMIT": landing_limit,
+        "PET_CURVE_DOWNHILL_TERMINAL_SPEED": terminal_speed,
+        "PET_CURVE_DOWNHILL_RESPONSE_PER_TICK": response,
+        "PET_CURVE_DIRECTION_EPSILON": direction_epsilon,
+    }
+    for name, expected in expected_android_constants.items():
+        match = re.search(
+            rf"(?m)^(?:private\s+)?const val {name}\s*=\s*([0-9.eE+-]+)f?\s*$",
+            android_pet_source,
+        )
+        if match is None or not math.isclose(float(match.group(1)), expected, rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Android curve landing constant {name} differs from the contract")
+
+    def android_helper_source(name: str) -> str:
+        match = re.search(
+            rf"(?ms)^private fun {name}\(.*?(?=^private (?:fun|data class)|\Z)",
+            android_pet_source,
+        )
+        if match is None:
+            fail(f"Android curve landing helper {name} is missing")
+        return match.group(0)
+
+    android_direction = android_helper_source("curveDownhillDirection")
+    if (
+        not re.search(r"curveDownhillDirection\(\s*unitTangent:\s*PetPoint\s*\)", android_direction)
+        or "PET_CURVE_DIRECTION_EPSILON" not in android_direction
+    ):
+        fail("Android curve downhill helper must derive flat direction without fallback state")
+    android_landing = android_helper_source("chartLandingState")
+    if (
+        not {
+            "PET_FALL_TIME_STEP_SECONDS",
+            "PET_CURVE_LANDING_SPEED_LIMIT",
+            "PET_CURVE_DIRECTION_EPSILON",
+        } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_landing))
+        or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_landing)
+    ):
+        fail("Android chart landing helper is not wired to its contract constants and direction helper")
+    android_advance = android_helper_source("advanceLandedChart")
+    if (
+        not {
+            "PET_CURVE_LANDING_SPEED_LIMIT",
+            "PET_CURVE_DOWNHILL_TERMINAL_SPEED",
+            "PET_CURVE_DOWNHILL_RESPONSE_PER_TICK",
+            "PET_CURVE_DIRECTION_EPSILON",
+        } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_advance))
+        or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_advance)
+    ):
+        fail("Android landed chart helper is not wired to its contract constants and direction helper")
+    if not re.search(
+        r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)",
+        android_helper_source("advanceChart"),
+    ):
+        fail("Android autonomous chart helper does not use the shared downhill direction rule")
+
     migration_vectors = payload.get("windowMigrationVectors", [])
     if {item.get("name") for item in migration_vectors} != {
         "fling-exits-right-and-enters-neighbor",
@@ -1045,6 +1275,14 @@ def verify_pet_contract() -> None:
         "idleTicks": 24,
         "curveAcceleration": 0.25,
         "curveAccelerationPolicy": "constant-independent-of-requested-step",
+        "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
+        "curveVelocityUnits": "logical-units-per-tick",
+        "curveLandingSpeedLimit": 8.0,
+        "curveDownhillTerminalSpeed": 4.0,
+        "curveDownhillResponsePerTick": 0.0625,
+        "curveDirectionEpsilon": 0.000001,
+        "curveLandingRestDirection": "local-positive-y-downhill",
+        "curveLandingInitialUphillMotion": True,
         "targetKinds": ["control", "surface", "chart", "edge"],
         "navigationTransition": "drop-to-nearest",
         "supportSide": "upper",
@@ -1094,6 +1332,7 @@ def verify_pet_contract() -> None:
             "overlapPolicy": "autonomous-reject-explicit-drag-allow",
             "positionMapping": "full-display-inner-edge",
             "stateTransfer": "preserve-velocity-and-grab-offset",
+            "curveContactTransfer": "clear-source-local-target-and-velocity",
         },
         "dragPlacement": "preserve-grab-offset",
         "suspendedDragRelease": "fall",
