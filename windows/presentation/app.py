@@ -48,6 +48,11 @@ from presentation.widgets import (
     WordClickableText,
     draw_icon,
 )
+from presentation.reward_effects import (
+    RewardEffectsController,
+    RewardPoint,
+    STUDY_REWARD_COLOR,
+)
 
 
 BG = "#F3F6F7"
@@ -375,10 +380,16 @@ class LexiTrackApp(tk.Tk):
         # after the pet crosses back into the root host.
         self._pet_drag_host_dialog: tk.Misc | None = None
         self._pet_last_rendered_position: PetPoint | None = None
+        self._reward_effects: RewardEffectsController | None = None
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
         self._setup_pet_overlay()
+        self._reward_effects = RewardEffectsController(
+            self,
+            self._reward_pet_center,
+            pet_half_size=PET_DISPLAY_SIZE / 2.0,
+        )
         self.show_page("dashboard")
         self.after(1_000, self._check_review_reminder)
         self.after(250, self._schedule_word_reminder)
@@ -436,6 +447,57 @@ class LexiTrackApp(tk.Tk):
         self.bind("<Configure>", lambda _event: self._schedule_pet_target_refresh(), add="+")
         self._schedule_pet_target_refresh()
         self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
+
+    def _reward_pet_center(self) -> RewardPoint | None:
+        """Return the currently rendered Bingzi center in screen coordinates."""
+        overlay: PetOverlay | None = None
+        if self._dialog_pet_stack:
+            runtime = self._dialog_pet_runtimes.get(self._dialog_pet_stack[-1])
+            overlay = runtime.overlay if runtime is not None else None
+        else:
+            overlay = self._pet_overlay
+        if overlay is None:
+            return None
+        try:
+            if not overlay.winfo_exists() or not overlay.winfo_viewable():
+                return None
+            return RewardPoint(
+                float(overlay.winfo_rootx()) + float(overlay.winfo_width()) / 2.0,
+                float(overlay.winfo_rooty()) + float(overlay.winfo_height()) / 2.0,
+            )
+        except tk.TclError:
+            return None
+
+    def _remember_rating_pointer(self, event: tk.Event) -> None:
+        event.widget._reward_pointer_down = (
+            RewardPoint(float(event.x_root), float(event.y_root)),
+            self._pet_now_ms(),
+        )
+
+    @staticmethod
+    def _clear_rating_pointer(event: tk.Event) -> None:
+        event.widget._reward_pointer_down = None
+
+    def _rating_button_center(self, button: tk.Button) -> RewardPoint:
+        button.update_idletasks()
+        return RewardPoint(
+            float(button.winfo_rootx()) + float(button.winfo_width()) / 2.0,
+            float(button.winfo_rooty()) + float(button.winfo_height()) / 2.0,
+        )
+
+    def _rating_source_point(self, button: tk.Button) -> RewardPoint:
+        pointer = getattr(button, "_reward_pointer_down", None)
+        button._reward_pointer_down = None
+        if pointer is not None and self._pet_now_ms() - float(pointer[1]) <= 1_000.0:
+            return pointer[0]
+        return self._rating_button_center(button)
+
+    def _emit_rating_reward(self, source: RewardPoint, color: str) -> None:
+        if self._reward_effects is not None:
+            try:
+                self._reward_effects.emit(source, color)
+            except (RuntimeError, tk.TclError):
+                pass
 
     def _apply_pet_facing(self, overlay: PetOverlay, state: PetState) -> None:
         image = self._pet_images.get(state.facing) or self._pet_image
@@ -544,6 +606,9 @@ class LexiTrackApp(tk.Tk):
 
     def destroy(self) -> None:
         """Stop the transient pet window before tearing down the Tk root."""
+        if self._reward_effects is not None:
+            self._reward_effects.destroy()
+            self._reward_effects = None
         self._cancel_main_pet_render()
         for dialog in tuple(self._dialog_pet_runtimes):
             self._detach_pet_from_dialog(dialog)
@@ -2196,11 +2261,16 @@ class LexiTrackApp(tk.Tk):
             button = self._primary_button(
                 self.rating_frame,
                 label,
-                lambda value=rating: self.rate_current(value),
+                lambda value=rating, index=column: self.rate_current(
+                    value,
+                    self._rating_source_point(self.rating_buttons[index]),
+                ),
                 color=color,
                 width=8,
             )
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
+            button.bind("<ButtonPress-1>", self._remember_rating_pointer, add="+")
+            button.bind("<Leave>", self._clear_rating_pointer, add="+")
             self.rating_buttons.append(button)
         self.answer_panel = tk.Frame(self.study_card, bg=SURFACE)
         self.answer_panel.bind("<Configure>", self._resize_study_answer, add="+")
@@ -2298,11 +2368,16 @@ class LexiTrackApp(tk.Tk):
             button = self._primary_button(
                 self.review_rating_frame,
                 label,
-                lambda value=rating: self.rate_review_current(value),
+                lambda value=rating, index=column: self.rate_review_current(
+                    value,
+                    self._rating_source_point(self.review_rating_buttons[index]),
+                ),
                 color=color,
                 width=8,
             )
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
+            button.bind("<ButtonPress-1>", self._remember_rating_pointer, add="+")
+            button.bind("<Leave>", self._clear_rating_pointer, add="+")
             self.review_rating_buttons.append(button)
         self.review_answer_panel = tk.Frame(self.review_card, bg=SURFACE)
         self.review_answer_panel.bind("<Configure>", self._resize_review_answer, add="+")
@@ -3809,11 +3884,19 @@ class LexiTrackApp(tk.Tk):
         self.rating_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(2, 4))
         self.answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
 
-    def rate_current(self, rating: ReviewRating):
+    def rate_current(
+        self,
+        rating: ReviewRating,
+        source: RewardPoint | None = None,
+    ):
         if self.current_card is None or not self.answer_visible:
             return
         previous = self.current_card.word_id
         self.service.rate_card(previous, rating)
+        if source is None:
+            index = tuple(ReviewRating).index(rating)
+            source = self._rating_button_center(self.rating_buttons[index])
+        self._emit_rating_reward(source, STUDY_REWARD_COLOR)
         self._sync_review_batch_control()
         self.load_study_card(exclude_id=previous)
 
@@ -3880,11 +3963,20 @@ class LexiTrackApp(tk.Tk):
         self.review_rating_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(2, 4))
         self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
 
-    def rate_review_current(self, rating: ReviewRating):
+    def rate_review_current(
+        self,
+        rating: ReviewRating,
+        source: RewardPoint | None = None,
+    ):
         if not self.review_queue or not self.review_answer_visible:
             return
-        card = self.review_queue.pop(0)
+        card = self.review_queue[0]
         self.service.rate_review_card(card.word_id, rating)
+        if source is None:
+            index = tuple(ReviewRating).index(rating)
+            source = self._rating_button_center(self.review_rating_buttons[index])
+        self._emit_rating_reward(source, ACCENT)
+        self.review_queue.pop(0)
         self._show_next_review_card()
 
     def _reveal_current_answer(self):
@@ -3895,9 +3987,17 @@ class LexiTrackApp(tk.Tk):
 
     def _rate_visible_card(self, rating: ReviewRating):
         if self.current_page == "study" and self.answer_visible:
-            self.rate_current(rating)
+            index = tuple(ReviewRating).index(rating)
+            self.rate_current(
+                rating,
+                self._rating_button_center(self.rating_buttons[index]),
+            )
         elif self.current_page == "review" and self.review_answer_visible:
-            self.rate_review_current(rating)
+            index = tuple(ReviewRating).index(rating)
+            self.rate_review_current(
+                rating,
+                self._rating_button_center(self.review_rating_buttons[index]),
+            )
 
     def _check_review_reminder(self):
         due_count = self.service.due_review_count()

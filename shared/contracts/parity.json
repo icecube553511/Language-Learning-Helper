@@ -94,6 +94,7 @@
   "petVitals": {
     "satiety": { "minimum": 0.0, "maximum": 100.0, "default": 50.0 },
     "foodReserve": { "minimum": 0.0, "maximum": 200.0, "default": 0.0 },
+    "foodJar": { "model": "value-object", "aggregateOwner": "pet-vitals", "persistedField": "foodReserve" },
     "hunger": { "hungryBelow": 30.0, "satisfiedFromInclusive": 70.0, "reserveRefillTarget": 50.0 },
     "overflowToFoodReserveRatio": 0.2,
     "moods": ["sad", "worried", "happy", "excited", "bored", "calm"],
@@ -144,8 +145,8 @@
     "dictationRandomGroupDrillDown": "ready",
     "dictationBookLoadingAnimation": "ready",
     "petCurveLandingPhysics": "ready",
-    "petVitalsAndRatingRewards": "planned",
-    "ratingRewardFlightEffect": "planned"
+    "petVitalsAndRatingRewards": "ready",
+    "ratingRewardFlightEffect": "ready"
   },
   "platforms": ["windows", "android"]
 }

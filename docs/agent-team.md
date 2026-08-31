@@ -32,9 +32,16 @@ delivery evidence synchronized.
   JDK 17. Then commit and open the GitHub pull request so the work is traceable.
 
 For `pet-vitals-v1`, movement `PetState` remains transient while vitals and the
-single recovery marker are persisted through inner ports. The marker is never
-a vocabulary tag. Reward-flight instances, trails, and burst particles remain
-presentation-only and each accepted activation creates an independent instance.
+single recovery marker are persisted through inner ports. `PetVitals` composes
+an explicit immutable `FoodJar` value object while infrastructure keeps the
+compatible `foodReserve` scalar wire shape. The marker is never a vocabulary
+tag. Reward-flight instances, trails, and burst particles remain presentation-only
+and each accepted activation creates an independent instance. Review savepoints
+compensate a rejected second store write in-process; they are not presented as a
+cross-file crash-atomic transaction. Android keeps each successful synchronous
+preferences commit, matching flow publication, and review savepoint creation in
+one non-cancellable critical section so coroutine cancellation cannot split the
+in-process outcome.
 
 ## Confirmed cross-platform behaviors
 

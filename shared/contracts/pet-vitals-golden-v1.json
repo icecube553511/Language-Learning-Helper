@@ -5,6 +5,11 @@
     "foodReserve": 0.0,
     "mood": "calm"
   },
+  "foodJar": {
+    "model": "value-object",
+    "aggregateOwner": "pet-vitals",
+    "persistedField": "foodReserve"
+  },
   "bounds": {
     "satietyMinimum": 0.0,
     "satietyMaximum": 100.0,
@@ -104,5 +109,19 @@
     "contactRadius": "pet-half-size-plus-orb-radius",
     "concurrency": "independent-no-replacement",
     "persisted": false
+  },
+  "rewardFlightVectors": {
+    "spiralEndpoint": {
+      "elapsedMs": 180,
+      "relativeX": 18.0,
+      "relativeY": 0.0
+    },
+    "trailClip": {
+      "speed": 1000.0,
+      "inputX": [0.0, 25.0, 50.0, 75.0],
+      "expectedStartX": 35.0,
+      "expectedEndX": 75.0,
+      "expectedLength": 40.0
+    }
   }
 }

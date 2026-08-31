@@ -737,6 +737,10 @@ private fun PetAlertDialog(
                     onPointerActiveChange = {},
                     preferredActive = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
+                RewardEffectsCanvas(
+                    windowOrigin = viewportOrigin,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
@@ -762,6 +766,11 @@ fun LexiTrackApp(
     val hostView = LocalView.current
     val petWindowCoordinator = remember {
         PetWindowCoordinator()
+    }
+    val rewardEffectsController = remember { RewardEffectsController() }
+    val petHalfSizePx = with(LocalDensity.current) { PET_DISPLAY_SIZE_DP.dp.toPx() / 2f }
+    LaunchedEffect(viewModel, rewardEffectsController) {
+        viewModel.rewardEffects.collect(rewardEffectsController::emit)
     }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
@@ -795,6 +804,7 @@ fun LexiTrackApp(
             LocalRegisterPetWindow provides registerPetWindow,
             LocalPetWindowStack provides petWindows,
             LocalPetWindowCoordinator provides petWindowCoordinator,
+            LocalRewardEffectsController provides rewardEffectsController,
             LocalPetNavigationKey provides state.section,
         ) {
             Box(
@@ -842,7 +852,7 @@ fun LexiTrackApp(
                         card = state.currentCard,
                         revealed = state.answerRevealed,
                         onReveal = viewModel::revealAnswer,
-                        onRate = viewModel::rateCurrent,
+                        onRate = { rating, origin -> viewModel.rateCurrent(rating, origin) },
                         title = "学习卡",
                         emptyTitle = "新词学习已完成",
                         emptyMessage = "导入更多词条或前往复习巩固已学内容",
@@ -855,7 +865,7 @@ fun LexiTrackApp(
                         state = state,
                         onStart = viewModel::startReviewSession,
                         onReveal = viewModel::revealReviewAnswer,
-                        onRate = viewModel::rateReviewCurrent,
+                        onRate = { rating, origin -> viewModel.rateReviewCurrent(rating, origin) },
                         onLevelsChange = viewModel::setReviewLevels,
                     )
                     MainSection.DICTATION -> {
@@ -927,6 +937,15 @@ fun LexiTrackApp(
             navigationKey = state.section,
             onPointerActiveChange = { petPointerActive = it },
             preferredActive = isMainPetWindowVisible(petWindows),
+        )
+        RewardEffectsCanvas(
+            windowOrigin = petViewportOrigin,
+            modifier = Modifier.fillMaxSize(),
+        )
+        RewardEffectsAnimator(
+            controller = rewardEffectsController,
+            coordinator = petWindowCoordinator,
+            petHalfSizePx = petHalfSizePx,
         )
 
         state.importReport?.let { report ->
@@ -1455,7 +1474,7 @@ private fun StudyScreen(
     card: VocabularyEntry?,
     revealed: Boolean,
     onReveal: () -> Unit,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
     title: String,
     emptyTitle: String,
     emptyMessage: String,
@@ -1531,7 +1550,7 @@ private fun ReviewScreen(
     state: MainUiState,
     onStart: () -> Unit,
     onReveal: () -> Unit,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
     onLevelsChange: (Set<String>) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
@@ -1655,7 +1674,7 @@ private fun LevelFilterRow(
 @Composable
 private fun RevealedCardContent(
     card: VocabularyEntry,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -1722,21 +1741,50 @@ private fun RevealedCardContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN) }
-            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD) }
-            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD) }
-            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY) }
+            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN, it) }
+            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD, it) }
+            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD, it) }
+            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY, it) }
         }
     }
 }
 
 @Composable
-private fun RatingButton(label: String, color: Color, modifier: Modifier, onClick: () -> Unit) {
+private fun RatingButton(
+    label: String,
+    color: Color,
+    modifier: Modifier,
+    onClick: (RewardEffectOrigin) -> Unit,
+) {
     val registerPetTarget = LocalRegisterPetTarget.current
+    val hostView = LocalView.current
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    var pointerDown by remember { mutableStateOf<RatingPointerDown?>(null) }
     Button(
-        onClick = onClick,
+        onClick = {
+            val now = SystemClock.uptimeMillis()
+            val origin = resolveRatingOrigin(pointerDown, bounds, now)
+            pointerDown = null
+            onClick(origin)
+        },
         modifier = modifier
             .heightIn(min = 58.dp)
+            .onGloballyPositioned { coordinates -> bounds = coordinates.boundsOnScreen(hostView) }
+            .pointerInput(bounds) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(
+                        requireUnconsumed = false,
+                        pass = PointerEventPass.Initial,
+                    )
+                    pointerDown = RatingPointerDown(
+                        origin = RewardEffectOrigin(
+                            x = bounds.left + down.position.x,
+                            y = bounds.top + down.position.y,
+                        ),
+                        capturedAtUptimeMs = SystemClock.uptimeMillis(),
+                    )
+                }
+            }
             .petTarget(registerPetTarget, "rating-${label.hashCode()}", PetTargetKind.CONTROL),
         colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.White),
         shape = RoundedCornerShape(8.dp),

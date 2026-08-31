@@ -17,9 +17,13 @@ import com.lexitrack.learning.domain.canonicalMemberships
 import com.lexitrack.learning.domain.classifyGroups
 import com.lexitrack.learning.domain.groupLabel
 import com.lexitrack.learning.domain.normalizeGroupMembership
+import com.lexitrack.learning.domain.RatingPhase
+import com.lexitrack.learning.domain.reduceRatingReward
 import java.io.ByteArrayInputStream
 import java.time.LocalDate
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 data class DashboardSnapshot(
@@ -95,28 +99,33 @@ class RateWordUseCase(
 ) {
     suspend operator fun invoke(wordId: String, rating: ReviewRating): ScheduleState {
         val reviewedAt = time.nowUtcSeconds()
+        val existing = learntWords.learntWords.value[wordId]
+        val reward = reduceRatingReward(
+            vitals = learntWords.petVitals.value,
+            phase = RatingPhase.STUDY,
+            rating = rating,
+            priorTag = existing?.reviewRecoveryTag,
+        )
         val next = LexiSm2Scheduler.review(
             current = reviews.schedules.value[wordId] ?: ScheduleState.Initial,
             rating = rating,
             reviewedAtUtc = reviewedAt,
         )
-        reviews.saveReview(
+        val learnt = existing ?: LearntWord(
             wordId = wordId,
-            state = next,
-            event = ReviewEvent(wordId, reviewedAt, rating, next.intervalDays),
+            weight = initialWeightFor(rating),
+            learntAtUtc = reviewedAt,
+            lastReviewedAtUtc = reviewedAt,
         )
-        if (wordId !in learntWords.learntWords.value) {
-            learntWords.saveLearntWords(
-                listOf(
-                    LearntWord(
-                        wordId = wordId,
-                        weight = initialWeightFor(rating),
-                        learntAtUtc = reviewedAt,
-                        lastReviewedAtUtc = reviewedAt,
-                    ),
-                ),
-            )
-        }
+        saveRatingOutcome(
+            reviews = reviews,
+            learntWords = learntWords,
+            wordId = wordId,
+            schedule = next,
+            event = ReviewEvent(wordId, reviewedAt, rating, next.intervalDays),
+            word = learnt.copy(reviewRecoveryTag = reward.nextTag),
+            vitals = reward.vitals,
+        )
         return next
     }
 }
@@ -179,28 +188,62 @@ class RateReviewWordUseCase(
         val learnt = requireNotNull(learntWords.learntWords.value[wordId]) {
             "Cannot review a word that has not been learnt"
         }
+        val reward = reduceRatingReward(
+            vitals = learntWords.petVitals.value,
+            phase = RatingPhase.REVIEW,
+            rating = rating,
+            priorTag = learnt.reviewRecoveryTag,
+        )
         val reviewedAt = time.nowUtcSeconds()
         val next = LexiSm2Scheduler.review(
             current = reviews.schedules.value[wordId] ?: ScheduleState.Initial,
             rating = rating,
             reviewedAtUtc = reviewedAt,
         )
-        reviews.saveReview(
+        saveRatingOutcome(
+            reviews = reviews,
+            learntWords = learntWords,
             wordId = wordId,
-            state = next,
+            schedule = next,
             event = ReviewEvent(wordId, reviewedAt, rating, next.intervalDays),
-        )
-        learntWords.saveLearntWords(
-            listOf(
-                learnt.copy(
-                    weight = updatedWeightForReview(learnt.weight, rating),
-                    lastReviewedAtUtc = reviewedAt,
-                    reviewCount = learnt.reviewCount + 1,
-                ),
+            word = learnt.copy(
+                weight = updatedWeightForReview(learnt.weight, rating),
+                lastReviewedAtUtc = reviewedAt,
+                reviewCount = learnt.reviewCount + 1,
+                reviewRecoveryTag = reward.nextTag,
             ),
+            vitals = reward.vitals,
         )
         return next
     }
+}
+
+private suspend fun saveRatingOutcome(
+    reviews: ReviewRepository,
+    learntWords: LearntWordsRepository,
+    wordId: String,
+    schedule: ScheduleState,
+    event: ReviewEvent,
+    word: LearntWord,
+    vitals: com.lexitrack.learning.domain.PetVitals,
+) {
+    val savepoint = reviews.saveReview(wordId, schedule, event)
+    try {
+        learntWords.saveLearningOutcome(word, vitals)
+    } catch (failure: Throwable) {
+        var rollbackFailure: Throwable? = null
+        withContext(NonCancellable) {
+            try {
+                reviews.rollbackReview(savepoint)
+            } catch (error: Throwable) {
+                rollbackFailure = error
+            }
+        }
+        rollbackFailure?.let(failure::addSuppressed)
+        throw failure
+    }
+    // The two repositories remain separate crash boundaries by contract. This
+    // compensation covers an observed in-process second-write failure only.
 }
 
 class SearchVocabularyUseCase(

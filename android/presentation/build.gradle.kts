@@ -64,4 +64,8 @@ tasks.withType<Test>().configureEach {
         "pet.companion.golden.path",
         rootProject.file("../shared/contracts/pet-companion-golden-v1.json").absolutePath,
     )
+    systemProperty(
+        "pet.vitals.golden.path",
+        rootProject.file("../shared/contracts/pet-vitals-golden-v1.json").absolutePath,
+    )
 }

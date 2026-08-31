@@ -46,7 +46,7 @@ Android app (composition root) -> presentation -> application -> domain
 - **默写导出契约**：`shared/contracts/dictation-export-v1.md` 与 `shared/contracts/dictation-export-golden-v1.json`；preview 与 DOCX/PDF 必须消费同一个平台无关 `Document` model。
 - **例句气泡契约**：`shared/contracts/word-bubble-v1.md` 与 `shared/contracts/word-bubble-golden-v1.json`；token、查词与 20 层栈由两端共同遵守。
 - **冰子宠物契约**：`shared/contracts/pet-companion-v1.md` 与 `shared/contracts/pet-companion-golden-v1.json`；源图在 `shared/assets/branding/`，透明运行资源由 `tools/prepare_pet_asset.py` 派生，UI 目标几何与拖拽状态只在 presentation。
-- **冰子成长契约**：`shared/contracts/pet-vitals-v1.md` 与 `shared/contracts/pet-vitals-golden-v1.json`；成长值和恢复标记持久化，饥饿状态派生，追踪光球保持 presentation 瞬态。
+- **冰子成长契约**：`shared/contracts/pet-vitals-v1.md` 与 `shared/contracts/pet-vitals-golden-v1.json`；`FoodJar` 是 `PetVitals` 持有的显式值对象，成长值和恢复标记持久化，饥饿状态派生，追踪光球保持 presentation 瞬态。
 
 ## 目录结构
 
@@ -72,7 +72,7 @@ android/app/            Activity、SAF 与唯一 Android 组合根
 
 学习卡请求从 UI/ViewModel 进入应用用例，应用层通过仓储端口取得词条和学习状态，领域层验证/调度后由基础设施保存；UI 只接收结果。CSV 导入则由平台文件选择器取得字节/路径，经基础设施解析和逐行校验，应用层写入词库仓储，再由 UI 展示统一的成功、跳过、失败报告。
 
-评分时，application 同时调用调度器与 `pet-vitals-v1` 领域 reducer；恢复标记跟随已学词内部元数据，宠物成长状态经端口持久化。按钮坐标、在途光球、拖尾和接触爆点仅由 presentation 管理，不进入 UI state 的业务属性或持久化文件。
+评分时，application 同时调用调度器与 `pet-vitals-v1` 领域 reducer；恢复标记跟随已学词内部元数据，宠物成长状态经端口持久化。排期写入返回可回滚 savepoint，后续 marker/vitals 写入失败时 application 执行进程内补偿；两个物理存储仍不具备跨崩溃原子性。按钮坐标、在途光球、拖尾和接触爆点仅由 presentation 管理，不进入 UI state 的业务属性或持久化文件。
 
 默写导出从 UI 选择候选词条、字段和格式开始，经 application 产生平台无关的 `Document`，infrastructure 的预览、DOCX writer 或 PDF writer 都消费该模型；文件对话框/SAF 只由 composition root 提供。至少一个格式成功写出后，才按 ASK/ALWAYS/NEVER 执行本地 `evaluated` tag override。
 

@@ -1519,6 +1519,13 @@ def verify_pet_vitals_contract() -> None:
         "mood": "calm",
     }:
         fail("Pet vitals defaults differ")
+    food_jar = payload.get("foodJar", {})
+    if food_jar != {
+        "model": "value-object",
+        "aggregateOwner": "pet-vitals",
+        "persistedField": "foodReserve",
+    }:
+        fail("Food jar must be an explicit PetVitals value object")
     if payload.get("bounds") != {
         "satietyMinimum": 0.0,
         "satietyMaximum": 100.0,
@@ -1611,12 +1618,37 @@ def verify_pet_vitals_contract() -> None:
             return "sated"
         return "satisfied"
 
-    for vector in payload.get("hungerStateVectors", []):
+    hunger_vectors = payload.get("hungerStateVectors", [])
+    expected_hunger_vectors = [
+        (0.0, "hungry"),
+        (29.999, "hungry"),
+        (30.0, "sated"),
+        (69.999, "sated"),
+        (70.0, "satisfied"),
+        (100.0, "satisfied"),
+    ]
+    if [
+        (float(vector.get("satiety", -1.0)), vector.get("expected"))
+        for vector in hunger_vectors
+    ] != expected_hunger_vectors:
+        fail("Pet hunger vectors are incomplete or reordered")
+    for vector in hunger_vectors:
         if hunger_state(float(vector["satiety"])) != vector.get("expected"):
             fail(f"Pet hunger vector differs at {vector['satiety']}")
 
     bounds = payload["bounds"]
-    for vector in payload.get("vitalChangeVectors", []):
+    vital_vectors = payload.get("vitalChangeVectors", [])
+    expected_vital_vector_names = [
+        "satiety-overflow-converts-at-twenty-percent",
+        "direct-food-reserve-is-not-discounted",
+        "combined-gains-respect-reserve-cap",
+        "hungry-state-refills-to-fifty",
+        "insufficient-reserve-is-fully-consumed",
+        "threshold-does-not-trigger-refill",
+    ]
+    if [vector.get("name") for vector in vital_vectors] != expected_vital_vector_names:
+        fail("Pet vital-change vectors are incomplete or reordered")
+    for vector in vital_vectors:
         raw_satiety = float(vector["satiety"]) + float(vector["satietyGain"])
         overflow_amount = max(0.0, raw_satiety - float(bounds["satietyMaximum"]))
         satiety = min(float(bounds["satietyMaximum"]), max(float(bounds["satietyMinimum"]), raw_satiety))
@@ -1667,16 +1699,183 @@ def verify_pet_vitals_contract() -> None:
     }
     if effect != expected_effect:
         fail("Pet reward-flight parameters differ")
+    if payload.get("rewardFlightVectors") != {
+        "spiralEndpoint": {
+            "elapsedMs": 180,
+            "relativeX": 18.0,
+            "relativeY": 0.0,
+        },
+        "trailClip": {
+            "speed": 1000.0,
+            "inputX": [0.0, 25.0, 50.0, 75.0],
+            "expectedStartX": 35.0,
+            "expectedEndX": 75.0,
+            "expectedLength": 40.0,
+        },
+    }:
+        fail("Pet reward-flight trajectory vectors differ")
 
     contract_text = contract_path.read_text(encoding="utf-8")
-    for marker in ("20%", "single-value enum", "not a vocabulary/catalog", "current rendered center"):
+    for marker in (
+        "20%",
+        "single-value enum",
+        "not a vocabulary/catalog",
+        "current rendered center",
+        "`FoodJar` domain value object",
+        "cross-repository",
+    ):
         if marker not in contract_text:
             fail(f"Pet vitals contract is missing {marker}")
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     if parity.get("petVitalsVersion") != "pet-vitals-v1":
         fail("Parity manifest does not declare pet-vitals-v1")
-    if parity.get("petVitals", {}).get("temporaryReviewTagCardinality") != "zero-or-one":
-        fail("Parity manifest does not enforce temporary review-tag exclusivity")
+    expected_manifest_vitals = {
+        "satiety": {
+            "minimum": float(bounds["satietyMinimum"]),
+            "maximum": float(bounds["satietyMaximum"]),
+            "default": float(payload["defaults"]["satiety"]),
+        },
+        "foodReserve": {
+            "minimum": float(bounds["foodReserveMinimum"]),
+            "maximum": float(bounds["foodReserveMaximum"]),
+            "default": float(payload["defaults"]["foodReserve"]),
+        },
+        "foodJar": food_jar,
+        "hunger": {
+            "hungryBelow": float(hunger["hungryBelow"]),
+            "satisfiedFromInclusive": float(hunger["satisfiedFromInclusive"]),
+            "reserveRefillTarget": float(hunger["reserveRefillTarget"]),
+        },
+        "overflowToFoodReserveRatio": float(overflow["satietyToFoodReserveRatio"]),
+        "moods": [item["name"] for item in moods],
+        "defaultMood": payload["defaults"]["mood"],
+        "temporaryReviewTags": [forgot, vague],
+        "temporaryReviewTagCardinality": tags["cardinality"],
+        "persisted": True,
+        "visible": False,
+        "rewardFlight": {
+            "studyColor": effect["studyColor"],
+            "reviewColor": effect["reviewColor"],
+            "sourceAnchor": effect["sourceAnchor"],
+            "targetTracking": effect["targetTracking"],
+            "concurrency": effect["concurrency"],
+        },
+    }
+    if parity.get("petVitals") != expected_manifest_vitals:
+        fail("Parity petVitals projection differs from the golden contract")
+    capabilities = parity.get("capabilities", {})
+    for capability in ("petVitalsAndRatingRewards", "ratingRewardFlightEffect"):
+        if capabilities.get(capability) != "ready":
+            fail(f"Parity capability {capability} is not ready")
+
+    implementation_markers = {
+        "windows/domain/pet_vitals.py": (
+            "class FoodJar",
+            "class PetVitals",
+            "class ReviewRecoveryTag",
+            "apply_rating_reward",
+        ),
+        "windows/application/services.py": (
+            "apply_rating_reward",
+            "save_learning_outcome",
+            "save_review_outcome",
+            "restore_review_savepoint",
+        ),
+        "windows/infrastructure/repository.py": (
+            "save_review_outcome",
+            "restore_review_savepoint",
+            "review savepoint is stale",
+        ),
+        "windows/infrastructure/words_learnt_repository.py": (
+            "save_learning_outcome",
+            "petVitals",
+        ),
+        "windows/presentation/reward_effects.py": (
+            "class RewardEffectsController",
+            "clip_trail_to_length",
+            "trail_length_for_speed",
+        ),
+        "windows/tests/test_pet_vitals.py": ("FoodJar", "rewardRules"),
+        "windows/tests/test_reward_effects.py": (
+            "minimumVerifiedConcurrentFlights",
+            "pointer_source_uses_press_coordinates",
+        ),
+        "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetVitals.kt": (
+            "class FoodJar",
+            "data class PetVitals",
+            "reduceRatingReward",
+        ),
+        "android/application/src/main/kotlin/com/lexitrack/learning/application/LearningUseCases.kt": (
+            "reduceRatingReward",
+            "saveLearningOutcome",
+            "rollbackReview",
+        ),
+        "android/infrastructure/src/main/kotlin/com/lexitrack/learning/infrastructure/AndroidReviewRepository.kt": (
+            "NonCancellable",
+            "ReviewSavepoint",
+            "rollbackReview",
+            "Review savepoint is stale",
+        ),
+        "android/infrastructure/src/main/kotlin/com/lexitrack/learning/infrastructure/AndroidLearntWordsRepository.kt": (
+            "NonCancellable",
+            "saveLearningOutcome",
+            "petVitals",
+        ),
+        "android/infrastructure/src/test/kotlin/com/lexitrack/learning/infrastructure/AndroidReviewRepositoryTest.kt": (
+            "cancellationAfterCommitStillPublishesReviewState",
+            "cancellationAfterReviewCommitCannotSplitTheRatingOutcome",
+        ),
+        "android/infrastructure/src/test/kotlin/com/lexitrack/learning/infrastructure/AndroidLearntWordsRepositoryTest.kt": (
+            "cancellationAfterCommitStillPublishesLearningOutcome",
+        ),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": (
+            "class RewardEffectsEngine",
+            "resolveRatingOrigin",
+            "visibleTrail",
+            "trailLengthForSpeed",
+        ),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt": (
+            "onRate(ReviewRating.AGAIN",
+            "onRate(ReviewRating.HARD",
+            "onRate(ReviewRating.GOOD",
+            "onRate(ReviewRating.EASY",
+            "resolveRatingOrigin",
+        ),
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetVitalsGoldenContractTest.kt": (
+            "FoodJar",
+            "rewardRules",
+        ),
+        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": (
+            "minimumVerifiedConcurrentFlights",
+            "trailLengthForSpeed",
+        ),
+    }
+    for relative_path, markers in implementation_markers.items():
+        source_path = ROOT / relative_path
+        if not source_path.is_file():
+            fail(f"Pet vitals implementation is missing {relative_path}")
+        source = source_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in source:
+                fail(f"Pet vitals implementation {relative_path} is missing {marker}")
+
+    hidden_ui_markers = (
+        "饱食度",
+        "储食度",
+        "饥饿状态",
+        forgot,
+        vague,
+    )
+    presentation_sources = [
+        ROOT / "windows" / "presentation" / "app.py",
+        ROOT / "android" / "presentation" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "presentation" / "LexiTrackApp.kt",
+    ]
+    for source_path in presentation_sources:
+        source = source_path.read_text(encoding="utf-8")
+        for marker in hidden_ui_markers:
+            if marker in source:
+                fail(f"Hidden pet state leaked into UI: {source_path.relative_to(ROOT)} has {marker}")
 
 
 def normalize_group_membership(code: str) -> str:

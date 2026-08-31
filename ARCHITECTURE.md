@@ -23,9 +23,13 @@ Presentation  --->  Application  --->  Domain
 区域、状态转换和拖放语义；两端 domain 只实现几何/状态纯函数，presentation
 采集当前页面的控件、面板、图表曲线和窗口边界并负责动画、手势与资源渲染。
 宠物位置、速度、目标与特效实例是瞬态状态，切页由 presentation 触发
-`drop-to-nearest`，不得持久化。`pet-vitals-v1` 另行定义持久化的饱食度、储食度、
-心情和单词恢复标记；这些规则位于 domain，经 application 端口保存，不能混入
+`drop-to-nearest`，不得持久化。`pet-vitals-v1` 另行定义持久化的饱食度、
+`FoodJar` 储食罐值对象、心情和单词恢复标记；这些规则位于 domain，经
+application 端口保存，不能混入
 运动 `PetState`，也不能复用会进入搜索、分组和默写的 `VocabularyEntry.tags`。
+储食罐在平台存储中继续使用 `foodReserve` 标量 wire shape。评分排期与已学词
+存储仍是两个物理边界；application 在第二次写入失败时用 review savepoint
+补偿本次排期/活动写入，但不得将其描述为跨文件的 crash-atomic 事务。
 
 ## 一致性边界
 
