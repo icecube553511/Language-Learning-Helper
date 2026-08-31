@@ -542,6 +542,87 @@ class PetCompanionTests(unittest.TestCase):
         )
         assert_point(self, advanced.position, vector["expectedNextPosition"])
 
+    def test_curve_uphill_endpoint_stops_and_reverses_downhill(self):
+        for vector in self.golden["curveEndpointVectors"]:
+            with self.subTest(name=vector["name"]):
+                width = max(point[0] for point in vector["segment"]) + 100.0
+                viewport = PetRect(0, 0, width, 200)
+                target = PetTarget(
+                    "curve",
+                    PetTargetKind.CHART,
+                    viewport,
+                    tuple(PetPoint(*point) for point in vector["segment"]),
+                )
+                state = PetState(
+                    PetPoint(*vector["initialPosition"]),
+                    PetMode.SLIDE,
+                    target_id=target.id,
+                    path_index=0,
+                    path_direction=vector["initialPathDirection"],
+                    curve_velocity=vector["initialCurveVelocity"],
+                )
+
+                for _ in range(vector["expectedEndpointTick"]):
+                    state = advance_pet(state, [target], viewport)
+
+                self.assertEqual(state.mode.value, vector["expectedEndpointMode"])
+                assert_point(self, state.position, vector["expectedEndpointPosition"])
+                self.assertAlmostEqual(
+                    state.curve_velocity,
+                    vector["expectedEndpointCurveVelocity"],
+                )
+                self.assertEqual(
+                    state.path_direction,
+                    vector["expectedEndpointPathDirection"],
+                )
+
+                state = advance_pet(state, [target], viewport)
+
+                self.assertEqual(state.mode.value, vector["expectedNextMode"])
+                self.assertAlmostEqual(
+                    state.curve_velocity,
+                    vector["expectedNextCurveVelocity"],
+                )
+                assert_point(self, state.position, vector["expectedNextPosition"])
+
+    def test_curve_coordinate_scale_vector_preserves_logical_motion(self):
+        vector = self.golden["curveScaleVectors"][0]
+        viewport = PetRect(0, 0, 200, 200)
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            tuple(PetPoint(*point) for point in vector["logicalSegment"]),
+        )
+        incoming = vector["logicalIncomingVelocity"]
+        landed = advance_pet(
+            PetState(
+                PetPoint(*vector["logicalContactPoint"]),
+                PetMode.FALL,
+                vertical_velocity=incoming[1],
+            ),
+            [target],
+            viewport,
+        )
+        self.assertAlmostEqual(
+            landed.curve_velocity,
+            vector["expectedInitialLogicalCurveVelocity"],
+        )
+
+        advanced = advance_pet(landed, [target], viewport)
+        expected_physical = vector["expectedNextPhysicalPosition"]
+        scale = vector["unitScale"]
+
+        self.assertAlmostEqual(
+            advanced.curve_velocity,
+            vector["expectedNextLogicalCurveVelocity"],
+        )
+        assert_point(
+            self,
+            advanced.position,
+            [coordinate / scale for coordinate in expected_physical],
+        )
+
     def test_curve_landing_projection_clamps_uphill_speed(self):
         vector = next(
             item

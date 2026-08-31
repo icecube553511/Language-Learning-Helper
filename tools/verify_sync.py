@@ -211,12 +211,14 @@ def verify_pet_contract() -> None:
         "curveAccelerationPolicy": "constant-independent-of-requested-step",
         "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
         "curveVelocityUnits": "logical-units-per-tick",
+        "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
         "curveLandingSpeedLimit": 8.0,
         "curveDownhillTerminalSpeed": 4.0,
         "curveDownhillResponsePerTick": 0.0625,
         "curveDirectionEpsilon": 0.000001,
         "curveLandingRestDirection": "local-positive-y-downhill",
         "curveLandingInitialUphillMotion": True,
+        "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
         "idleTicks": 24,
         "fallTimeStepSeconds": 0.016,
         "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -849,8 +851,128 @@ def verify_pet_contract() -> None:
             if first_positive_tick != int(downhill_tick):
                 fail("Pet companion uphill curve landing reverses on the wrong tick")
 
+    curve_scale_vectors = payload.get("curveScaleVectors", [])
+    if {item.get("name") for item in curve_scale_vectors} != {
+        "density-two-preserves-logical-curve-motion",
+    }:
+        fail("Pet companion curve scale vectors differ")
+    for vector in curve_scale_vectors:
+        scale = float(vector["unitScale"])
+        if scale <= 1.0:
+            fail("Pet companion curve scale vector must exercise a non-unit coordinate scale")
+        start, end = vector["logicalSegment"]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        tangent = (dx / length, dy / length)
+        incoming = [float(value) for value in vector["logicalIncomingVelocity"]]
+        initial = (incoming[0] * tangent[0] + incoming[1] * tangent[1]) * tick_seconds
+        initial = max(-landing_limit, min(landing_limit, initial))
+        if abs(initial) <= direction_epsilon:
+            initial = 0.0
+        expected_initial = float(vector["expectedInitialLogicalCurveVelocity"])
+        if not math.isclose(expected_initial, initial, rel_tol=1e-12, abs_tol=1e-9):
+            fail("Pet companion scaled curve projection changes logical velocity")
+        downhill = (
+            1 if tangent[1] > direction_epsilon
+            else -1 if tangent[1] < -direction_epsilon
+            else 1
+        )
+        next_velocity = initial + (downhill * terminal_speed - initial) * response
+        if not math.isclose(
+            float(vector["expectedNextLogicalCurveVelocity"]),
+            next_velocity,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        ):
+            fail("Pet companion scaled curve relaxation changes logical velocity")
+        contact = [float(value) for value in vector["logicalContactPoint"]]
+        expected_physical = (
+            (contact[0] + tangent[0] * next_velocity) * scale,
+            (contact[1] + tangent[1] * next_velocity) * scale,
+        )
+        if any(
+            not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-8)
+            for actual, wanted in zip(vector["expectedNextPhysicalPosition"], expected_physical)
+        ) or vector.get("expectedMode") != "slide":
+            fail("Pet companion curve path budget does not restore the physical coordinate scale")
+
+    curve_endpoint_vectors = payload.get("curveEndpointVectors", [])
+    if {item.get("name") for item in curve_endpoint_vectors} != {
+        "flat-uphill-endpoint-stops-and-reverses-downhill",
+        "near-horizontal-uphill-endpoint-uses-unit-tangent",
+    }:
+        fail("Pet companion curve endpoint vectors differ")
+    for vector in curve_endpoint_vectors:
+        start, end = vector["segment"]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        tangent = (dx / length, dy / length)
+        downhill = (
+            1 if tangent[1] > direction_epsilon
+            else -1 if tangent[1] < -direction_epsilon
+            else 1
+        )
+        direction = -1 if int(vector["initialPathDirection"]) < 0 else 1
+        velocity = float(vector["initialCurveVelocity"])
+        initial_position = [float(value) for value in vector["initialPosition"]]
+        arc_position = (
+            (initial_position[0] - float(start[0])) * tangent[0]
+            + (initial_position[1] - float(start[1])) * tangent[1]
+        )
+        reached_tick = None
+        endpoint_arc = 0.0 if direction < 0 else length
+        for tick in range(1, int(vector["expectedEndpointTick"]) + 1):
+            velocity += (downhill * terminal_speed - velocity) * response
+            next_arc = arc_position + velocity
+            if (direction < 0 and next_arc <= endpoint_arc) or (
+                direction > 0 and next_arc >= endpoint_arc
+            ):
+                reached_tick = tick
+                break
+            arc_position = next_arc
+        if reached_tick != int(vector["expectedEndpointTick"]):
+            fail(f"Pet companion curve endpoint vector {vector['name']} reaches on the wrong tick")
+        endpoint_position = (
+            float(start[0]) + tangent[0] * endpoint_arc,
+            float(start[1]) + tangent[1] * endpoint_arc,
+        )
+        if any(
+            not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-8)
+            for actual, wanted in zip(vector["expectedEndpointPosition"], endpoint_position)
+        ):
+            fail(f"Pet companion curve endpoint vector {vector['name']} has the wrong endpoint")
+        if (
+            direction == downhill
+            or float(vector["expectedEndpointCurveVelocity"]) != 0.0
+            or int(vector["expectedEndpointPathDirection"]) != downhill
+            or vector.get("expectedEndpointMode") != "slide"
+        ):
+            fail(f"Pet companion curve endpoint vector {vector['name']} does not stop and reverse")
+        next_velocity = downhill * terminal_speed * response
+        next_position = (
+            endpoint_position[0] + tangent[0] * next_velocity,
+            endpoint_position[1] + tangent[1] * next_velocity,
+        )
+        if (
+            not math.isclose(float(vector["expectedNextCurveVelocity"]), next_velocity, abs_tol=1e-9)
+            or any(
+                not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-8)
+                for actual, wanted in zip(vector["expectedNextPosition"], next_position)
+            )
+            or vector.get("expectedNextMode") != "slide"
+        ):
+            fail(f"Pet companion curve endpoint vector {vector['name']} resumes downhill incorrectly")
+
     contract_text = contract_path.read_text(encoding="utf-8")
-    for marker in ("dot(V_hit,T)*dt", "u_next=u+(u_terminal-u)*0.0625", "不得用“最近顶点”"):
+    for marker in (
+        "dot(V_hit,T)*dt",
+        "u_next=u+(u_terminal-u)*0.0625",
+        "不得用“最近顶点”",
+        "物理单位比例",
+        "归一化单位切线",
+    ):
         if marker not in contract_text:
             fail(f"Pet companion curve landing contract is missing {marker}")
     windows_pet_source = (ROOT / "windows" / "domain" / "pet_companion.py").read_text(encoding="utf-8")
@@ -908,6 +1030,14 @@ def verify_pet_contract() -> None:
         {"CURVE_DIRECTION_EPSILON"},
         set(),
     )
+    endpoint_helper = windows_functions.get("_curve_endpoint_is_downhill")
+    if endpoint_helper is None or len(endpoint_helper.args.args) != 3:
+        fail("Windows curve endpoint helper must compare normalized local downhill direction")
+    verify_windows_helper(
+        "_curve_endpoint_is_downhill",
+        {"CURVE_DIRECTION_EPSILON"},
+        {"_curve_downhill_direction"},
+    )
     verify_windows_helper(
         "_chart_landing_state",
         {"FALL_TIME_STEP_SECONDS", "CURVE_LANDING_SPEED_LIMIT", "CURVE_DIRECTION_EPSILON"},
@@ -921,7 +1051,7 @@ def verify_pet_contract() -> None:
             "CURVE_DOWNHILL_RESPONSE_PER_TICK",
             "CURVE_DIRECTION_EPSILON",
         },
-        {"_curve_downhill_direction"},
+        {"_curve_downhill_direction", "_curve_endpoint_is_downhill"},
     )
     verify_windows_helper("_advance_chart", set(), {"_curve_downhill_direction"})
 
@@ -954,6 +1084,12 @@ def verify_pet_contract() -> None:
         or "PET_CURVE_DIRECTION_EPSILON" not in android_direction
     ):
         fail("Android curve downhill helper must derive flat direction without fallback state")
+    android_endpoint = android_helper_source("curveEndpointIsDownhill")
+    if (
+        "PET_CURVE_DIRECTION_EPSILON" not in android_endpoint
+        or not re.search(r"curveDownhillDirection\(\s*unitTangent\s*\)", android_endpoint)
+    ):
+        fail("Android curve endpoint helper must compare normalized local downhill direction")
     android_landing = android_helper_source("chartLandingState")
     if (
         not {
@@ -962,6 +1098,7 @@ def verify_pet_contract() -> None:
             "PET_CURVE_DIRECTION_EPSILON",
         } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_landing))
         or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_landing)
+        or not re.search(r"PET_FALL_TIME_STEP_SECONDS\s*/\s*unitScale", android_landing)
     ):
         fail("Android chart landing helper is not wired to its contract constants and direction helper")
     android_advance = android_helper_source("advanceLandedChart")
@@ -973,6 +1110,8 @@ def verify_pet_contract() -> None:
             "PET_CURVE_DIRECTION_EPSILON",
         } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_advance))
         or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_advance)
+        or not re.search(r"abs\(curveVelocity\)\s*\*\s*unitScale", android_advance)
+        or not re.search(r"curveEndpointIsDownhill\(\s*path,\s*endpoint,\s*direction\s*\)", android_advance)
     ):
         fail("Android landed chart helper is not wired to its contract constants and direction helper")
     if not re.search(
@@ -1277,12 +1416,14 @@ def verify_pet_contract() -> None:
         "curveAccelerationPolicy": "constant-independent-of-requested-step",
         "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
         "curveVelocityUnits": "logical-units-per-tick",
+        "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
         "curveLandingSpeedLimit": 8.0,
         "curveDownhillTerminalSpeed": 4.0,
         "curveDownhillResponsePerTick": 0.0625,
         "curveDirectionEpsilon": 0.000001,
         "curveLandingRestDirection": "local-positive-y-downhill",
         "curveLandingInitialUphillMotion": True,
+        "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
         "targetKinds": ["control", "surface", "chart", "edge"],
         "navigationTransition": "drop-to-nearest",
         "supportSide": "upper",

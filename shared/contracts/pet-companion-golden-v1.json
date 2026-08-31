@@ -43,12 +43,14 @@
     "curveAccelerationPolicy": "constant-independent-of-requested-step",
     "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
     "curveVelocityUnits": "logical-units-per-tick",
+    "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
     "curveLandingSpeedLimit": 8.0,
     "curveDownhillTerminalSpeed": 4.0,
     "curveDownhillResponsePerTick": 0.0625,
     "curveDirectionEpsilon": 0.000001,
     "curveLandingRestDirection": "local-positive-y-downhill",
     "curveLandingInitialUphillMotion": true,
+    "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
     "idleTicks": 24,
     "fallTimeStepSeconds": 0.016,
     "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -517,6 +519,51 @@
       "expectedNextCurveVelocity": -7.25,
       "expectedNextPosition": [42.89079010124083, 108.57815802024817],
       "expectedMode": "slide"
+    }
+  ],
+  "curveScaleVectors": [
+    {
+      "name": "density-two-preserves-logical-curve-motion",
+      "unitScale": 2.0,
+      "logicalSegment": [[0.0, 100.0], [100.0, 120.0]],
+      "logicalContactPoint": [50.0, 110.0],
+      "logicalIncomingVelocity": [0.0, 125.0],
+      "expectedInitialLogicalCurveVelocity": 0.3922322702763681,
+      "expectedNextLogicalCurveVelocity": 0.6177177533840951,
+      "expectedNextPhysicalPosition": [101.2114441839993, 220.24228883679987],
+      "expectedMode": "slide"
+    }
+  ],
+  "curveEndpointVectors": [
+    {
+      "name": "flat-uphill-endpoint-stops-and-reverses-downhill",
+      "segment": [[0.0, 100.0], [100.0, 100.0]],
+      "initialPosition": [20.0, 100.0],
+      "initialCurveVelocity": -8.0,
+      "initialPathDirection": -1,
+      "expectedEndpointTick": 4,
+      "expectedEndpointPosition": [0.0, 100.0],
+      "expectedEndpointCurveVelocity": 0.0,
+      "expectedEndpointPathDirection": 1,
+      "expectedEndpointMode": "slide",
+      "expectedNextCurveVelocity": 0.25,
+      "expectedNextPosition": [0.25, 100.0],
+      "expectedNextMode": "slide"
+    },
+    {
+      "name": "near-horizontal-uphill-endpoint-uses-unit-tangent",
+      "segment": [[0.0, 100.0], [1000.0, 99.9995]],
+      "initialPosition": [20.0, 99.99999],
+      "initialCurveVelocity": -8.0,
+      "initialPathDirection": -1,
+      "expectedEndpointTick": 4,
+      "expectedEndpointPosition": [0.0, 100.0],
+      "expectedEndpointCurveVelocity": 0.0,
+      "expectedEndpointPathDirection": 1,
+      "expectedEndpointMode": "slide",
+      "expectedNextCurveVelocity": 0.25,
+      "expectedNextPosition": [0.24999999999996875, 99.999999875],
+      "expectedNextMode": "slide"
     }
   ],
   "windowMigrationVectors": [

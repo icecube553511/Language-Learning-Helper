@@ -847,6 +847,27 @@ def _curve_downhill_direction(tangent: PetPoint) -> int:
     return 1
 
 
+def _curve_endpoint_is_downhill(
+    path: Sequence[PetPoint],
+    endpoint: int,
+    direction: int,
+) -> bool:
+    """Return whether travel reached the locally downhill end segment."""
+    segment = 0 if endpoint <= 0 else len(path) - 2
+    start = path[segment]
+    end = path[segment + 1]
+    dx = end.x - start.x
+    dy = end.y - start.y
+    length = math.hypot(dx, dy)
+    tangent = (
+        PetPoint(dx / length, dy / length)
+        if length > CURVE_DIRECTION_EPSILON
+        else PetPoint(1.0, 0.0)
+    )
+    canonical_direction = -1 if direction < 0 else 1
+    return canonical_direction == _curve_downhill_direction(tangent)
+
+
 def _chart_landing_state(
     state: PetState,
     target: PetTarget,
@@ -949,12 +970,7 @@ def _advance_landed_chart(
     facing = _facing_after_move(state.position, position, state.facing)
     if reached_endpoint:
         endpoint = len(path) - 1 if direction > 0 else 0
-        neighbor = endpoint - direction
-        endpoint_tangent = PetPoint(
-            path[endpoint].x - path[neighbor].x,
-            path[endpoint].y - path[neighbor].y,
-        )
-        reached_downhill = endpoint_tangent.y >= -CURVE_DIRECTION_EPSILON
+        reached_downhill = _curve_endpoint_is_downhill(path, endpoint, direction)
         if reached_downhill:
             return replace(
                 state,
