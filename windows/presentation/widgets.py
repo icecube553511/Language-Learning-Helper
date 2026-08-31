@@ -1060,6 +1060,13 @@ class PetOverlay(tk.Toplevel):
         self._pet_image = image
         self._sprite.configure(image=image)
 
+    def grab_pointer(self) -> None:
+        """Route an active drag to the widget that owns the gesture bindings."""
+        self._sprite.grab_set()
+
+    def release_pointer(self) -> None:
+        self._sprite.grab_release()
+
     def place(self, *, x: int, y: int, width: int | None = None, height: int | None = None) -> None:
         width = width or self._display_size
         height = height or self._display_size

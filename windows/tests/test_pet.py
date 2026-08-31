@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -14,6 +15,10 @@ from domain.pet_companion import (
     BOUNCE_DECAY,
     BOUNCE_COUNT,
     CRUISE_SPEED,
+    CURVE_ACCELERATION,
+    estimate_release_velocity,
+    FLING_GRAVITY,
+    FLING_HORIZONTAL_RESTITUTION,
     FALL_GRAVITY,
     FALL_TIME_STEP_SECONDS,
     FIRST_BOUNCE_SPEED,
@@ -37,8 +42,19 @@ from domain.pet_companion import (
     nearest_pet_target,
     on_navigation,
     release_drag,
+    limit_fling_velocity,
 )
-from presentation.app import LexiTrackApp
+from presentation.app import DialogPetRuntime, LexiTrackApp
+from presentation.pet_windows import (
+    PetWindow,
+    PetWindowCoordinator,
+    interpolate_pet_position,
+    map_pet_entry,
+    predicted_exit_times,
+    ray_rect_entry_time,
+    select_adjacent_window,
+)
+from presentation.widgets import PetOverlay
 
 
 def assert_point(test: unittest.TestCase, actual: PetPoint, expected: list[float]) -> None:
@@ -63,6 +79,18 @@ class PetCompanionTests(unittest.TestCase):
             PetRect(*item["rect"]),
             tuple(PetPoint(*point) for point in item.get("path", [])),
         )
+
+    def test_presentation_interpolates_linearly_between_simulated_ticks(self):
+        start = PetPoint(10.0, 30.0)
+        end = PetPoint(50.0, 70.0)
+
+        self.assertEqual(interpolate_pet_position(start, end, -4, 16), start)
+        self.assertEqual(
+            interpolate_pet_position(start, end, 8, 16),
+            PetPoint(30.0, 50.0),
+        )
+        self.assertEqual(interpolate_pet_position(start, end, 20, 16), end)
+        self.assertEqual(interpolate_pet_position(start, end, 8, 0), end)
 
     def test_semantic_widget_id_survives_virtualized_widget_recreation(self):
         class VirtualWidget:
@@ -432,6 +460,23 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(state.mode, PetMode.SLIDE)
         self.assertLess(state.position.y, 50)
 
+    def test_chart_segment_midpoint_is_a_legal_release_support(self):
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 160),
+            path=(PetPoint(20, 100), PetPoint(100, 140)),
+        )
+        released = release_drag(
+            PetState(PetPoint(60, 110), PetMode.DRAGGING),
+            [target],
+            PetRect(0, 0, 200, 160),
+            pet_size=10,
+        )
+        self.assertEqual(released.mode, PetMode.IDLE)
+        self.assertEqual(released.target_id, "curve")
+        self.assertEqual(released.position, PetPoint(60, 110))
+
     def test_support_above_the_viewport_is_clamped_instead_of_stalling(self):
         target = PetTarget("header", PetTargetKind.CONTROL, PetRect(20, 20, 80, 30))
         state = advance_pet(
@@ -676,6 +721,923 @@ class PetCompanionTests(unittest.TestCase):
         released = companion.drag_release()
         self.assertEqual(released.position, PetPoint(500, 600))
         self.assertEqual(released.mode, PetMode.FALL)
+
+    def test_drag_velocity_uses_monotonic_constrained_samples_and_preserves_tangent(self):
+        samples = [
+            (1000.0, PetPoint(20.0, 30.0)),
+            (1040.0, PetPoint(32.0, 18.0)),
+            (1080.0, PetPoint(44.0, 6.0)),
+        ]
+        velocity = estimate_release_velocity(samples)
+        self.assertAlmostEqual(velocity.x, 300.0, places=5)
+        self.assertAlmostEqual(velocity.y, -300.0, places=5)
+        # Out-of-order timestamps are normalized rather than producing a
+        # backwards impulse; duplicate timestamps alone carry no velocity.
+        self.assertEqual(
+            estimate_release_velocity([(5.0, PetPoint(2, 2)), (5.0, PetPoint(4, 4))]),
+            PetPoint(0.0, 0.0),
+        )
+        golden_samples = [
+            {"timeMs": 0, "position": [100.0, 200.0]},
+            {"timeMs": 40, "position": [120.0, 180.0]},
+            {"timeMs": 80, "position": [140.0, 160.0]},
+            {"timeMs": 120, "position": [160.0, 140.0]},
+        ]
+        self.assertAlmostEqual(
+            estimate_release_velocity(golden_samples, nowMs=120, windowMs=120).x,
+            500.0,
+        )
+
+    def test_release_enters_fling_and_closed_form_substeps_match_golden(self):
+        viewport = PetRect(0, 0, 1000, 1000)
+        state = release_drag(
+            PetState(PetPoint(320, 420), PetMode.DRAGGING),
+            [],
+            viewport,
+            release_velocity=PetPoint(420, -680),
+        )
+        self.assertEqual(state.mode, PetMode.FLING)
+        self.assertEqual(state.velocity, PetPoint(420, -680))
+        next_state = advance_pet(state, [], viewport)
+        self.assertAlmostEqual(next_state.position.x, 326.72, places=6)
+        self.assertAlmostEqual(next_state.position.y, 409.395, places=6)
+        self.assertAlmostEqual(next_state.vertical_velocity, -645.625, places=6)
+
+    def test_non_finite_fling_velocity_is_rejected(self):
+        self.assertEqual(
+            limit_fling_velocity(PetPoint(float("nan"), 10.0)),
+            PetPoint(0.0, 0.0),
+        )
+        self.assertEqual(
+            limit_fling_velocity(PetPoint(float("inf"), -10.0)),
+            PetPoint(0.0, 0.0),
+        )
+
+    def test_shared_drag_velocity_vectors_and_curve_acceleration(self):
+        vectors = {item["name"]: item for item in self.golden.get("dragVelocityVectors", [])}
+        terminal = vectors["terminal-tangent-estimate-uses-constrained-centres"]
+        estimated = estimate_release_velocity(
+            terminal["samples"],
+            now_ms=terminal["nowMs"],
+            window_ms=terminal["sampleWindowMs"],
+        )
+        assert_point(self, estimated, terminal["expectedVelocity"])
+        insufficient = vectors["insufficient-drag-samples-do-not-fling"]
+        self.assertEqual(
+            estimate_release_velocity(
+                insufficient["samples"],
+                now_ms=insufficient["nowMs"],
+                window_ms=insufficient["sampleWindowMs"],
+            ),
+            PetPoint(0.0, 0.0),
+        )
+        curve = self.golden["curveMotionVectors"][0]
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 120, 100),
+            (PetPoint(10, 50), PetPoint(110, 50)),
+        )
+        state = PetState(
+            PetPoint(10, 50),
+            PetMode.SLIDE,
+            target_id=target.id,
+            path_index=1,
+            movement_speed=curve["initialMovementSpeed"],
+        )
+        observed = []
+        for _ in curve["tickSpeeds"]:
+            state = advance_pet(
+                state,
+                [target],
+                PetRect(0, 0, 120, 100),
+                speed=curve["cruiseSpeed"],
+            )
+            observed.append(state.movement_speed)
+        self.assertEqual(observed, curve["tickSpeeds"])
+
+        curve_vectors = {
+            item["name"]: item for item in self.golden["curveMotionVectors"]
+        }
+        corner = curve_vectors["curve-slide-retains-budget-across-corner"]
+        corner_target = PetTarget(
+            "corner",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 120, 100),
+            (
+                PetPoint(10, 50),
+                PetPoint(10 + corner["remainingToCorner"], 50),
+                PetPoint(110, 50),
+            ),
+        )
+        corner_state = advance_pet(
+            PetState(
+                PetPoint(10, 50),
+                PetMode.SLIDE,
+                target_id=corner_target.id,
+                path_index=1,
+                movement_speed=corner["initialMovementSpeed"],
+            ),
+            [corner_target],
+            PetRect(0, 0, 120, 100),
+            speed=corner["cruiseSpeed"],
+        )
+        self.assertAlmostEqual(corner_state.movement_speed, corner["expectedSpeedAfterCorner"])
+        self.assertAlmostEqual(
+            corner_state.position.x,
+            10 + corner["remainingToCorner"] + corner["expectedBudgetAfterCorner"],
+        )
+        self.assertEqual(corner_state.path_index, 2)
+
+        override = curve_vectors[
+            "curve-slide-step-override-keeps-contract-acceleration-and-corner-budget"
+        ]
+        override_state = advance_pet(
+            PetState(
+                PetPoint(10, 50),
+                PetMode.SLIDE,
+                target_id=corner_target.id,
+                path_index=1,
+                movement_speed=override["initialMovementSpeed"],
+            ),
+            [corner_target],
+            PetRect(0, 0, 120, 100),
+            speed=override["requestedStep"],
+        )
+        self.assertAlmostEqual(
+            override_state.movement_speed,
+            override["expectedSpeedAfterCorner"],
+        )
+        self.assertAlmostEqual(
+            override_state.position.x,
+            10
+            + override["remainingToCorner"]
+            + override["expectedBudgetAfterCorner"],
+        )
+        self.assertEqual(override_state.path_index, 2)
+
+    def test_curve_brakes_before_reversing_at_endpoint(self):
+        target = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 100, 100),
+            (PetPoint(10, 50), PetPoint(50, 50)),
+        )
+        state = PetState(
+            PetPoint(10, 50),
+            PetMode.SLIDE,
+            target_id=target.id,
+            path_index=1,
+        )
+        speeds = []
+        for _ in range(80):
+            state = advance_pet(state, [target], PetRect(0, 0, 100, 100))
+            speeds.append(state.movement_speed)
+            if state.path_direction < 0:
+                break
+        self.assertEqual(state.path_direction, -1)
+        self.assertEqual(speeds[-1], 0.0)
+        self.assertTrue(any(0.0 < later < earlier for earlier, later in zip(speeds, speeds[1:-1])))
+
+    def test_pet_overlay_grab_is_owned_by_the_bound_sprite(self):
+        class RecordingSprite:
+            def __init__(self):
+                self.calls = []
+
+            def grab_set(self):
+                self.calls.append("set")
+
+            def grab_release(self):
+                self.calls.append("release")
+
+        overlay = object.__new__(PetOverlay)
+        sprite = RecordingSprite()
+        overlay._sprite = sprite
+
+        overlay.grab_pointer()
+        overlay.release_pointer()
+
+        self.assertEqual(sprite.calls, ["set", "release"])
+
+    def test_release_event_migration_releases_the_new_active_host(self):
+        class Host:
+            pass
+
+        class Overlay:
+            def __init__(self):
+                self.grabbed = True
+
+        def dragging_companion() -> PetCompanion:
+            return PetCompanion(
+                PetState(PetPoint(100.0, 100.0), PetMode.DRAGGING),
+                pet_size=PET_DISPLAY_SIZE / 2.0,
+            )
+
+        def samples() -> list[tuple[float, PetPoint]]:
+            return [
+                (0.0, PetPoint(100.0, 100.0)),
+                (16.0, PetPoint(120.0, 100.0)),
+            ]
+
+        class FakeApp:
+            def __init__(self):
+                self._dialog_pet_runtimes = {}
+                self._pet_drag_host_dialog = None
+                self._pet_dragging = True
+                self._pet_drag_samples = samples()
+                self._pet_drag_offset = PetPoint(0.0, 0.0)
+                self._pet_overlay = Overlay()
+                self.pet_companion = dragging_companion()
+
+            @staticmethod
+            def _pet_viewport_for(_host):
+                return PetRect(0.0, 0.0, 400.0, 300.0)
+
+            @staticmethod
+            def _pet_viewport():
+                return PetRect(0.0, 0.0, 400.0, 300.0)
+
+            @staticmethod
+            def _collect_dialog_pet_targets(_host, _key):
+                return ()
+
+            @staticmethod
+            def _collect_pet_targets():
+                return ()
+
+            @staticmethod
+            def _release_pet_overlay(overlay):
+                overlay.grabbed = False
+
+        event = object()
+
+        with self.subTest("dialog-to-dialog"):
+            app = FakeApp()
+            source, target = Host(), Host()
+            source_runtime = DialogPetRuntime(
+                "source",
+                dragging_companion(),
+                Overlay(),
+                drag_samples=samples(),
+            )
+            target_runtime = DialogPetRuntime(
+                "target",
+                dragging_companion(),
+                Overlay(),
+                drag_samples=samples(),
+            )
+            app._dialog_pet_runtimes[target] = target_runtime
+            app._pet_drag_host_dialog = source
+
+            def move_to_target(_event):
+                source_runtime.overlay.grabbed = False
+                target_runtime.overlay.grabbed = True
+                app._pet_drag_host_dialog = target
+
+            LexiTrackApp._release_dialog_pet(
+                app,
+                event,
+                source,
+                source_runtime,
+                source_runtime.key,
+                move_to_target,
+            )
+            self.assertNotEqual(target_runtime.companion.state.mode, PetMode.DRAGGING)
+            self.assertFalse(target_runtime.overlay.grabbed)
+            self.assertIsNone(app._pet_drag_host_dialog)
+            self.assertFalse(app._pet_dragging)
+
+        with self.subTest("dialog-to-main"):
+            app = FakeApp()
+            source = Host()
+            source_runtime = DialogPetRuntime(
+                "source",
+                dragging_companion(),
+                Overlay(),
+                drag_samples=samples(),
+            )
+            app._pet_drag_host_dialog = source
+
+            def move_to_main(_event):
+                source_runtime.overlay.grabbed = False
+                app._pet_overlay.grabbed = True
+                app._pet_drag_host_dialog = app
+
+            LexiTrackApp._release_dialog_pet(
+                app,
+                event,
+                source,
+                source_runtime,
+                source_runtime.key,
+                move_to_main,
+            )
+            self.assertNotEqual(app.pet_companion.state.mode, PetMode.DRAGGING)
+            self.assertFalse(app._pet_overlay.grabbed)
+            self.assertIsNone(app._pet_drag_host_dialog)
+            self.assertFalse(app._pet_dragging)
+
+        with self.subTest("main-to-dialog"):
+            app = FakeApp()
+            target = Host()
+            target_runtime = DialogPetRuntime(
+                "target",
+                dragging_companion(),
+                Overlay(),
+                drag_samples=samples(),
+            )
+            app._dialog_pet_runtimes[target] = target_runtime
+
+            def move_to_target(_event):
+                app._pet_overlay.grabbed = False
+                target_runtime.overlay.grabbed = True
+                app._pet_drag_host_dialog = target
+
+            app._pet_move = move_to_target
+            LexiTrackApp._pet_release(app, event)
+            self.assertNotEqual(target_runtime.companion.state.mode, PetMode.DRAGGING)
+            self.assertFalse(target_runtime.overlay.grabbed)
+            self.assertIsNone(app._pet_drag_host_dialog)
+            self.assertFalse(app._pet_dragging)
+
+    def test_horizontal_fling_moves_along_support_before_falling(self):
+        viewport = PetRect(0, 0, 400, 300)
+        support = PetTarget("card", PetTargetKind.SURFACE, PetRect(50, 120, 200, 30))
+        state = release_drag(
+            PetState(PetPoint(100, 100), PetMode.DRAGGING),
+            [support],
+            viewport,
+            20,
+            release_velocity=PetPoint(600, 0),
+        )
+
+        state = advance_pet(state, [support], viewport, pet_size=20)
+
+        self.assertEqual(state.mode, PetMode.FLING)
+        self.assertGreater(state.position.x, 100)
+        self.assertEqual(state.position.y, 100)
+        self.assertEqual(state.horizontal_velocity, 600)
+
+        for _ in range(30):
+            state = advance_pet(state, [support], viewport, pet_size=20)
+            if state.position.y > 100:
+                break
+        self.assertGreater(state.position.y, 100)
+
+    def test_fling_hard_landing_clears_horizontal_velocity_through_bounce(self):
+        viewport = PetRect(0, 0, 400, 300)
+        support = PetTarget("floor", PetTargetKind.SURFACE, PetRect(0, 220, 400, 20))
+        state = PetState(
+            PetPoint(100, 195),
+            PetMode.FLING,
+            horizontal_velocity=240,
+            vertical_velocity=500,
+        )
+
+        state = advance_pet(state, [support], viewport, pet_size=20)
+
+        self.assertEqual(state.mode, PetMode.BOUNCE)
+        self.assertEqual(state.horizontal_velocity, 0.0)
+        landing_x = state.position.x
+        for _ in range(80):
+            state = advance_pet(state, [support], viewport, pet_size=20)
+            self.assertEqual(state.position.x, landing_x)
+            self.assertEqual(state.horizontal_velocity, 0.0)
+            if state.mode == PetMode.IDLE:
+                break
+        self.assertEqual(state.mode, PetMode.IDLE)
+
+    def test_fling_reflects_horizontal_wall_and_lands_on_support(self):
+        viewport = PetRect(0, 0, 400, 300)
+        state = PetState(
+            PetPoint(375, 120),
+            PetMode.FLING,
+            horizontal_velocity=900,
+            vertical_velocity=0,
+        )
+        bounced = advance_pet(state, [], viewport, pet_size=20)
+        self.assertLessEqual(bounced.position.x, 380)
+        self.assertLess(bounced.horizontal_velocity, 0)
+        self.assertAlmostEqual(
+            abs(bounced.horizontal_velocity),
+            900 * FLING_HORIZONTAL_RESTITUTION,
+            delta=5,
+        )
+        support = PetTarget("floor", PetTargetKind.SURFACE, PetRect(0, 220, 400, 20))
+        falling = PetState(
+            PetPoint(100, 100),
+            PetMode.FLING,
+            horizontal_velocity=0,
+            vertical_velocity=500,
+        )
+        landed = advance_pet(falling, [support], viewport, pet_size=20)
+        for _ in range(30):
+            if landed.mode != PetMode.FLING:
+                break
+            landed = advance_pet(landed, [support], viewport, pet_size=20)
+        self.assertIn(landed.mode, {PetMode.IDLE, PetMode.BOUNCE})
+        self.assertAlmostEqual(landed.position.y, 200.0, delta=1e-5)
+
+    def test_fling_can_land_on_descending_root_after_entering_below_support(self):
+        """Do not discard the later root when an upward fling starts below a surface."""
+        viewport = PetRect(0, 0, 400, 300)
+        support = PetTarget("support", PetTargetKind.SURFACE, PetRect(0, 100, 400, 10))
+        state = PetState(
+            PetPoint(200, 100.01),
+            PetMode.FLING,
+            vertical_velocity=-16,
+        )
+        landed = advance_pet(state, [support], viewport)
+        self.assertEqual(landed.mode, PetMode.IDLE)
+        self.assertEqual(landed.target_id, "support")
+        self.assertAlmostEqual(landed.position.y, 100.0, places=5)
+
+    def test_fling_hits_diagonal_chart_using_relative_normal_velocity(self):
+        vector = next(
+            item
+            for item in self.golden["flingPhysicsVectors"]
+            if item["name"] == "sloped-chart-contact-uses-relative-descending-derivative"
+        )
+        chart = PetTarget(
+            "diagonal",
+            PetTargetKind.CHART,
+            PetRect(0, 0, 200, 200),
+            tuple(PetPoint(*point) for point in vector["chartSegment"]),
+        )
+
+        landed = advance_pet(
+            PetState(
+                PetPoint(*vector["initialPosition"]),
+                PetMode.FLING,
+                horizontal_velocity=vector["releaseVelocity"][0],
+                vertical_velocity=vector["releaseVelocity"][1],
+            ),
+            [chart],
+            PetRect(0, 0, 400, 400),
+        )
+
+        self.assertEqual(landed.mode.value, vector["expectedMode"])
+        self.assertEqual(landed.target_id, chart.id)
+        assert_point(self, landed.position, vector["expectedContactPoint"])
+        self.assertEqual(landed.horizontal_velocity, 0.0)
+
+    def test_window_portal_maps_full_sprite_and_selects_only_adjacent_viewable(self):
+        source = PetWindow("main", PetRect(0, 0, 400, 300), order=0)
+        right = PetWindow("study", PetRect(400, 0, 400, 300), order=1)
+        hidden = PetWindow("hidden", PetRect(400, 0, 400, 300), order=2, viewable=False)
+        selected = select_adjacent_window(source, [hidden, right], "right", PetPoint(399, 150))
+        self.assertEqual(selected, right)
+        entry = map_pet_entry(
+            source.rect,
+            right.rect,
+            PetPoint(399, 150),
+            "left",
+            56,
+            mode=PetMode.FLING,
+            velocity=PetPoint(420, 0),
+        )
+        self.assertEqual(entry.position, PetPoint(56, 150))
+        self.assertEqual(entry.velocity, PetPoint(420, 0))
+        self.assertEqual(entry.mode, PetMode.FLING)
+        top = map_pet_entry(
+            source.rect,
+            PetRect(0, 300, 400, 300),
+            PetPoint(200, 299),
+            "top",
+            56,
+            mode=PetMode.FALL,
+            velocity=PetPoint(0, 125),
+        )
+        self.assertEqual(top.position, PetPoint(200, -56))
+        self.assertEqual(top.mode, PetMode.FALL)
+        bottom = map_pet_entry(
+            PetRect(0, 300, 400, 300),
+            source.rect,
+            PetPoint(200, 1),
+            "bottom",
+            56,
+            mode=PetMode.FLING,
+            velocity=PetPoint(0, -320),
+        )
+        self.assertEqual(bottom.position, PetPoint(200, 356))
+        self.assertEqual(bottom.mode, PetMode.FLING)
+
+    def test_window_coordinator_migrates_active_state_at_portal(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(344, 150),
+                PetMode.FLING,
+                horizontal_velocity=420,
+            )
+        )
+        main = PetWindow("main", PetRect(0, 0, 400, 300), order=0)
+        study = PetWindow("study", PetRect(400, 0, 400, 300), order=1)
+        coordinator.register_window(main, active=True, pet_half_size=56)
+        coordinator.register_window(study)
+
+        self.assertTrue(coordinator.migrate_if_needed("main", 56))
+        self.assertEqual(coordinator.active_window_id, "study")
+        self.assertEqual(coordinator.state.position, PetPoint(56, 150))
+        self.assertEqual(coordinator.state.velocity, PetPoint(420, 0))
+
+    def test_window_coordinator_predicts_high_speed_exit_before_local_reflection(self):
+        """A fast fling crossing the edge in one tick enters its neighbour."""
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(330, 150),
+                PetMode.FLING,
+                horizontal_velocity=1800,
+            )
+        )
+        main = PetWindow("main", PetRect(0, 0, 400, 300), order=0)
+        study = PetWindow("study", PetRect(400, 0, 400, 300), order=1)
+        coordinator.register_window(main, active=True, pet_half_size=56)
+        coordinator.register_window(study)
+
+        self.assertTrue(coordinator.migrate_if_needed("main", 56))
+        self.assertEqual(coordinator.active_window_id, "study")
+        crossing_time = 14 / 1800
+        self.assertAlmostEqual(coordinator.state.position.x, 56)
+        self.assertAlmostEqual(
+            coordinator.state.position.y,
+            150 + 0.5 * FLING_GRAVITY * crossing_time * crossing_time,
+        )
+        self.assertAlmostEqual(coordinator.state.horizontal_velocity, 1800)
+        self.assertAlmostEqual(coordinator.state.vertical_velocity, FLING_GRAVITY * crossing_time)
+
+    def test_window_coordinator_predicts_downward_exit_into_window_below(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(200, 320),
+                PetMode.FLING,
+                vertical_velocity=1800,
+            )
+        )
+        coordinator.register_window(
+            PetWindow("main", PetRect(0, 0, 400, 400)),
+            active=True,
+            pet_half_size=56,
+        )
+        coordinator.register_window(PetWindow("reminder", PetRect(0, 400, 400, 400)))
+
+        self.assertTrue(
+            coordinator.migrate_if_needed("main", 56, lookahead_seconds=0.016)
+        )
+        self.assertEqual(coordinator.active_window_id, "reminder")
+        self.assertEqual(coordinator.state.position, PetPoint(200, -56))
+        self.assertEqual(coordinator.state.mode, PetMode.FALL)
+        gravity = FLING_GRAVITY
+        crossing_time = (-1800 + math.sqrt(1800 ** 2 + 2 * gravity * 24)) / gravity
+        self.assertAlmostEqual(coordinator.state.vertical_velocity, 1800 + gravity * crossing_time)
+
+    def test_predicted_portal_crossings_are_continuous_and_earliest_first(self):
+        crossings = predicted_exit_times(
+            PetState(
+                PetPoint(330, 230),
+                PetMode.FLING,
+                horizontal_velocity=1800,
+                vertical_velocity=1000,
+            ),
+            PetRect(0, 0, 400, 300),
+            56,
+        )
+        self.assertEqual([direction for _, direction in crossings], ["right", "bottom"])
+        self.assertAlmostEqual(crossings[0][0], 14 / 1800, places=9)
+        self.assertLess(crossings[0][0], crossings[1][0])
+
+    def test_predicted_portal_crossings_honor_nonzero_viewport_origin(self):
+        crossings = predicted_exit_times(
+            PetState(PetPoint(430, 180), PetMode.FLING, horizontal_velocity=500),
+            PetRect(100, 50, 400, 300),
+            20,
+            duration=0.2,
+        )
+        self.assertEqual(crossings[0][1], "right")
+        self.assertAlmostEqual(crossings[0][0], 50 / 500, places=9)
+
+    def test_window_coordinator_preserves_world_position_for_nonadjacent_close(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(120, 80),
+                PetMode.FLING,
+                target_id="dialog-local",
+                idle_ticks_remaining=4,
+                avoid_target_id="old-target",
+                horizontal_velocity=180,
+            )
+        )
+        coordinator.register_window(PetWindow("main", PetRect(0, 0, 400, 300)), active=True, pet_half_size=56)
+        coordinator.register_window(PetWindow("dialog", PetRect(900, 700, 400, 300)), active=True, pet_half_size=56)
+        coordinator.unregister_window("dialog", pet_half_size=56)
+
+        self.assertEqual(coordinator.active_window_id, "main")
+        self.assertEqual(coordinator.state.position, PetPoint(344, 244))
+        self.assertIsNone(coordinator.state.target_id)
+        self.assertEqual(coordinator.state.idle_ticks_remaining, 0)
+        self.assertIsNone(coordinator.state.avoid_target_id)
+
+    def test_window_coordinator_migrates_fling_through_top_edge(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(200, 56),
+                PetMode.FLING,
+                vertical_velocity=-320,
+            )
+        )
+        coordinator.register_window(PetWindow("main", PetRect(0, 300, 400, 300)), active=True, pet_half_size=56)
+        coordinator.register_window(PetWindow("above", PetRect(0, 0, 400, 300)))
+
+        self.assertTrue(coordinator.migrate_if_needed("main", 56))
+        self.assertEqual(coordinator.active_window_id, "above")
+        self.assertEqual(coordinator.state.position, PetPoint(200, 356))
+        self.assertEqual(coordinator.state.mode, PetMode.FLING)
+        self.assertEqual(coordinator.state.vertical_velocity, -320)
+
+    def test_window_coordinator_clears_source_bookkeeping_but_keeps_drag_offset(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(344, 150),
+                PetMode.DRAGGING,
+                target_id="source-target",
+                idle_ticks_remaining=8,
+                avoid_target_id="source-avoid",
+                drag_offset=PetPoint(-12, 7),
+            )
+        )
+        coordinator.register_window(
+            PetWindow("main", PetRect(0, 0, 400, 300)),
+            active=True,
+            pet_half_size=56,
+        )
+        coordinator.register_window(PetWindow("dialog", PetRect(400, 0, 400, 300)))
+
+        self.assertTrue(coordinator.migrate_if_needed("main", 56))
+        self.assertEqual(coordinator.state.mode, PetMode.DRAGGING)
+        self.assertIsNone(coordinator.state.target_id)
+        self.assertEqual(coordinator.state.idle_ticks_remaining, 0)
+        self.assertIsNone(coordinator.state.avoid_target_id)
+        self.assertEqual(coordinator.state.drag_offset, PetPoint(-12, 7))
+
+    def test_window_coordinator_allows_dialog_to_main_return(self):
+        dialog = PetWindow("study-dialog", PetRect(400, 0, 400, 300), order=1)
+        main = PetWindow("main", PetRect(0, 0, 400, 300), order=0)
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(56, 150),
+                PetMode.FLING,
+                horizontal_velocity=-420,
+            )
+        )
+        coordinator.register_window(dialog, active=True, pet_half_size=56)
+        coordinator.register_window(main)
+
+        self.assertTrue(coordinator.migrate_if_needed("study-dialog", 56))
+        self.assertEqual(coordinator.active_window_id, "main")
+        self.assertEqual(coordinator.state.position, PetPoint(344, 150))
+        self.assertEqual(coordinator.state.velocity, PetPoint(-420, 0))
+
+    def test_bottom_portal_maps_to_destination_top_without_clipping(self):
+        entry = map_pet_entry(
+            PetRect(0, 0, 400, 300),
+            PetRect(0, 300, 400, 300),
+            PetPoint(200, 244),
+            "top",
+            56,
+            mode=PetMode.FLING,
+            velocity=PetPoint(0, 320),
+        )
+        self.assertEqual(entry.position, PetPoint(200, -56))
+        self.assertEqual(entry.mode, PetMode.FALL)
+        self.assertEqual(entry.velocity, PetPoint(0, 320))
+
+    def test_top_portal_keeps_fling_outside_destination_bottom_edge(self):
+        entry = map_pet_entry(
+            PetRect(0, 300, 400, 300),
+            PetRect(0, 0, 400, 300),
+            PetPoint(200, 56),
+            "bottom",
+            56,
+            mode=PetMode.FLING,
+            velocity=PetPoint(0, -320),
+        )
+        self.assertEqual(entry.position, PetPoint(200, 356))
+        self.assertEqual(entry.mode, PetMode.FLING)
+        self.assertEqual(entry.velocity, PetPoint(0, -320))
+
+    def test_window_coordinator_unregisters_active_host_to_adjacent_fallback(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(344, 150),
+                PetMode.FLING,
+                horizontal_velocity=420,
+            )
+        )
+        coordinator.register_window(PetWindow("main", PetRect(0, 0, 400, 300)), active=True, pet_half_size=56)
+        coordinator.register_window(PetWindow("study", PetRect(400, 0, 400, 300), order=1))
+
+        coordinator.unregister_window("main", pet_half_size=56)
+        self.assertEqual(coordinator.active_window_id, "study")
+        self.assertEqual(coordinator.state.position, PetPoint(56, 150))
+        self.assertEqual(coordinator.state.velocity, PetPoint(420, 0))
+
+    def test_window_portal_direction_is_case_insensitive(self):
+        source = PetRect(0, 0, 400, 300)
+        target = PetRect(400, 0, 400, 300)
+        entry = map_pet_entry(source, target, PetPoint(390, 150), "LEFT", 56)
+        self.assertEqual(entry.position, PetPoint(56, 150))
+        selected = select_adjacent_window(
+            PetWindow("main", source),
+            [PetWindow("study", target)],
+            "RIGHT",
+            PetPoint(390, 150),
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.id, "study")
+
+    def test_window_selection_rejects_overlap_for_autonomy_but_allows_drag(self):
+        source = PetWindow("main", PetRect(100, 100, 400, 300), order=0)
+        overlapping = PetWindow("dialog", PetRect(200, 100, 400, 300), order=1)
+        position = PetPoint(399, 150)
+
+        self.assertIsNone(
+            select_adjacent_window(source, [overlapping], "right", position)
+        )
+        self.assertEqual(
+            select_adjacent_window(
+                source,
+                [overlapping],
+                "right",
+                position,
+                allow_overlap=True,
+            ),
+            overlapping,
+        )
+
+    def test_window_selection_rejects_candidate_missed_by_motion_ray(self):
+        source = PetWindow("main", PetRect(0, 0, 400, 300))
+        off_axis = PetWindow("dialog", PetRect(400, 200, 400, 100))
+        aligned = PetWindow("aligned", PetRect(400, 0, 400, 100), order=1)
+        position = PetPoint(344, 60)
+
+        self.assertIsNone(select_adjacent_window(source, [off_axis], "right", position))
+        self.assertEqual(
+            select_adjacent_window(source, [off_axis, aligned], "right", position),
+            aligned,
+        )
+
+    def test_window_selection_uses_first_diagonal_ray_intersection_across_gap(self):
+        vector = next(
+            item
+            for item in self.golden["windowRayVectors"]
+            if item["name"]
+            == "gapped-diagonal-ray-rejects-near-miss-and-selects-first-hit"
+        )
+        source_data = vector["sourceWindow"]
+        source = PetWindow(source_data["id"], PetRect(*source_data["rect"]))
+        candidates = [
+            PetWindow(
+                candidate["id"],
+                PetRect(*candidate["rect"]),
+                order=candidate["order"],
+            )
+            for candidate in vector["candidates"]
+        ]
+        origin_world = PetPoint(*vector["rayOriginWorld"])
+        position = PetPoint(
+            origin_world.x - source.rect.left,
+            origin_world.y - source.rect.top,
+        )
+        motion = PetPoint(*vector["velocity"])
+        lookahead = vector["lookaheadSeconds"]
+        rejected = {
+            candidate.id: candidate
+            for candidate in candidates
+            if candidate.id in vector["expectedRejected"]
+        }
+
+        for candidate in rejected.values():
+            self.assertIsNone(
+                select_adjacent_window(
+                    source,
+                    [candidate],
+                    "right",
+                    position,
+                    motion=motion,
+                    max_time=lookahead,
+                )
+            )
+        selected = select_adjacent_window(
+            source,
+            candidates,
+            "right",
+            position,
+            motion=motion,
+            max_time=lookahead,
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.id, vector["expectedHost"])
+
+        entry_time = ray_rect_entry_time(
+            origin_world,
+            motion,
+            selected.rect,
+            max_time=lookahead,
+        )
+        self.assertIsNotNone(entry_time)
+        self.assertAlmostEqual(entry_time, vector["expectedIntersectionTimeSeconds"])
+        intersection = PetPoint(
+            origin_world.x + motion.x * entry_time,
+            origin_world.y + motion.y * entry_time,
+        )
+        assert_point(self, intersection, vector["expectedIntersectionPoint"])
+
+        beyond_tick = PetWindow("beyond-tick", PetRect(500, 60, 400, 200), order=3)
+        self.assertIsNone(
+            select_adjacent_window(
+                source,
+                [beyond_tick],
+                "right",
+                position,
+                motion=motion,
+                max_time=lookahead,
+            )
+        )
+        self.assertEqual(
+            select_adjacent_window(
+                source,
+                [beyond_tick],
+                "right",
+                position,
+                motion=motion,
+            ),
+            beyond_tick,
+        )
+
+    def test_window_coordinator_maps_from_diagonal_ray_intersection(self):
+        vector = next(
+            item
+            for item in self.golden["windowRayVectors"]
+            if item["name"]
+            == "gapped-diagonal-ray-rejects-near-miss-and-selects-first-hit"
+        )
+        source_data = vector["sourceWindow"]
+        source = PetWindow(source_data["id"], PetRect(*source_data["rect"]))
+        candidates = [
+            PetWindow(
+                candidate["id"],
+                PetRect(*candidate["rect"]),
+                order=candidate["order"],
+            )
+            for candidate in vector["candidates"]
+        ]
+        origin_world = PetPoint(*vector["rayOriginWorld"])
+        velocity = PetPoint(*vector["velocity"])
+        coordinator = PetWindowCoordinator(
+            PetState(
+                position=PetPoint(
+                    origin_world.x - source.rect.left,
+                    origin_world.y - source.rect.top,
+                ),
+                mode=PetMode.FLING,
+                vertical_velocity=velocity.y,
+                horizontal_velocity=velocity.x,
+            )
+        )
+        coordinator.register_window(source, active=True)
+        for candidate in candidates:
+            coordinator.register_window(candidate)
+
+        self.assertTrue(
+            coordinator.migrate_if_needed(
+                source.id,
+                pet_half_size=0.0,
+                lookahead_seconds=vector["lookaheadSeconds"],
+            )
+        )
+        self.assertEqual(coordinator.active_window_id, vector["expectedHost"])
+        assert_point(self, coordinator.world_position(), vector["expectedIntersectionPoint"])
+
+    def test_fall_entry_from_top_preserves_outside_y_until_crossing_viewport(self):
+        viewport = PetRect(0, 0, 400, 300)
+        support = PetTarget("landing", PetTargetKind.SURFACE, PetRect(0, 100, 400, 20))
+        entry = map_pet_entry(
+            PetRect(0, -300, 400, 300),
+            viewport,
+            PetPoint(200, 300),
+            "top",
+            56,
+            mode=PetMode.FALL,
+            velocity=PetPoint(0, 125),
+        )
+        state = PetState(
+            entry.position,
+            entry.mode,
+            vertical_velocity=entry.velocity.y,
+        )
+        next_state = advance_pet(state, [support], viewport, pet_size=56)
+        self.assertEqual(next_state.mode, PetMode.FALL)
+        self.assertGreater(next_state.position.y, entry.position.y)
+        self.assertLess(next_state.position.y, viewport.top + 56)
+        self.assertEqual(next_state.position.x, entry.position.x)
 
 
 if __name__ == "__main__":

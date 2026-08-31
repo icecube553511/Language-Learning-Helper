@@ -9,7 +9,7 @@
   "rectangleFormat": "x-y-width-height",
   "petSizeMeaning": "half-size",
   "targetKinds": ["control", "surface", "chart", "edge"],
-  "modes": ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging"],
+  "modes": ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging", "fling"],
   "facings": ["left", "right"],
   "navigationTransition": "drop-to-nearest",
   "windowScope": "application-owned-window",
@@ -23,9 +23,23 @@
   "activeWindowSelection": "focus-map-host-z-order",
   "windowDeactivationFallback": "next-mapped-host-z-order",
   "platformManagedUiExcluded": true,
+  "windowMigration": {
+    "enabled": true,
+    "entryDirections": ["left", "right", "top"],
+    "dragEntry": true,
+    "boundaryPolicy": "portal-at-viewport-edge",
+    "candidateSelection": "earliest-motion-intersection",
+    "rayIntersection": "continuous-parametric-aabb",
+    "rayMissPolicy": "reject",
+    "overlapPolicy": "autonomous-reject-explicit-drag-allow",
+    "positionMapping": "full-display-inner-edge",
+    "stateTransfer": "preserve-velocity-and-grab-offset"
+  },
   "motion": {
     "acceleration": 0.5,
     "cruiseSpeed": 4.0,
+    "curveAcceleration": 0.25,
+    "curveAccelerationPolicy": "constant-independent-of-requested-step",
     "idleTicks": 24,
     "fallTimeStepSeconds": 0.016,
     "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -47,7 +61,13 @@
     "fallTargetIntersection": "current-x-ray",
     "fallTargetRefresh": "every-tick-nearest-current-x-ray",
     "landingImpactVelocity": "continuous-contact",
-    "syntheticBottomLanding": "same-impact-and-bounce-rules"
+    "syntheticBottomLanding": "same-impact-and-bounce-rules",
+    "flingGravityLogicalUnitsPerSecondSquared": 2148.4375,
+    "flingHorizontalRestitution": 0.72,
+    "maxSubstepSeconds": 0.004,
+    "maxSubstepsPerTick": 8,
+    "highSpeedInterpolation": "linear-between-simulated-substeps",
+    "flingChartContactDirection": "contact-equation-derivative-nonnegative"
   },
   "drag": {
     "enabled": true,
@@ -57,7 +77,13 @@
     "supportedReleaseMode": "idle",
     "suspendedReleaseMode": "fall",
     "suspendedReleaseTarget": null,
-    "suspendedReleaseVerticalVelocity": 0.0
+    "suspendedReleaseVerticalVelocity": 0.0,
+    "releaseVelocitySampleWindowMs": 120,
+    "minimumFlingSpeed": 90.0,
+    "maxFlingSpeed": 1800.0,
+    "velocityEstimator": "weighted-terminal-linear-regression",
+    "flingMode": "fling",
+    "flingCollision": "continuous-contact"
   },
   "transientOnly": true,
   "vectors": [
@@ -83,6 +109,32 @@
       "releaseOnLegalSupport": true,
       "expectedPosition": [500, 600],
       "expectedMode": "idle"
+    }
+  ],
+  "dragVelocityVectors": [
+    {
+      "name": "terminal-tangent-estimate-uses-constrained-centres",
+      "sampleWindowMs": 120,
+      "nowMs": 120,
+      "samples": [
+        { "timeMs": 0, "position": [100.0, 200.0] },
+        { "timeMs": 40, "position": [120.0, 180.0] },
+        { "timeMs": 80, "position": [140.0, 160.0] },
+        { "timeMs": 120, "position": [160.0, 140.0] }
+      ],
+      "expectedVelocity": [500.0, -500.0],
+      "expectedSpeed": 707.1067811865476,
+      "expectedMode": "fling"
+    },
+    {
+      "name": "insufficient-drag-samples-do-not-fling",
+      "sampleWindowMs": 120,
+      "nowMs": 120,
+      "samples": [
+        { "timeMs": 120, "position": [160.0, 140.0] }
+      ],
+      "expectedVelocity": [0.0, 0.0],
+      "expectedMode": "fall"
     }
   ],
   "behaviorVectors": [
@@ -131,7 +183,7 @@
         "path": [[10, 10], [20, 20], [30, 10]]
       },
       "step": 30,
-      "ticks": 10,
+      "ticks": 20,
       "expectedMode": "slide",
       "mustReverse": true
     },
@@ -305,6 +357,165 @@
         { "tick": 3, "elapsedSeconds": 0.048, "expectedY": 15.475, "expectedVerticalVelocity": 165.625, "expectedTickDisplacement": 2.375 },
         { "tick": 4, "elapsedSeconds": 0.064, "expectedY": 18.4, "expectedVerticalVelocity": 200.0, "expectedTickDisplacement": 2.925 }
       ]
+    }
+  ],
+  "flingPhysicsVectors": [
+    {
+      "name": "diagonal-release-preserves-tangent-and-gravity",
+      "releasePosition": [320.0, 420.0],
+      "releaseVelocity": [420.0, -680.0],
+      "stepSeconds": 0.016,
+      "samples": [
+        { "tick": 1, "expectedPosition": [326.72, 409.395], "expectedVelocity": [420.0, -645.625] },
+        { "tick": 2, "expectedPosition": [333.44, 399.34], "expectedVelocity": [420.0, -611.25] },
+        { "tick": 3, "expectedPosition": [340.16, 389.835], "expectedVelocity": [420.0, -576.875] }
+      ],
+      "expectedMode": "fling",
+      "horizontalDirection": "right",
+      "verticalDirection": "up"
+    },
+    {
+      "name": "release-speed-vector-is-limited-proportionally",
+      "releaseVelocity": [1800.0, -2400.0],
+      "maxFlingSpeed": 1800.0,
+      "expectedVelocity": [1080.0, -1440.0],
+      "expectedMagnitude": 1800.0
+    },
+    {
+      "name": "high-speed-tick-uses-deterministic-substeps",
+      "initialPosition": [320.0, 420.0],
+      "stepSeconds": 0.016,
+      "maxSubstepSeconds": 0.004,
+      "maxSubstepsPerTick": 8,
+      "releaseVelocity": [900.0, 1200.0],
+      "expectedSubsteps": 4,
+      "expectedPosition": [334.4, 439.475],
+      "expectedVelocity": [900.0, 1234.375]
+    },
+    {
+      "name": "sloped-chart-contact-uses-relative-descending-derivative",
+      "initialPosition": [100.0, 99.0],
+      "releaseVelocity": [1000.0, -500.0],
+      "chartSegment": [[0.0, 200.0], [200.0, 0.0]],
+      "stepSeconds": 0.004,
+      "contactEquation": "y(t)-(slope*x(t)+intercept)",
+      "contactDirection": "derivative-nonnegative",
+      "expectedContactTimeSeconds": 0.0019914793186246904,
+      "expectedContactPoint": [101.99147931862468, 98.0085206813753],
+      "expectedWorldVerticalVelocity": -495.72143115139227,
+      "expectedContactEquationDerivative": 504.27856884860773,
+      "expectedWorldVerticalDirection": "up",
+      "expectedRelativeDirection": "descending",
+      "expectedMode": "bounce"
+    }
+  ],
+  "curveMotionVectors": [
+    {
+      "name": "curve-slide-accelerates-from-rest",
+      "initialMovementSpeed": 0.0,
+      "curveAcceleration": 0.25,
+      "cruiseSpeed": 4.0,
+      "tickSpeeds": [0.25, 0.5, 0.75, 1.0, 1.25],
+      "expectedMode": "slide"
+    },
+    {
+      "name": "curve-slide-retains-budget-across-corner",
+      "initialMovementSpeed": 3.75,
+      "curveAcceleration": 0.25,
+      "cruiseSpeed": 4.0,
+      "remainingToCorner": 0.2,
+      "expectedSpeedAfterCorner": 4.0,
+      "expectedBudgetAfterCorner": 3.8,
+      "expectedMode": "slide"
+    },
+    {
+      "name": "curve-slide-step-override-keeps-contract-acceleration-and-corner-budget",
+      "initialMovementSpeed": 3.75,
+      "curveAcceleration": 0.25,
+      "cruiseSpeed": 4.0,
+      "requestedStep": 30.0,
+      "remainingToCorner": 0.2,
+      "expectedSpeedAfterCorner": 4.0,
+      "expectedBudgetAfterCorner": 3.8,
+      "expectedMode": "slide"
+    }
+  ],
+  "windowMigrationVectors": [
+    {
+      "name": "fling-exits-right-and-enters-neighbor",
+      "sourceWindow": { "id": "main", "rect": [0, 0, 400, 300] },
+      "targetWindow": { "id": "study-dialog", "rect": [400, 0, 400, 300] },
+      "entryDirection": "left",
+      "sourceExitEdge": "right",
+      "targetEntryEdge": "left",
+      "positionInSource": [390.0, 150.0],
+      "velocity": [420.0, 0.0],
+      "petHalfSize": 56.0,
+      "expectedHost": "study-dialog",
+      "expectedPositionInTarget": [56.0, 150.0],
+      "expectedVelocity": [420.0, 0.0],
+      "expectedMode": "fling",
+      "preserveGrabOffset": true
+    },
+    {
+      "name": "fall-enters-new-window-from-top",
+      "sourceWindow": { "id": "main", "rect": [0, -320, 400, 300] },
+      "targetWindow": { "id": "reminder", "rect": [0, 0, 400, 300] },
+      "entryDirection": "top",
+      "sourceExitEdge": "bottom",
+      "targetEntryEdge": "top",
+      "positionInSource": [200.0, 300.0],
+      "velocity": [0.0, 125.0],
+      "petHalfSize": 56.0,
+      "expectedHost": "reminder",
+      "expectedPositionInTarget": [200.0, -56.0],
+      "expectedVelocity": [0.0, 125.0],
+      "expectedMode": "fall",
+      "preserveGrabOffset": true
+    },
+    {
+      "name": "drag-crosses-left-into-new-window",
+      "sourceWindow": { "id": "main", "rect": [400, 0, 400, 300] },
+      "targetWindow": { "id": "library", "rect": [0, 0, 400, 300] },
+      "entryDirection": "right",
+      "sourceExitEdge": "left",
+      "targetEntryEdge": "right",
+      "positionInSource": [10.0, 150.0],
+      "velocity": [0.0, 0.0],
+      "petHalfSize": 56.0,
+      "expectedHost": "library",
+      "expectedPositionInTarget": [344.0, 150.0],
+      "expectedVelocity": [0.0, 0.0],
+      "expectedMode": "dragging",
+      "preserveGrabOffset": true
+    }
+  ],
+  "windowRayVectors": [
+    {
+      "name": "gapped-diagonal-ray-rejects-near-miss-and-selects-first-hit",
+      "sourceWindow": { "id": "main", "rect": [0.0, 0.0, 400.0, 300.0] },
+      "rayOriginWorld": [400.0, 50.0],
+      "velocity": [1800.0, 1800.0],
+      "lookaheadSeconds": 0.016,
+      "candidates": [
+        {
+          "id": "near-miss",
+          "rect": [410.0, -100.0, 400.0, 159.0],
+          "order": 1,
+          "expectedIntersectionTimeSeconds": null
+        },
+        {
+          "id": "ray-hit",
+          "rect": [420.0, 60.0, 400.0, 200.0],
+          "order": 2,
+          "expectedIntersectionTimeSeconds": 0.011111111111111112
+        }
+      ],
+      "expectedRejected": ["near-miss"],
+      "expectedHost": "ray-hit",
+      "expectedIntersectionTimeSeconds": 0.011111111111111112,
+      "expectedIntersectionPoint": [420.0, 70.0],
+      "expectedEntryEdge": "left"
     }
   ],
   "windowScopeVectors": [
