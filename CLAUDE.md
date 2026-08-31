@@ -16,8 +16,9 @@
 - 学习顺序默认 `random`，可选 `alphabetical`；学习、复习和提醒词汇组是三个独立的多选设置。
 - 内置词条 memberships 只读；CSV 导入和批量标签编辑可更新用户词条，程序标签编辑对内置词条也只写本地 tag override。
 - 默写是可打印 worksheet，不是交互答题；preview 必须与 DOCX/PDF 输出共享同一 `Document` model。`dictation-export-v1` 中的 A4 portrait、字段挖空、词性、例句边界替换、随机无放回选择和 evaluated 规则是单一事实来源。
-- 例句英文词语气泡遵循 `word-bubble-v1`：token 归一化、词性/中文解析、九层栈、祖先保留和外部点击关闭由共享契约约束；栈状态仅存在 presentation，不得持久化。
+- 例句英文词语气泡遵循 `word-bubble-v1`：token 归一化、词性/中文解析、20 层栈、祖先保留和外部点击关闭由共享契约约束；栈状态仅存在 presentation，不得持久化。
 - 冰子宠物遵循 `shared/contracts/pet-companion-v1.md`：源图在 `shared/assets/branding/pet_image.png`，运行 sprite 由 `tools/prepare_pet_asset.py` 生成；目标几何、动画、拖拽和切页掉落均为 presentation 瞬态，domain 只提供平台无关的目标选择/状态 reducer。
+- 冰子成长遵循 `pet-vitals-v1`：饱食/储食/心情与单值恢复标记持久化，饥饿状态派生；恢复标记不得进入 `VocabularyEntry.tags`。评分奖励属于 domain，追踪光球/拖尾/爆点只属于 presentation。
 - 导出后的 `evaluated` 只能作为本地 tag override；UI 仅允许 `cet4`、`cet6`、`gk`、`zk`、`evaluated`，不得创建其他 tag，且不得修改内置 catalog。
 - Android 后台提醒由 AlarmManager/Receiver/Notification 外层适配器负责，application/domain 不得依赖 Android SDK。
 - 保留工作区中已有的用户修改；不要使用破坏性还原命令覆盖它们。
@@ -25,7 +26,7 @@
 ## 代码风格
 
 - Python 使用 snake_case、类型注解和标准库；Kotlin 使用 PascalCase 类型与 camelCase 成员。
-- 时间统一使用 UTC epoch seconds，并通过时间端口注入以便测试。
+- 时间统一使用 UTC epoch seconds。Android 通过端口注入时钟；Windows 现有用例允许传入时间覆盖但默认调用系统时钟，新领域规则不得直接依赖时钟。
 - 词条 ID 使用 Unicode NFKC + trim + casefold/lowercase 规范化。
 - 导入不得覆盖重复词条或学习进度；异常应转换为稳定的逐行错误报告或明确用户消息。
 
@@ -45,6 +46,7 @@ Android 构建使用 JDK 17 与 SDK 35；Windows 打包前安装 windows/require
 - shared/contracts/：跨端 schema、算法、CSV 和能力门禁。
 - shared/contracts/dictation-export-v1.md 与 dictation-export-golden-v1.json：可打印默写 worksheet 的格式和 golden vectors。
 - shared/contracts/word-bubble-v1.md 与 word-bubble-golden-v1.json：例句递归词语气泡的共享交互语义。
+- shared/contracts/pet-vitals-v1.md 与 pet-vitals-golden-v1.json：冰子成长、评分奖励和追踪光球语义。
 - shared/content/：生成的内置词库，不手工编辑大 JSON；使用 tools/build_catalog.py 更新。
 - shared/assets/branding/：Windows 与 Android 共用的 canonical 品牌源资产，平台图标资源由此派生。
 - windows/{domain,application,infrastructure,presentation}/：Windows 四层。
@@ -59,7 +61,7 @@ Android 构建使用 JDK 17 与 SDK 35；Windows 打包前安装 windows/require
 
 跨端功能由 Windows 与 Android 两个互不重叠的实现并发完成，共享契约、`tools/verify_sync.py` 与编目/品牌源资产只读。任何行为变更必须同时落地 Windows 与 Android（除非明确声明仅限单端），并：
 
-- 共享逻辑优先放入 `shared/contracts/`，再同步更新三个平台清单；可自动化的对齐点写入 `tools/verify_sync.py`。
+- 共享逻辑优先放入 `shared/contracts/`，再同步更新三份 parity 清单（shared、Windows、Android）；可自动化的对齐点写入 `tools/verify_sync.py`。
 - 领域规则保持平台无关，瞬态 UI 状态不进入持久化；presentation 不得直接读取 catalog 或存储文件。
 - 改动须附带两端回归测试，并在同一提交/PR 中推送到 GitHub 留痕。当前已确认的跨端行为：复习完成后“总览”复习提醒自动消失、复习开始按钮居中放大、默写手选支持整行点选与拖拽范围多选、默写预览支持滚轮上下翻页。
 - 单词气泡（`word-bubble-v1`）必须同步：已知词弹窗同时展示中文释义与至少三组双语例句；例句必须是“英文+简体中文”双语搭配，缺少简体中文时以“（暂无中文释义）”占位补全；弹窗尺寸恰好足以完整展示单词、音标、词性和全部双语例句（不得过大或裁剪）；关闭按钮或标题栏叉号关闭“当前气泡及其子级”而非保持打开。团队结构与职责见 `docs/agent-team.md`。

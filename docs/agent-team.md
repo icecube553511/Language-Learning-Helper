@@ -6,15 +6,16 @@ can run them, in parallel; they never touch overlapping files.
 
 | Role | Scope | Owns |
 |---|---|---|
-| `architecture_audit` | Architecture, challenge & Windows | Challenge assumptions, enforce onion dependencies, and own Windows implementation/tests. |
-| `pet_integration` | Android | Own Android domain/presentation integration and Android tests. |
-| `sync_ci_audit` | Parity & delivery | Audit manifests, sync automation, Git state, GitHub PR overlap, and CI evidence. |
+| `windows_implementation` | Windows | Audit and own Windows domain/application/infrastructure/presentation changes and tests. |
+| `android_implementation` | Android | Audit and own Android domain/application/infrastructure/presentation changes and tests. |
+| `contract_delivery` | Parity & delivery | Audit manifests, sync automation, Git state, GitHub PR overlap, and CI evidence. |
+| `grilling_review` | Requirements | Challenge ambiguous boundaries, defaults, ordering, persistence, failures, and interaction details before implementation. |
 | root agent (orchestrator) | Cross-cutting | Own shared contracts/assets, resolve audit findings, run full verification, commit, push, and maintain the GitHub pull request. |
 
-The team also owns the `petCompanionInteraction` capability. `architecture_audit` and
-`pet_integration` may register platform UI bounds and render Bingzi, while the
-orchestrator keeps the pet contract, source/derived assets, and parity markers
-in sync.
+The team owns `petCompanionInteraction` and `petVitalsAndRatingRewards`.
+Platform roles register UI bounds, render Bingzi, and implement their client;
+the orchestrator keeps contracts, source/derived assets, parity markers, and
+delivery evidence synchronized.
 
 ## Rules
 
@@ -29,6 +30,11 @@ in sync.
 - Before handoff run, in order: `python tools/verify_sync.py`, Windows unit
   tests and the smoke test, and Android `test lintDebug assembleDebug` with
   JDK 17. Then commit and open the GitHub pull request so the work is traceable.
+
+For `pet-vitals-v1`, movement `PetState` remains transient while vitals and the
+single recovery marker are persisted through inner ports. The marker is never
+a vocabulary tag. Reward-flight instances, trails, and burst particles remain
+presentation-only and each accepted activation creates an independent instance.
 
 ## Confirmed cross-platform behaviors
 
