@@ -1,4 +1,6 @@
 package com.lexitrack.learning.presentation
+import android.os.SystemClock
+import android.view.View
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -79,6 +81,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -93,6 +96,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextLayoutResult
@@ -107,13 +111,17 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
@@ -144,9 +152,10 @@ import com.lexitrack.learning.domain.PetRect
 import com.lexitrack.learning.domain.PetState
 import com.lexitrack.learning.domain.PetTarget
 import com.lexitrack.learning.domain.PetTargetKind
+import com.lexitrack.learning.domain.PetMotionSample
+import com.lexitrack.learning.domain.estimateReleaseVelocity
 import com.lexitrack.learning.domain.beginDrag
 import com.lexitrack.learning.domain.advancePet
-import com.lexitrack.learning.domain.moveDrag
 import com.lexitrack.learning.domain.nearestPetTarget
 import com.lexitrack.learning.domain.onNavigation
 import com.lexitrack.learning.domain.releaseDrag
@@ -226,6 +235,10 @@ private val LocalDismissWordBubbles = staticCompositionLocalOf<() -> Unit> { {} 
 private val LocalRegisterPetTarget = staticCompositionLocalOf<(PetTarget) -> Unit> { {} }
 private val LocalRegisterPetWindow = staticCompositionLocalOf<(Any, Boolean) -> Unit> { { _, _ -> } }
 private val LocalPetWindowStack = staticCompositionLocalOf<List<Any>> { emptyList() }
+private val LocalPetWindowCoordinator = staticCompositionLocalOf<PetWindowCoordinator> { PetWindowCoordinator() }
+// A single navigation revision is shared with dialog hosts so a page change
+// always transitions the active pet, regardless of which host currently owns it.
+private val LocalPetNavigationKey = staticCompositionLocalOf<Any> { Unit }
 
 internal const val PET_DISPLAY_SIZE_DP = 112
 internal const val PET_TICK_MS = 16L
@@ -260,19 +273,32 @@ internal fun wordBubbleReachability(
 
 private fun Rect.toPetRect(): PetRect = PetRect(left, top, width, height)
 
+private fun LayoutCoordinates.boundsOnScreen(hostView: View): Rect {
+    val windowBounds = boundsInWindow()
+    val windowOrigin = IntArray(2)
+    hostView.getLocationOnScreen(windowOrigin)
+    return Rect(
+        left = windowBounds.left + windowOrigin[0],
+        top = windowBounds.top + windowOrigin[1],
+        right = windowBounds.right + windowOrigin[0],
+        bottom = windowBounds.bottom + windowOrigin[1],
+    )
+}
+
 private fun Modifier.petTarget(
     register: (PetTarget) -> Unit,
     id: String,
     kind: PetTargetKind,
     path: (Rect) -> List<PetPoint> = { emptyList() },
 ): Modifier = composed {
+    val hostView = LocalView.current
     DisposableEffect(register, id, kind) {
         onDispose {
             register(PetTarget(id, kind, PetRect(0f, 0f, 0f, 0f), visible = false))
         }
     }
     Modifier.onGloballyPositioned { coordinates ->
-        val bounds = coordinates.boundsInWindow()
+        val bounds = coordinates.boundsOnScreen(hostView)
         register(PetTarget(id, kind, bounds.toPetRect(), path(bounds)))
     }
 }
@@ -358,18 +384,25 @@ internal fun wordBubbleOffset(
 @Composable
 private fun PetOverlay(
     viewport: PetRect,
+    windowId: String,
+    windowOrigin: PetPoint,
     targets: List<PetTarget>,
     navigationKey: Any,
     onPointerActiveChange: (Boolean) -> Unit,
-    visible: Boolean = true,
+    preferredActive: Boolean = true,
 ) {
     val petSize = PET_DISPLAY_SIZE_DP.dp
     val density = LocalDensity.current
     val halfSize = with(density) { petSize.toPx() / 2f }
+    val coordinator = LocalPetWindowCoordinator.current
     var state by remember {
         mutableStateOf(PetState(PetPoint(halfSize + 12f, halfSize + 96f)))
     }
+    var dragSamples by remember { mutableStateOf<List<PetMotionSample>>(emptyList()) }
     var completedDrag by remember { mutableStateOf(0) }
+    var dragCaptureActive by remember { mutableStateOf(false) }
+    var wasPreferredActive by remember(windowId) { mutableStateOf(false) }
+    var previousNavigationKey by remember(windowId) { mutableStateOf(navigationKey) }
     val edgeTargets = remember(viewport) {
         if (viewport.width <= 0f || viewport.height <= 0f) {
             emptyList()
@@ -382,9 +415,72 @@ private fun PetOverlay(
         }
     }
     val activeTargets = targets + edgeTargets
-    val displayPosition = if (viewport.valid) viewport.clamp(state.position, halfSize) else state.position
+    // Keep the fixed-step loop alive while Compose refreshes geometry. Reading
+    // these wrappers inside the coroutine avoids restarting the ticker on each
+    // newly allocated target list and keeps high-speed motion cadence stable.
+    val latestViewport by rememberUpdatedState(viewport)
+    val latestActiveTargets by rememberUpdatedState(activeTargets)
+    val latestHalfSize by rememberUpdatedState(halfSize)
+    val latestDensityScale by rememberUpdatedState(density.density)
+    fun samplePosition(local: PetPoint): PetPoint =
+        coordinator.worldPosition()?.takeIf { coordinator.activeWindowId != null }
+            ?: PetPoint(windowOrigin.x + local.x, windowOrigin.y + local.y)
+    val windowRect = PetRect(windowOrigin.x, windowOrigin.y, viewport.width, viewport.height)
+    LaunchedEffect(windowId, windowRect, preferredActive, halfSize) {
+        if (windowRect.valid) {
+            coordinator.registerWindow(
+                PetWindow(windowId, windowRect, order = 0, mapped = true, viewable = true),
+                active = false,
+            )
+            if (preferredActive && (!wasPreferredActive || coordinator.activeWindowId == null)) {
+                coordinator.activate(windowId, halfSize)
+            }
+            wasPreferredActive = preferredActive
+            if (coordinator.activeWindowId == windowId) {
+                if (!coordinator.hasState) {
+                    coordinator.updateState(state)
+                } else {
+                    state = coordinator.state
+                }
+            }
+        }
+    }
+    DisposableEffect(windowId) {
+        onDispose { coordinator.unregisterWindow(windowId, halfSize) }
+    }
+    LaunchedEffect(windowId, activeTargets) {
+        coordinator.updateTargets(windowId, activeTargets)
+    }
+    val ownership = petOverlayOwnership(coordinator.activeWindowId, windowId, dragCaptureActive)
+    val visualState = if (ownership.renders) coordinator.state else state
+    LaunchedEffect(windowId, coordinator.activeWindowId) {
+        if (coordinator.activeWindowId == windowId) state = coordinator.state
+    }
+    val displayPosition = if (viewport.valid) {
+        val clamped = viewport.clamp(visualState.position, halfSize)
+        if (visualState.mode == PetMode.FALL || visualState.mode == PetMode.FLING) {
+            PetPoint(clamped.x, visualState.position.y)
+        } else clamped
+    } else visualState.position
+    // Animate between fixed simulation ticks. Dragging remains synchronous so
+    // the pointer never lags behind the sprite while the user holds it.
+    val animatedX by animateFloatAsState(
+        targetValue = displayPosition.x,
+        animationSpec = tween(PET_TICK_MS.toInt(), easing = LinearEasing),
+        label = "bingzi-x",
+    )
+    val animatedY by animateFloatAsState(
+        targetValue = displayPosition.y,
+        animationSpec = tween(PET_TICK_MS.toInt(), easing = LinearEasing),
+        label = "bingzi-y",
+    )
     LaunchedEffect(navigationKey) {
-        state = onNavigation(state)
+        val navigationChanged = previousNavigationKey != navigationKey
+        previousNavigationKey = navigationKey
+        if (navigationChanged && coordinator.activeWindowId == windowId) {
+            state = onNavigation(coordinator.state)
+            coordinator.updateState(state)
+        }
     }
     LaunchedEffect(completedDrag) {
         if (completedDrag > 0) {
@@ -392,68 +488,114 @@ private fun PetOverlay(
             onPointerActiveChange(false)
         }
     }
-    LaunchedEffect(viewport, activeTargets, halfSize) {
+    LaunchedEffect(windowId) {
         while (true) {
             delay(PET_TICK_MS)
-            if (viewport.width > 0f && viewport.height > 0f) {
+            val currentViewport = latestViewport
+            val currentHalfSize = latestHalfSize
+            val currentScale = latestDensityScale
+            if (currentViewport.width > 0f && currentViewport.height > 0f) {
+                if (coordinator.activeWindowId != windowId) continue
+                state = coordinator.state
+                // Hand a fast fling to an adjacent host before the domain
+                // reducer applies its local wall restitution.  Without this
+                // predictive check a 16 ms tick can reflect the pet before
+                // the portal sees the outward velocity.
+                if (coordinator.migrateIfNeeded(
+                        windowId,
+                        currentHalfSize,
+                        lookaheadSeconds = PET_TICK_MS / 1_000f,
+                        fallUnitScale = currentScale,
+                    )
+                ) {
+                    state = coordinator.state
+                    continue
+                }
                 state = advancePet(
                     state = state,
-                    targets = activeTargets,
-                    viewport = viewport,
-                    halfSize = halfSize,
+                    targets = latestActiveTargets,
+                    viewport = currentViewport,
+                    halfSize = currentHalfSize,
                     step = PET_CRUISE_SPEED,
-                    fallUnitScale = density.density,
+                    fallUnitScale = currentScale,
                 )
+                coordinator.updateState(state)
             }
         }
     }
-    if (!visible || !viewport.valid) return
+    if ((!ownership.renders && !ownership.capturesGesture) || !viewport.valid) return
+    val renderedPosition = if (visualState.mode == PetMode.DRAGGING) {
+        displayPosition
+    } else {
+        PetPoint(animatedX, animatedY)
+    }
     Image(
         painter = painterResource(
-            if (state.facing == PetFacing.LEFT) R.drawable.bingzi_left else R.drawable.bingzi,
+            if (visualState.facing == PetFacing.LEFT) R.drawable.bingzi_left else R.drawable.bingzi,
         ),
-        contentDescription = "冰子",
+        contentDescription = if (ownership.renders) "冰子" else null,
         modifier = Modifier
             .zIndex(20f)
+            .alpha(if (ownership.renders) 1f else 0f)
             .offset {
                 IntOffset(
-                    (displayPosition.x - halfSize).roundToInt(),
-                    (displayPosition.y - halfSize).roundToInt(),
+                    (if (visualState.mode == PetMode.DRAGGING) displayPosition.x - halfSize else animatedX - halfSize).roundToInt(),
+                    (if (visualState.mode == PetMode.DRAGGING) displayPosition.y - halfSize else animatedY - halfSize).roundToInt(),
                 )
             }
             .size(petSize)
-            .scale(if (state.mode == PetMode.FALL) 0.96f else 1f)
+            .scale(if (visualState.mode == PetMode.FALL) 0.96f else 1f)
             .pointerInput(viewport, halfSize) {
                 detectDragGestures(
                     onDragStart = { localOffset ->
                         onPointerActiveChange(true)
-                        state = beginDrag(
-                            state.copy(position = displayPosition),
+                        dragCaptureActive = true
+                        val dragged = beginDrag(
+                            coordinator.state.copy(position = renderedPosition),
                             PetPoint(
-                                displayPosition.x - halfSize + localOffset.x,
-                                displayPosition.y - halfSize + localOffset.y,
+                                renderedPosition.x - halfSize + localOffset.x,
+                                renderedPosition.y - halfSize + localOffset.y,
                             ),
                         )
+                        state = dragged
+                        coordinator.updateState(dragged)
+                        dragSamples = listOf(PetMotionSample(SystemClock.uptimeMillis(), samplePosition(dragged.position)))
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        val grabOffset = state.dragOffset ?: PetPoint(0f, 0f)
-                        state = moveDrag(
-                            state,
-                            PetPoint(
-                                state.position.x + grabOffset.x + dragAmount.x,
-                                state.position.y + grabOffset.y + dragAmount.y,
-                            ),
-                            viewport,
-                            halfSize,
-                        )
+                        coordinator.dragActiveBy(PetPoint(dragAmount.x, dragAmount.y), halfSize)
+                        state = coordinator.state
+                        if (state.mode == PetMode.DRAGGING) {
+                            dragSamples = (dragSamples + PetMotionSample(SystemClock.uptimeMillis(), samplePosition(state.position)))
+                                .takeLast(32)
+                        }
                     },
                     onDragEnd = {
-                        state = releaseDrag(state, activeTargets, viewport, halfSize)
+                        val releaseVelocity = estimateReleaseVelocity(dragSamples, nowMs = SystemClock.uptimeMillis())
+                        state = releaseDrag(
+                            coordinator.state,
+                            coordinator.targetsFor(),
+                            coordinator.viewportFor(),
+                            halfSize,
+                            releaseVelocity,
+                        )
+                        coordinator.updateState(state)
+                        dragSamples = emptyList()
+                        dragCaptureActive = false
                         completedDrag += 1
                     },
                     onDragCancel = {
-                        state = releaseDrag(state, activeTargets, viewport, halfSize)
+                        val releaseVelocity = estimateReleaseVelocity(dragSamples, nowMs = SystemClock.uptimeMillis())
+                        state = releaseDrag(
+                            coordinator.state,
+                            coordinator.targetsFor(),
+                            coordinator.viewportFor(),
+                            halfSize,
+                            releaseVelocity,
+                        )
+                        coordinator.updateState(state)
+                        dragSamples = emptyList()
+                        dragCaptureActive = false
                         completedDrag += 1
                     },
                 )
@@ -507,6 +649,7 @@ private fun PetAlertDialog(
         onDispose { registerPetWindow(petWindowKey, false) }
     }
     Dialog(onDismissRequest = onDismissRequest) {
+        val hostView = LocalView.current
         CompositionLocalProvider(
             LocalOpenWordBubble provides openWordBubble,
             LocalDismissWordBubbles provides dismissWordBubbles,
@@ -518,7 +661,7 @@ private fun PetAlertDialog(
                     .widthIn(min = 280.dp, max = 560.dp)
                     .heightIn(min = PET_DISPLAY_SIZE_DP.dp)
                     .onGloballyPositioned { coordinates ->
-                        val bounds = coordinates.boundsInWindow()
+                        val bounds = coordinates.boundsOnScreen(hostView)
                         viewportOrigin = PetPoint(bounds.left, bounds.top)
                         viewport = PetRect(
                             0f,
@@ -587,10 +730,12 @@ private fun PetAlertDialog(
                 }
                 PetOverlay(
                     viewport = viewport,
+                    windowId = petId,
+                    windowOrigin = viewportOrigin,
                     targets = localizePetTargets(targets.values.toList(), viewportOrigin, viewport),
-                    navigationKey = petWindowKey,
+                    navigationKey = LocalPetNavigationKey.current,
                     onPointerActiveChange = {},
-                    visible = isPetWindowVisible(petWindowStack, petWindowKey),
+                    preferredActive = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
             }
         }
@@ -614,6 +759,10 @@ fun LexiTrackApp(
     var petViewport by remember { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
     var petViewportOrigin by remember { mutableStateOf(PetPoint(0f, 0f)) }
     var petPointerActive by remember { mutableStateOf(false) }
+    val hostView = LocalView.current
+    val petWindowCoordinator = remember {
+        PetWindowCoordinator()
+    }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
         bubbleHost = openWordBubbleHost(bubbleHost, definition, depth, anchor)
@@ -645,12 +794,14 @@ fun LexiTrackApp(
             LocalRegisterPetTarget provides registerPetTarget,
             LocalRegisterPetWindow provides registerPetWindow,
             LocalPetWindowStack provides petWindows,
+            LocalPetWindowCoordinator provides petWindowCoordinator,
+            LocalPetNavigationKey provides state.section,
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { coordinates ->
-                        val bounds = coordinates.boundsInWindow()
+                        val bounds = coordinates.boundsOnScreen(hostView)
                         petViewportOrigin = PetPoint(bounds.left, bounds.top)
                         petViewport = PetRect(0f, 0f, coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
                     }
@@ -770,10 +921,12 @@ fun LexiTrackApp(
 
         PetOverlay(
             viewport = petViewport,
+            windowId = "main",
+            windowOrigin = petViewportOrigin,
             targets = localizePetTargets(petTargets.values.toList(), petViewportOrigin, petViewport),
             navigationKey = state.section,
             onPointerActiveChange = { petPointerActive = it },
-            visible = isMainPetWindowVisible(petWindows),
+            preferredActive = isMainPetWindowVisible(petWindows),
         )
 
         state.importReport?.let { report ->
@@ -901,6 +1054,7 @@ private fun InteractiveSentence(
     val openBubble = LocalOpenWordBubble.current
     val depth = LocalBubbleDepth.current
     val dismissBubbles = LocalDismissWordBubbles.current
+    val hostView = LocalView.current
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var bounds by remember { mutableStateOf(IntRect.Zero) }
     val annotated = remember(text, color) {
@@ -920,7 +1074,7 @@ private fun InteractiveSentence(
         text = annotated,
         modifier = modifier
             .onGloballyPositioned { coordinates ->
-                val rect = coordinates.boundsInWindow()
+                val rect = coordinates.boundsOnScreen(hostView)
                 bounds = IntRect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt())
             }
             .pointerInput(annotated, bounds) {

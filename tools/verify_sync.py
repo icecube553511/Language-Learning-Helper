@@ -199,13 +199,15 @@ def verify_pet_contract() -> None:
         fail("Pet companion geometry semantics differ")
     if payload.get("targetKinds") != ["control", "surface", "chart", "edge"]:
         fail("Pet companion target kinds differ")
-    if payload.get("modes") != ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging"]:
+    if payload.get("modes") != ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging", "fling"]:
         fail("Pet companion modes differ")
     if payload.get("facings") != ["left", "right"]:
         fail("Pet companion facing values differ")
     if payload.get("motion") != {
         "acceleration": 0.5,
         "cruiseSpeed": 4.0,
+        "curveAcceleration": 0.25,
+        "curveAccelerationPolicy": "constant-independent-of-requested-step",
         "idleTicks": 24,
         "fallTimeStepSeconds": 0.016,
         "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -228,6 +230,12 @@ def verify_pet_contract() -> None:
         "fallTargetRefresh": "every-tick-nearest-current-x-ray",
         "landingImpactVelocity": "continuous-contact",
         "syntheticBottomLanding": "same-impact-and-bounce-rules",
+        "flingGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "flingHorizontalRestitution": 0.72,
+        "maxSubstepSeconds": 0.004,
+        "maxSubstepsPerTick": 8,
+        "highSpeedInterpolation": "linear-between-simulated-substeps",
+        "flingChartContactDirection": "contact-equation-derivative-nonnegative",
     }:
         fail("Pet companion motion semantics differ")
     drag = payload.get("drag", {})
@@ -240,8 +248,27 @@ def verify_pet_contract() -> None:
         "suspendedReleaseMode": "fall",
         "suspendedReleaseTarget": None,
         "suspendedReleaseVerticalVelocity": 0.0,
+        "releaseVelocitySampleWindowMs": 120,
+        "minimumFlingSpeed": 90.0,
+        "maxFlingSpeed": 1800.0,
+        "velocityEstimator": "weighted-terminal-linear-regression",
+        "flingMode": "fling",
+        "flingCollision": "continuous-contact",
     }:
         fail("Pet companion drag semantics differ")
+    if payload.get("windowMigration") != {
+        "enabled": True,
+        "entryDirections": ["left", "right", "top"],
+        "dragEntry": True,
+        "boundaryPolicy": "portal-at-viewport-edge",
+        "candidateSelection": "earliest-motion-intersection",
+        "rayIntersection": "continuous-parametric-aabb",
+        "rayMissPolicy": "reject",
+        "overlapPolicy": "autonomous-reject-explicit-drag-allow",
+        "positionMapping": "full-display-inner-edge",
+        "stateTransfer": "preserve-velocity-and-grab-offset",
+    }:
+        fail("Pet companion window migration semantics differ")
     if payload.get("transientOnly") is not True:
         fail("Pet companion state must be transient")
     expected_behaviors = {
@@ -291,6 +318,14 @@ def verify_pet_contract() -> None:
         if missing:
             fail(f"Pet companion behavior vector {name} is missing fields: {sorted(missing)}")
     behavior_by_name = {item["name"]: item for item in payload["behaviorVectors"]}
+    chart_reversal = behavior_by_name["chart-path-reverses"]
+    if (
+        float(chart_reversal["step"]) != 30.0
+        or int(chart_reversal["ticks"]) != 20
+        or chart_reversal.get("expectedMode") != "slide"
+        or chart_reversal.get("mustReverse") is not True
+    ):
+        fail("Pet companion chart reversal vector must cover fixed curve acceleration and post-corner motion")
 
     def support_intersects_fall_ray(target: dict, position: list, pet_half_size: float) -> bool:
         rect = target["rect"]
@@ -463,6 +498,43 @@ def verify_pet_contract() -> None:
     if drag_release is None or drag_release.get("releaseOnLegalSupport") is not True or drag_release.get("expectedMode") != "idle":
         fail("Drag release on legal support must enter IDLE")
 
+    drag_velocity_vectors = payload.get("dragVelocityVectors", [])
+    if {item.get("name") for item in drag_velocity_vectors} != {
+        "terminal-tangent-estimate-uses-constrained-centres",
+        "insufficient-drag-samples-do-not-fling",
+    }:
+        fail("Pet companion drag velocity vectors differ")
+    for vector in drag_velocity_vectors:
+        samples = vector.get("samples", [])
+        timestamps = [float(sample.get("timeMs", -1)) for sample in samples]
+        if timestamps != sorted(timestamps) or any(later <= earlier for earlier, later in zip(timestamps, timestamps[1:])):
+            fail(f"Pet companion drag velocity vector {vector['name']} has non-monotonic samples")
+        expected_velocity = [float(value) for value in vector["expectedVelocity"]]
+        if len(samples) < 2:
+            if expected_velocity != [0.0, 0.0] or vector.get("expectedMode") != "fall":
+                fail("Insufficient drag samples must produce a targetless FALL")
+            continue
+        # For a linear trajectory, weighted terminal regression must recover
+        # the same tangent exactly regardless of the positive time weights.
+        first = samples[0]
+        last = samples[-1]
+        elapsed_ms = float(last["timeMs"]) - float(first["timeMs"])
+        if elapsed_ms <= 0:
+            fail(f"Pet companion drag velocity vector {vector['name']} has zero duration")
+        expected_from_endpoints = [
+            (float(last["position"][axis]) - float(first["position"][axis])) * 1000.0 / elapsed_ms
+            for axis in (0, 1)
+        ]
+        if any(not math.isclose(actual, wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(expected_velocity, expected_from_endpoints)):
+            fail(f"Pet companion drag velocity vector {vector['name']} has the wrong terminal tangent")
+        if vector.get("expectedMode") != "fling" or not math.isclose(
+            float(vector.get("expectedSpeed", math.hypot(*expected_velocity))),
+            math.hypot(*expected_velocity),
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        ):
+            fail(f"Pet companion drag velocity vector {vector['name']} does not enter FLING")
+
     motion = payload["motion"]
     dt = float(motion["fallTimeStepSeconds"])
     gravity = float(motion["fallGravityLogicalUnitsPerSecondSquared"])
@@ -504,6 +576,323 @@ def verify_pet_contract() -> None:
         second_differences = [later - earlier for earlier, later in zip(displacements, displacements[1:])]
         if any(not math.isclose(value, expected_second_difference, rel_tol=1e-12, abs_tol=1e-9) for value in second_differences):
             fail(f"Pet companion physics vector {vector['name']} does not follow square-time displacement")
+
+    # Fling vectors share the same constant-acceleration convention as FALL,
+    # but retain both velocity components and may start with an upward y speed.
+    fling_vectors = payload.get("flingPhysicsVectors", [])
+    expected_fling_names = {
+        "diagonal-release-preserves-tangent-and-gravity",
+        "release-speed-vector-is-limited-proportionally",
+        "high-speed-tick-uses-deterministic-substeps",
+        "sloped-chart-contact-uses-relative-descending-derivative",
+    }
+    if {item.get("name") for item in fling_vectors} != expected_fling_names:
+        fail("Pet companion fling physics vectors differ")
+    for vector in fling_vectors:
+        if vector["name"] == "diagonal-release-preserves-tangent-and-gravity":
+            position = vector["releasePosition"]
+            velocity = vector["releaseVelocity"]
+            step = float(vector["stepSeconds"])
+            gravity = float(motion["flingGravityLogicalUnitsPerSecondSquared"])
+            previous = [float(position[0]), float(position[1])]
+            for sample in vector["samples"]:
+                tick = int(sample["tick"])
+                elapsed = tick * step
+                expected = [
+                    float(position[0]) + float(velocity[0]) * elapsed,
+                    float(position[1]) + float(velocity[1]) * elapsed + 0.5 * gravity * elapsed * elapsed,
+                ]
+                expected_velocity = [float(velocity[0]), float(velocity[1]) + gravity * elapsed]
+                observed = [float(value) for value in sample["expectedPosition"]]
+                observed_velocity = [float(value) for value in sample["expectedVelocity"]]
+                if any(not math.isclose(actual, wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(observed, expected)):
+                    fail(f"Pet companion fling vector {vector['name']} has the wrong position at tick {tick}")
+                if any(not math.isclose(actual, wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(observed_velocity, expected_velocity)):
+                    fail(f"Pet companion fling vector {vector['name']} has the wrong velocity at tick {tick}")
+                # The first samples intentionally remain on the upward arc;
+                # this catches accidental sign inversion of vx/vy.
+                if observed[0] <= previous[0] or (tick == 1 and observed[1] >= previous[1]):
+                    fail(f"Pet companion fling vector {vector['name']} loses its terminal tangent")
+                previous = observed
+        elif vector["name"] == "release-speed-vector-is-limited-proportionally":
+            release = [float(value) for value in vector["releaseVelocity"]]
+            maximum = float(vector["maxFlingSpeed"])
+            magnitude = math.hypot(*release)
+            expected = [component * maximum / magnitude for component in release]
+            observed = [float(value) for value in vector["expectedVelocity"]]
+            if not math.isclose(float(vector["expectedMagnitude"]), maximum, rel_tol=1e-12, abs_tol=1e-9):
+                fail("Pet companion fling speed limit vector has the wrong magnitude")
+            if any(not math.isclose(actual, wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(observed, expected)):
+                fail("Pet companion fling speed must be limited proportionally")
+        elif vector["name"] == "high-speed-tick-uses-deterministic-substeps":
+            step = float(vector["stepSeconds"])
+            max_substep = float(vector["maxSubstepSeconds"])
+            max_substeps = int(vector["maxSubstepsPerTick"])
+            expected_substeps = math.ceil(step / max_substep)
+            if expected_substeps > max_substeps or int(vector["expectedSubsteps"]) != expected_substeps:
+                fail("Pet companion high-speed tick exceeds deterministic substep budget")
+            initial = vector.get("initialPosition", [0.0, 0.0])
+            velocity = vector["releaseVelocity"]
+            gravity = float(motion["flingGravityLogicalUnitsPerSecondSquared"])
+            expected_position = [
+                float(initial[0]) + float(velocity[0]) * step,
+                float(initial[1]) + float(velocity[1]) * step + 0.5 * gravity * step * step,
+            ]
+            expected_velocity = [float(velocity[0]), float(velocity[1]) + gravity * step]
+            if any(not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(vector["expectedPosition"], expected_position)):
+                fail("Pet companion high-speed substep position differs from closed-form integration")
+            if any(not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(vector["expectedVelocity"], expected_velocity)):
+                fail("Pet companion high-speed substep velocity differs from closed-form integration")
+        else:
+            initial = [float(value) for value in vector["initialPosition"]]
+            velocity = [float(value) for value in vector["releaseVelocity"]]
+            segment = [[float(value) for value in point] for point in vector["chartSegment"]]
+            if len(segment) != 2 or len(segment[0]) != 2 or len(segment[1]) != 2:
+                fail("Pet companion sloped-chart vector must contain one finite segment")
+            delta_x = segment[1][0] - segment[0][0]
+            if abs(delta_x) <= 1e-12:
+                fail("Pet companion sloped-chart derivative vector cannot use a vertical segment")
+            slope = (segment[1][1] - segment[0][1]) / delta_x
+            intercept = segment[0][1] - slope * segment[0][0]
+            step = float(vector["stepSeconds"])
+            gravity = float(motion["flingGravityLogicalUnitsPerSecondSquared"])
+            a = 0.5 * gravity
+            b = velocity[1] - slope * velocity[0]
+            c = initial[1] - slope * initial[0] - intercept
+            discriminant = b * b - 4.0 * a * c
+            if discriminant < 0.0:
+                fail("Pet companion sloped-chart vector has no contact root")
+            root_discriminant = math.sqrt(discriminant)
+            roots = sorted(((-b - root_discriminant) / (2.0 * a), (-b + root_discriminant) / (2.0 * a)))
+            valid_contacts = []
+            minimum_x, maximum_x = sorted((segment[0][0], segment[1][0]))
+            for root in roots:
+                if root < -1e-12 or root > step + 1e-12:
+                    continue
+                root = max(0.0, min(step, root))
+                contact_x = initial[0] + velocity[0] * root
+                derivative = b + 2.0 * a * root
+                if minimum_x - 1e-9 <= contact_x <= maximum_x + 1e-9 and derivative >= -1e-9:
+                    valid_contacts.append((root, contact_x, derivative))
+            if not valid_contacts:
+                fail("Pet companion sloped-chart vector has no relative descending contact")
+            contact_time, contact_x, derivative = valid_contacts[0]
+            contact_y = initial[1] + velocity[1] * contact_time + a * contact_time * contact_time
+            world_vertical_velocity = velocity[1] + gravity * contact_time
+            if vector.get("contactEquation") != "y(t)-(slope*x(t)+intercept)" or vector.get("contactDirection") != "derivative-nonnegative":
+                fail("Pet companion sloped-chart vector uses the wrong contact equation")
+            if not math.isclose(float(vector["expectedContactTimeSeconds"]), contact_time, rel_tol=1e-12, abs_tol=1e-12):
+                fail("Pet companion sloped-chart vector has the wrong contact time")
+            expected_contact = [float(value) for value in vector["expectedContactPoint"]]
+            if not math.isclose(expected_contact[0], contact_x, rel_tol=1e-12, abs_tol=1e-9) or not math.isclose(expected_contact[1], contact_y, rel_tol=1e-12, abs_tol=1e-9):
+                fail("Pet companion sloped-chart vector has the wrong contact point")
+            if not math.isclose(contact_y, slope * contact_x + intercept, rel_tol=1e-12, abs_tol=1e-9):
+                fail("Pet companion sloped-chart contact does not lie on the segment")
+            if not math.isclose(float(vector["expectedWorldVerticalVelocity"]), world_vertical_velocity, rel_tol=1e-12, abs_tol=1e-9):
+                fail("Pet companion sloped-chart vector has the wrong world vertical velocity")
+            if not math.isclose(float(vector["expectedContactEquationDerivative"]), derivative, rel_tol=1e-12, abs_tol=1e-9):
+                fail("Pet companion sloped-chart vector has the wrong contact derivative")
+            if (
+                world_vertical_velocity >= 0.0
+                or derivative <= 0.0
+                or vector.get("expectedWorldVerticalDirection") != "up"
+                or vector.get("expectedRelativeDirection") != "descending"
+            ):
+                fail("Pet companion sloped-chart vector does not distinguish world and relative direction")
+            expected_mode = "bounce" if abs(world_vertical_velocity) >= float(motion["hardLandingSpeed"]) else "idle"
+            if vector.get("expectedMode") != expected_mode:
+                fail("Pet companion sloped-chart vector has the wrong landing mode")
+
+    curve_vectors = payload.get("curveMotionVectors", [])
+    if {item.get("name") for item in curve_vectors} != {
+        "curve-slide-accelerates-from-rest",
+        "curve-slide-retains-budget-across-corner",
+        "curve-slide-step-override-keeps-contract-acceleration-and-corner-budget",
+    }:
+        fail("Pet companion curve motion vectors differ")
+    for vector in curve_vectors:
+        acceleration = float(vector["curveAcceleration"])
+        cruise = float(vector["cruiseSpeed"])
+        if not math.isclose(acceleration, float(motion["curveAcceleration"]), rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Pet companion curve vector {vector['name']} changes the contract acceleration")
+        if vector["name"] == "curve-slide-accelerates-from-rest":
+            speeds = [float(value) for value in vector["tickSpeeds"]]
+            expected = [min(cruise, acceleration * (index + 1)) for index in range(len(speeds))]
+            if any(not math.isclose(actual, wanted, rel_tol=1e-12, abs_tol=1e-9) for actual, wanted in zip(speeds, expected)):
+                fail("Pet companion chart sliding must accelerate from rest")
+            if vector.get("expectedMode") != "slide" or any(later <= earlier for earlier, later in zip(speeds, speeds[1:])):
+                fail("Pet companion chart sliding acceleration vector is invalid")
+        elif vector["name"] == "curve-slide-retains-budget-across-corner":
+            current = float(vector["initialMovementSpeed"])
+            speed = min(cruise, current + acceleration)
+            budget = speed
+            remaining = float(vector["remainingToCorner"])
+            expected_budget = budget - remaining
+            if (
+                not math.isclose(float(vector["expectedSpeedAfterCorner"]), speed, rel_tol=1e-12, abs_tol=1e-9)
+                or not math.isclose(float(vector["expectedBudgetAfterCorner"]), expected_budget, rel_tol=1e-12, abs_tol=1e-9)
+                or expected_budget <= 0
+                or vector.get("expectedMode") != "slide"
+            ):
+                fail("Pet companion chart sliding must retain speed budget across corners")
+        else:
+            current = float(vector["initialMovementSpeed"])
+            requested_step = float(vector["requestedStep"])
+            if requested_step <= cruise:
+                fail("Pet companion curve step-invariance vector must exceed the normal cruise step")
+            speed = min(requested_step, current + acceleration)
+            remaining = float(vector["remainingToCorner"])
+            expected_budget = speed - remaining
+            if (
+                not math.isclose(float(vector["expectedSpeedAfterCorner"]), speed, rel_tol=1e-12, abs_tol=1e-9)
+                or not math.isclose(float(vector["expectedBudgetAfterCorner"]), expected_budget, rel_tol=1e-12, abs_tol=1e-9)
+                or expected_budget <= 0.0
+                or vector.get("expectedMode") != "slide"
+            ):
+                fail("Pet companion curve step override changes acceleration or loses corner budget")
+
+    migration_vectors = payload.get("windowMigrationVectors", [])
+    if {item.get("name") for item in migration_vectors} != {
+        "fling-exits-right-and-enters-neighbor",
+        "fall-enters-new-window-from-top",
+        "drag-crosses-left-into-new-window",
+    }:
+        fail("Pet companion window migration vectors differ")
+    for vector in migration_vectors:
+        source = vector["sourceWindow"]["rect"]
+        target = vector["targetWindow"]["rect"]
+        half = float(vector["petHalfSize"])
+        direction = vector["entryDirection"]
+        expected_host = vector["targetWindow"]["id"]
+        if vector.get("expectedHost") != expected_host or vector.get("preserveGrabOffset") is not True:
+            fail(f"Pet companion migration vector {vector['name']} loses host or grab state")
+        if direction == "left":
+            expected_x = half
+            if vector.get("sourceExitEdge") != "right" or vector.get("targetEntryEdge") != "left":
+                fail("Right-to-left pet window migration edges are inconsistent")
+        elif direction == "right":
+            expected_x = float(target[2]) - half
+            if vector.get("sourceExitEdge") != "left" or vector.get("targetEntryEdge") != "right":
+                fail("Left-to-right pet window migration edges are inconsistent")
+        elif direction == "top":
+            expected_x = min(
+                max(
+                    float(vector["positionInSource"][0]) - float(target[0]),
+                    half,
+                ),
+                float(target[2]) - half,
+            )
+            if vector.get("sourceExitEdge") != "bottom" or vector.get("targetEntryEdge") != "top":
+                fail("Top-entry pet window migration edges are inconsistent")
+        else:
+            fail(f"Pet companion migration vector {vector['name']} has an unknown direction")
+        observed = vector["expectedPositionInTarget"]
+        if not math.isclose(float(observed[0]), expected_x, rel_tol=1e-12, abs_tol=1e-9):
+            fail(f"Pet companion migration vector {vector['name']} maps the x coordinate incorrectly")
+        world_y = float(source[1]) + float(vector["positionInSource"][1])
+        if direction in {"left", "right"}:
+            expected_y = min(
+                max(world_y, float(target[1]) + half),
+                float(target[1]) + float(target[3]) - half,
+            ) - float(target[1])
+        else:
+            expected_y = -half if direction == "top" else half
+        if not math.isclose(float(observed[1]), expected_y, rel_tol=1e-12, abs_tol=1e-9):
+            fail(f"Pet companion migration vector {vector['name']} maps the y coordinate incorrectly")
+        expected_velocity = [float(value) for value in vector.get("velocity", [0.0, 0.0])]
+        observed_velocity = [float(value) for value in vector.get("expectedVelocity", [])]
+        if observed_velocity != expected_velocity:
+            fail(f"Pet companion migration vector {vector['name']} does not preserve velocity")
+        if direction == "top" and vector.get("expectedMode") != "fall":
+            fail("Top-entry pet migration must enter FALL")
+        if direction != "top" and vector.get("expectedMode") not in {"fling", "dragging"}:
+            fail("Horizontal pet migration must preserve active mode")
+
+    ray_vectors = payload.get("windowRayVectors", [])
+    if {item.get("name") for item in ray_vectors} != {
+        "gapped-diagonal-ray-rejects-near-miss-and-selects-first-hit",
+    }:
+        fail("Pet companion window motion-ray vectors differ")
+
+    def ray_rect_entry_time(origin: list[float], velocity: list[float], rect: list[float], limit: float) -> float | None:
+        near = 0.0
+        far = limit
+        for point, component, minimum, size in (
+            (origin[0], velocity[0], rect[0], rect[2]),
+            (origin[1], velocity[1], rect[1], rect[3]),
+        ):
+            maximum = minimum + size
+            if size <= 0.0:
+                return None
+            if abs(component) <= 1e-12:
+                if point < minimum or point > maximum:
+                    return None
+                continue
+            first = (minimum - point) / component
+            second = (maximum - point) / component
+            axis_near, axis_far = sorted((first, second))
+            near = max(near, axis_near)
+            far = min(far, axis_far)
+            if near > far + 1e-12:
+                return None
+        if far < -1e-12 or near > limit + 1e-12:
+            return None
+        return max(0.0, min(limit, near))
+
+    for vector in ray_vectors:
+        source = [float(value) for value in vector["sourceWindow"]["rect"]]
+        origin = [float(value) for value in vector["rayOriginWorld"]]
+        velocity = [float(value) for value in vector["velocity"]]
+        limit = float(vector["lookaheadSeconds"])
+        source_right = source[0] + source[2]
+        if (
+            len(source) != 4
+            or len(origin) != 2
+            or len(velocity) != 2
+            or not all(math.isfinite(value) for value in (*source, *origin, *velocity, limit))
+            or not math.isclose(origin[0], source_right, rel_tol=0.0, abs_tol=1e-9)
+            or velocity[0] <= 0.0
+            or velocity[1] == 0.0
+            or limit <= 0.0
+        ):
+            fail("Pet companion window motion-ray vector must start diagonally at the source edge")
+        intersections: list[tuple[float, int, str, list[float]]] = []
+        rejected: list[str] = []
+        candidates_by_id = {}
+        for candidate in vector.get("candidates", []):
+            candidate_id = candidate.get("id")
+            rect = [float(value) for value in candidate["rect"]]
+            if len(rect) != 4 or rect[0] <= source_right or candidate_id in candidates_by_id:
+                fail("Pet companion window motion-ray candidates must be unique and separated by a positive gap")
+            candidates_by_id[candidate_id] = rect
+            actual_time = ray_rect_entry_time(origin, velocity, rect, limit)
+            expected_time = candidate.get("expectedIntersectionTimeSeconds")
+            if expected_time is None:
+                if actual_time is not None:
+                    fail(f"Pet companion motion ray unexpectedly hits {candidate_id}")
+                rejected.append(candidate_id)
+            else:
+                expected_time = float(expected_time)
+                if actual_time is None or not math.isclose(actual_time, expected_time, rel_tol=1e-12, abs_tol=1e-12):
+                    fail(f"Pet companion motion ray has the wrong entry time for {candidate_id}")
+                intersections.append((actual_time, int(candidate.get("order", 0)), candidate_id, rect))
+        if not intersections:
+            fail("Pet companion window motion-ray vector has no eligible hit")
+        intersections.sort(key=lambda item: (item[0], item[1]))
+        hit_time, _, hit_id, hit_rect = intersections[0]
+        if rejected != vector.get("expectedRejected") or hit_id != vector.get("expectedHost"):
+            fail("Pet companion window motion ray does not reject misses before selecting the earliest hit")
+        if not math.isclose(hit_time, float(vector["expectedIntersectionTimeSeconds"]), rel_tol=1e-12, abs_tol=1e-12):
+            fail("Pet companion window motion ray selects the wrong intersection time")
+        hit_point = [origin[index] + velocity[index] * hit_time for index in (0, 1)]
+        expected_point = [float(value) for value in vector["expectedIntersectionPoint"]]
+        if any(not math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-9) for actual, expected in zip(hit_point, expected_point)):
+            fail("Pet companion window motion ray selects the wrong intersection point")
+        if vector.get("expectedEntryEdge") != "left" or not math.isclose(hit_point[0], hit_rect[0], rel_tol=0.0, abs_tol=1e-9):
+            fail("Pet companion window motion ray enters through the wrong edge")
+        miss_rect = candidates_by_id.get(vector["expectedRejected"][0])
+        if miss_rect is None or not (miss_rect[1] <= origin[1] <= miss_rect[1] + miss_rect[3]) or miss_rect[0] >= hit_rect[0]:
+            fail("Pet companion motion-ray miss vector does not distinguish projection scoring from ray intersection")
 
     expected_window_vectors = {
         "word-bubble-retains-main-pet": {
@@ -654,6 +1043,8 @@ def verify_pet_contract() -> None:
         "tickMs": 16,
         "displaySize": 112,
         "idleTicks": 24,
+        "curveAcceleration": 0.25,
+        "curveAccelerationPolicy": "constant-independent-of-requested-step",
         "targetKinds": ["control", "surface", "chart", "edge"],
         "navigationTransition": "drop-to-nearest",
         "supportSide": "upper",
@@ -671,6 +1062,12 @@ def verify_pet_contract() -> None:
         "fallTargetRefresh": "every-tick-nearest-current-x-ray",
         "landingImpactVelocity": "continuous-contact",
         "syntheticBottomLanding": "same-impact-and-bounce-rules",
+        "flingGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "flingHorizontalRestitution": 0.72,
+        "maxSubstepSeconds": 0.004,
+        "maxSubstepsPerTick": 8,
+        "highSpeedInterpolation": "linear-between-simulated-substeps",
+        "flingChartContactDirection": "contact-equation-derivative-nonnegative",
         "hardLandingBounces": 2,
         "bounceDecay": 0.55,
         "horizontalFlip": True,
@@ -686,8 +1083,26 @@ def verify_pet_contract() -> None:
         "activeWindowSelection": "focus-map-host-z-order",
         "windowDeactivationFallback": "next-mapped-host-z-order",
         "platformManagedUiExcluded": True,
+        "windowMigration": {
+            "enabled": True,
+            "entryDirections": ["left", "right", "top"],
+            "dragEntry": True,
+            "boundaryPolicy": "portal-at-viewport-edge",
+            "candidateSelection": "earliest-motion-intersection",
+            "rayIntersection": "continuous-parametric-aabb",
+            "rayMissPolicy": "reject",
+            "overlapPolicy": "autonomous-reject-explicit-drag-allow",
+            "positionMapping": "full-display-inner-edge",
+            "stateTransfer": "preserve-velocity-and-grab-offset",
+        },
         "dragPlacement": "preserve-grab-offset",
         "suspendedDragRelease": "fall",
+        "releaseVelocitySampleWindowMs": 120,
+        "minimumFlingSpeed": 90.0,
+        "maxFlingSpeed": 1800.0,
+        "velocityEstimator": "weighted-terminal-linear-regression",
+        "flingMode": "fling",
+        "flingCollision": "continuous-contact",
         "transientOnly": True,
     }:
         fail("Parity manifest does not declare transient Bingzi state")

@@ -16,8 +16,20 @@ PET_TICK_MS = 16
 PET_DISPLAY_SIZE = 112
 MOTION_ACCELERATION = 0.5
 CRUISE_SPEED = 4.0
+# Chart motion intentionally accelerates more gently than ordinary flying.
+# Keep the legacy ``MOTION_ACCELERATION`` value for controls and expose the
+# contract value separately so existing callers retain their tuning.
+CURVE_ACCELERATION = 0.25
+CURVE_MOTION_ACCELERATION = CURVE_ACCELERATION
 FALL_TIME_STEP_SECONDS = PET_TICK_MS / 1000.0
 FALL_GRAVITY = 2148.4375
+FLING_GRAVITY = FALL_GRAVITY
+FLING_HORIZONTAL_RESTITUTION = 0.72
+MAX_SUBSTEP_SECONDS = 0.004
+MAX_SUBSTEPS_PER_TICK = 8
+RELEASE_VELOCITY_SAMPLE_WINDOW_MS = 120
+MINIMUM_FLING_SPEED = 90.0
+MAX_FLING_SPEED = 1800.0
 MAX_FALL_SPEED = None
 HARD_LANDING_SPEED = 437.5
 BOUNCE_COUNT = 2
@@ -26,6 +38,19 @@ BOUNCE_DECAY = 0.55
 CENTER_BIAS_WEIGHT = 0.65
 EDGE_PENALTY_RATIO = 0.15
 IDLE_TICKS = 24
+
+# Cross-platform constant aliases (the Android domain uses the ``PET_*``
+# spelling; retaining both avoids platform adapters having to special-case
+# imports).
+PET_CURVE_ACCELERATION = CURVE_ACCELERATION
+PET_CURVE_MOTION_ACCELERATION = CURVE_MOTION_ACCELERATION
+PET_FLING_GRAVITY = FLING_GRAVITY
+PET_FLING_HORIZONTAL_RESTITUTION = FLING_HORIZONTAL_RESTITUTION
+PET_MAX_SUBSTEP_SECONDS = MAX_SUBSTEP_SECONDS
+PET_MAX_SUBSTEPS_PER_TICK = MAX_SUBSTEPS_PER_TICK
+PET_RELEASE_VELOCITY_SAMPLE_WINDOW_MS = RELEASE_VELOCITY_SAMPLE_WINDOW_MS
+PET_MINIMUM_FLING_SPEED = MINIMUM_FLING_SPEED
+PET_MAX_FLING_SPEED = MAX_FLING_SPEED
 
 _VIEWPORT_BOTTOM_TARGET_ID = "__viewport-bottom__"
 
@@ -38,6 +63,7 @@ class PetMode(str, Enum):
     FALL = "fall"
     BOUNCE = "bounce"
     DRAGGING = "dragging"
+    FLING = "fling"
 
 
 class PetFacing(str, Enum):
@@ -166,10 +192,15 @@ class PetTarget:
 
     def support_point(self, point: PetPoint, pet_size: float = 0.0) -> PetPoint:
         if self.kind == PetTargetKind.CHART and self.path:
-            return min(self.shifted_path(pet_size), key=lambda sample: math.hypot(
-                point.x - sample.x,
-                point.y - sample.y,
-            ))
+            path = self.shifted_path(pet_size)
+            if len(path) == 1:
+                return path[0]
+            # A chart is a polyline, so its legal support includes every
+            # point along each segment, not only the sampled vertices.
+            return min(
+                (_closest_point_on_segment(point, start, end) for start, end in zip(path, path[1:])),
+                key=lambda sample: math.hypot(point.x - sample.x, point.y - sample.y),
+            )
         start, end = self.support_segment(point, pet_size)
         if math.isclose(start.x, end.x, abs_tol=1e-6):
             low, high = sorted((start.y, end.y))
@@ -180,6 +211,18 @@ class PetTarget:
     def distance_to(self, point: PetPoint, pet_size: float = 0.0) -> float:
         support = self.support_point(point, pet_size)
         return math.hypot(point.x - support.x, point.y - support.y)
+
+
+def _closest_point_on_segment(point: PetPoint, start: PetPoint, end: PetPoint) -> PetPoint:
+    """Project ``point`` onto a finite segment, including its endpoints."""
+    dx = end.x - start.x
+    dy = end.y - start.y
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 1e-12:
+        return start
+    ratio = ((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared
+    ratio = min(1.0, max(0.0, ratio))
+    return PetPoint(start.x + dx * ratio, start.y + dy * ratio)
 
 
 @dataclass(frozen=True)
@@ -196,6 +239,44 @@ class PetState:
     vertical_velocity: float = 0.0
     bounces_remaining: int = 0
     facing: PetFacing = PetFacing.RIGHT
+    drag_offset: PetPoint | None = None
+    # ``horizontal_velocity`` is non-zero only for a user fling.  Keeping it
+    # beside the existing vertical component preserves compatibility with the
+    # original reducer while making the two-dimensional projectile explicit.
+    horizontal_velocity: float = 0.0
+
+    @property
+    def velocity_x(self) -> float:
+        """Alias used by presentation adapters and cross-platform tests."""
+        return self.horizontal_velocity
+
+    @property
+    def velocity_y(self) -> float:
+        return self.vertical_velocity
+
+    @property
+    def velocityX(self) -> float:  # noqa: N802 - cross-platform contract alias
+        return self.horizontal_velocity
+
+    @property
+    def velocityY(self) -> float:  # noqa: N802 - cross-platform contract alias
+        return self.vertical_velocity
+
+    @property
+    def velocity(self) -> PetPoint:
+        return PetPoint(self.horizontal_velocity, self.vertical_velocity)
+
+
+@dataclass(frozen=True)
+class PetMotionSample:
+    """A constrained pet-centre sample captured during a drag."""
+
+    timestamp_ms: float
+    position: PetPoint
+
+
+PetDragSample = PetMotionSample
+PetVelocitySample = PetMotionSample
 
 
 def _facing_after_move(previous: PetPoint, current: PetPoint, facing: PetFacing) -> PetFacing:
@@ -204,6 +285,136 @@ def _facing_after_move(previous: PetPoint, current: PetPoint, facing: PetFacing)
     if current.x > previous.x + 1e-6:
         return PetFacing.RIGHT
     return facing
+
+
+def _coerce_velocity(value: PetPoint | Sequence[float] | None) -> PetPoint:
+    """Normalize public velocity inputs without leaking mutable containers."""
+    if value is None:
+        return PetPoint(0.0, 0.0)
+    if isinstance(value, PetPoint):
+        return PetPoint(float(value.x), float(value.y))
+    try:
+        x, y = value
+        return PetPoint(float(x), float(y))
+    except (TypeError, ValueError):
+        return PetPoint(0.0, 0.0)
+
+
+def limit_fling_velocity(
+    velocity: PetPoint | Sequence[float],
+    maximum: float = MAX_FLING_SPEED,
+) -> PetPoint:
+    """Limit a fling vector proportionally, preserving its tangent direction."""
+    vector = _coerce_velocity(velocity)
+    if not (math.isfinite(vector.x) and math.isfinite(vector.y)):
+        return PetPoint(0.0, 0.0)
+    try:
+        maximum = float(maximum)
+    except (TypeError, ValueError):
+        maximum = MAX_FLING_SPEED
+    if not math.isfinite(maximum):
+        maximum = MAX_FLING_SPEED if maximum > 0 else 0.0
+    maximum = max(0.0, maximum)
+    magnitude = math.hypot(vector.x, vector.y)
+    if not math.isfinite(magnitude):
+        return PetPoint(0.0, 0.0)
+    if magnitude <= maximum or magnitude <= 1e-9:
+        return vector
+    scale = maximum / magnitude
+    return PetPoint(vector.x * scale, vector.y * scale)
+
+
+def _sample_parts(sample) -> tuple[float, PetPoint] | None:
+    """Accept ``(timestamp, point)`` samples and the convenient reversed form."""
+    if isinstance(sample, PetMotionSample):
+        return float(sample.timestamp_ms), sample.position
+    if isinstance(sample, dict):
+        timestamp = sample.get(
+            "timeMs",
+            sample.get("timestampMs", sample.get("timestamp_ms", sample.get("timestamp"))),
+        )
+        position = sample.get("position")
+        if timestamp is None or position is None:
+            return None
+        try:
+            if isinstance(position, PetPoint):
+                return float(timestamp), position
+            return float(timestamp), PetPoint(float(position[0]), float(position[1]))
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+    try:
+        first, second = sample
+    except (TypeError, ValueError):
+        return None
+    if isinstance(second, PetPoint):
+        try:
+            return float(first), second
+        except (TypeError, ValueError):
+            return None
+    if isinstance(first, PetPoint):
+        try:
+            return float(second), first
+        except (TypeError, ValueError):
+            return None
+    try:
+        x, y = second
+        return float(first), PetPoint(float(x), float(y))
+    except (TypeError, ValueError):
+        return None
+
+
+def estimate_release_velocity(
+    samples: Iterable[object],
+    *,
+    now_ms: float | None = None,
+    window_ms: float = RELEASE_VELOCITY_SAMPLE_WINDOW_MS,
+    nowMs: float | None = None,  # noqa: N803 - contract spelling
+    windowMs: float | None = None,  # noqa: N803 - contract spelling
+) -> PetPoint:
+    """Estimate the terminal two-dimensional drag velocity.
+
+    Samples are expected to contain monotonic millisecond timestamps and the
+    *constrained* pet centre.  A weighted least-squares slope gives the latest
+    samples more influence while remaining stable when Tk emits duplicate
+    motion events.  The result is expressed in logical units per second.
+    """
+    if now_ms is None:
+        now_ms = nowMs
+    if windowMs is not None:
+        window_ms = windowMs
+    parsed = [part for sample in samples if (part := _sample_parts(sample)) is not None]
+    if len(parsed) < 2:
+        return PetPoint(0.0, 0.0)
+    parsed.sort(key=lambda item: item[0])
+    end_ms = float(now_ms) if now_ms is not None else parsed[-1][0]
+    cutoff = end_ms - max(0.0, float(window_ms))
+    recent = [item for item in parsed if item[0] >= cutoff and item[0] <= end_ms + 1e-6]
+    if len(recent) < 2:
+        recent = parsed[-2:]
+    origin = recent[0][0]
+    times = [(timestamp - origin) / 1000.0 for timestamp, _ in recent]
+    # Remove zero/negative intervals; they do not carry velocity information.
+    if times[-1] <= 1e-9:
+        return PetPoint(0.0, 0.0)
+    # Weights rise smoothly from .25 to 1.0 over the selected window.
+    span = max(times[-1], 1e-9)
+    weights = [0.25 + 0.75 * (value / span) for value in times]
+    weight_total = sum(weights)
+    mean_t = sum(weight * value for weight, value in zip(weights, times)) / weight_total
+    denominator = sum(weight * (value - mean_t) ** 2 for weight, value in zip(weights, times))
+    if denominator <= 1e-12:
+        return PetPoint(0.0, 0.0)
+    mean_x = sum(weight * point.x for weight, (_, point) in zip(weights, recent)) / weight_total
+    mean_y = sum(weight * point.y for weight, (_, point) in zip(weights, recent)) / weight_total
+    slope_x = sum(weight * (time - mean_t) * (point.x - mean_x) for weight, time, (_, point) in zip(weights, times, recent)) / denominator
+    slope_y = sum(weight * (time - mean_t) * (point.y - mean_y) for weight, time, (_, point) in zip(weights, times, recent)) / denominator
+    return PetPoint(slope_x, slope_y)
+
+
+# Short aliases make the reducer convenient for platform adapters and golden
+# tests without introducing another platform-specific velocity estimator.
+estimate_drag_velocity = estimate_release_velocity
+estimateReleaseVelocity = estimate_release_velocity
 
 
 def nearest_pet_target(
@@ -249,12 +460,18 @@ def on_navigation(state: PetState) -> PetState:
         movement_speed=0.0,
         vertical_velocity=0.0,
         bounces_remaining=0,
+        horizontal_velocity=0.0,
+        drag_offset=None,
     )
 
 
 def begin_drag(state: PetState, pointer: PetPoint) -> PetState:
+    offset = PetPoint(float(pointer.x) - state.position.x, float(pointer.y) - state.position.y)
     return replace(
         state,
+        # Keep the historical reducer contract: the first pointer event is
+        # already the constrained centre supplied by presentation.  The
+        # offset is retained for callers that pass the raw grab point.
         position=pointer,
         mode=PetMode.DRAGGING,
         target_id=None,
@@ -266,6 +483,8 @@ def begin_drag(state: PetState, pointer: PetPoint) -> PetState:
         movement_speed=0.0,
         vertical_velocity=0.0,
         bounces_remaining=0,
+        horizontal_velocity=0.0,
+        drag_offset=offset,
     )
 
 
@@ -277,7 +496,11 @@ def move_drag(
 ) -> PetState:
     if state.mode != PetMode.DRAGGING:
         return state
-    position = viewport.clamp(pointer, max(0.0, pet_size))
+    offset = state.drag_offset or PetPoint(0.0, 0.0)
+    position = viewport.clamp(
+        PetPoint(pointer.x - offset.x, pointer.y - offset.y),
+        max(0.0, pet_size),
+    )
     return replace(
         state,
         position=position,
@@ -290,8 +513,35 @@ def release_drag(
     targets: Iterable[PetTarget] = (),
     viewport: PetRect | None = None,
     pet_size: float = 0.0,
+    release_velocity: PetPoint | Sequence[float] | None = None,
+    *,
+    velocity: PetPoint | Sequence[float] | None = None,
+    releaseVelocity: PetPoint | Sequence[float] | None = None,  # noqa: N803
 ) -> PetState:
     margin = max(0.0, pet_size)
+    if release_velocity is None:
+        release_velocity = velocity if velocity is not None else releaseVelocity
+    fling_velocity = limit_fling_velocity(release_velocity or PetPoint(0.0, 0.0))
+    fling_speed = math.hypot(fling_velocity.x, fling_velocity.y)
+    if fling_speed >= MINIMUM_FLING_SPEED:
+        # A release vector takes precedence over support snapping.  This is
+        # what makes a diagonal throw continue as a projectile even when the
+        # pointer happens to leave the pet on a card edge.
+        return replace(
+            state,
+            mode=PetMode.FLING,
+            target_id=None,
+            idle_ticks_remaining=0,
+            path_index=0,
+            path_direction=1,
+            roll_corners=0,
+            avoid_target_id=None,
+            movement_speed=0.0,
+            vertical_velocity=fling_velocity.y,
+            bounces_remaining=0,
+            horizontal_velocity=fling_velocity.x,
+            drag_offset=None,
+        )
     support = next((
         target for target in targets
         if target.valid and _is_on_support(target, state.position, margin, viewport)
@@ -308,6 +558,8 @@ def release_drag(
         movement_speed=0.0,
         vertical_velocity=0.0,
         bounces_remaining=0,
+        horizontal_velocity=0.0,
+        drag_offset=None,
     )
 
 
@@ -364,9 +616,14 @@ def _is_on_support(
         points = target.shifted_path(pet_size)
         if viewport is not None:
             points = tuple(viewport.clamp(point, pet_size) for point in points)
+        if len(points) == 1:
+            return math.hypot(position.x - points[0].x, position.y - points[0].y) <= 1e-6
         return any(
-            math.hypot(position.x - point.x, position.y - point.y) <= 1e-6
-            for point in points
+            math.hypot(
+                position.x - (closest := _closest_point_on_segment(position, start, end)).x,
+                position.y - closest.y,
+            ) <= 1e-6
+            for start, end in zip(points, points[1:])
         )
     start, end = target.support_segment(position, pet_size)
     if viewport is not None:
@@ -452,9 +709,15 @@ def _eased_distance(current_speed: float, remaining: float, cruise_speed: float)
 def _accelerated_path_distance(current_speed: float, remaining: float, cruise_speed: float) -> tuple[float, float]:
     if remaining <= 1e-6:
         return 0.0, 0.0
-    next_speed = min(max(0.0, cruise_speed), max(0.0, current_speed) + MOTION_ACCELERATION)
+    # ``cruise_speed`` is only a cap.  The shared contract fixes chart
+    # acceleration independently so a larger legacy step cannot change the
+    # curve dynamics.
+    acceleration = CURVE_ACCELERATION
+    accelerated = min(max(0.0, cruise_speed), max(0.0, current_speed) + acceleration)
+    braking_limit = math.sqrt(2.0 * acceleration * remaining)
+    next_speed = min(accelerated, braking_limit)
     distance = min(remaining, next_speed)
-    if remaining - distance <= 1.0:
+    if remaining - distance <= acceleration:
         return remaining, 0.0
     return distance, next_speed
 
@@ -501,7 +764,7 @@ def _move_along_path(
     index: int,
     direction: int,
     distance: float,
-) -> tuple[PetPoint, int, bool]:
+) -> tuple[PetPoint, int, bool, float]:
     endpoint = len(path) - 1 if direction > 0 else 0
     cursor = min(max(index, 0), len(path) - 1)
     current = position
@@ -511,14 +774,14 @@ def _move_along_path(
         segment = math.hypot(goal.x - current.x, goal.y - current.y)
         if segment > remaining_step + 1e-6:
             current, _ = _step_towards(current, goal, remaining_step)
-            return current, cursor, False
+            return current, cursor, False, 0.0
         current = goal
         remaining_step = max(0.0, remaining_step - segment)
         if cursor == endpoint:
-            return current, cursor, True
+            return current, cursor, True, remaining_step
         cursor += direction
         if remaining_step <= 1e-6:
-            return current, cursor, False
+            return current, cursor, False, 0.0
 
 
 def _gravity_step(vertical_velocity: float, *, allow_upward: bool = False) -> tuple[float, float]:
@@ -531,7 +794,10 @@ def _gravity_step(vertical_velocity: float, *, allow_upward: bool = False) -> tu
 
 
 def _fall_impact_velocity(vertical_velocity: float, distance: float) -> float:
-    initial_velocity = max(0.0, vertical_velocity)
+    # Preserve the signed incoming velocity for a portal entry that is still
+    # travelling upward.  Energy uses v^2, so the eventual contact speed is
+    # correct even when the pet first rises before falling back down.
+    initial_velocity = float(vertical_velocity)
     return math.sqrt(max(
         0.0,
         initial_velocity * initial_velocity + 2.0 * FALL_GRAVITY * max(0.0, distance),
@@ -595,6 +861,7 @@ def _advance_bounce_at(
                 vertical_velocity=-(FIRST_BOUNCE_SPEED * BOUNCE_DECAY),
                 bounces_remaining=state.bounces_remaining - 1,
                 movement_speed=0.0,
+                horizontal_velocity=0.0,
             )
         return replace(
             state,
@@ -605,6 +872,7 @@ def _advance_bounce_at(
             movement_speed=0.0,
             vertical_velocity=0.0,
             bounces_remaining=0,
+            horizontal_velocity=0.0,
         )
     position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
     return replace(
@@ -614,6 +882,7 @@ def _advance_bounce_at(
         target_id=bounce_target_id,
         vertical_velocity=velocity,
         movement_speed=0.0,
+        horizontal_velocity=0.0,
     )
 
 
@@ -632,6 +901,7 @@ def _land_at_viewport_bottom(
             movement_speed=0.0,
             vertical_velocity=-FIRST_BOUNCE_SPEED,
             bounces_remaining=BOUNCE_COUNT,
+            horizontal_velocity=0.0,
         )
     return replace(
         state,
@@ -642,6 +912,7 @@ def _land_at_viewport_bottom(
         movement_speed=0.0,
         vertical_velocity=0.0,
         bounces_remaining=0,
+        horizontal_velocity=0.0,
     )
 
 
@@ -650,22 +921,30 @@ def _advance_free_fall(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    clamped = viewport.clamp(state.position, pet_size)
-    bottom = viewport.clamp(PetPoint(clamped.x, viewport.bottom), pet_size)
-    if clamped.y >= bottom.y - 1e-6:
+    # A FALL may enter through a neighbouring window's top portal with its
+    # centre above the local viewport.  Preserve that y coordinate while
+    # constraining only x; clamping the whole point here would make the first
+    # frame teleport to the top edge instead of following the gravity arc.
+    clamped_x = viewport.clamp(PetPoint(state.position.x, viewport.top + pet_size), pet_size).x
+    current = PetPoint(clamped_x, state.position.y)
+    bottom = viewport.clamp(PetPoint(clamped_x, viewport.bottom), pet_size)
+    if current.y >= bottom.y - 1e-6:
         return _land_at_viewport_bottom(state, bottom, state.vertical_velocity)
-    displacement, velocity = _gravity_step(state.vertical_velocity)
-    next_y = min(bottom.y, clamped.y + displacement)
+    displacement, velocity = _gravity_step(
+        state.vertical_velocity,
+        allow_upward=state.position.y < viewport.top - 1e-6,
+    )
+    next_y = min(bottom.y, current.y + displacement)
     landed = math.isclose(next_y, bottom.y, abs_tol=1e-6)
     if landed:
         impact_velocity = _fall_impact_velocity(
             state.vertical_velocity,
-            bottom.y - clamped.y,
+            bottom.y - current.y,
         )
         return _land_at_viewport_bottom(state, bottom, impact_velocity)
     return replace(
         state,
-        position=PetPoint(bottom.x, next_y),
+        position=PetPoint(clamped_x, next_y),
         mode=PetMode.FALL,
         target_id=None,
         idle_ticks_remaining=0,
@@ -688,10 +967,19 @@ def _advance_fall(
     if landing.y < state.position.y - 1e-6:
         return _advance_free_fall(replace(state, target_id=None), viewport, pet_size)
     if not math.isclose(landing.y, state.position.y, abs_tol=1e-6):
-        displacement, velocity = _gravity_step(state.vertical_velocity)
+        displacement, velocity = _gravity_step(
+            state.vertical_velocity,
+            allow_upward=state.position.y < viewport.top - 1e-6,
+        )
         next_y = state.position.y + displacement
         if next_y < landing.y:
-            position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
+            # Keep y outside the top edge while entering through a portal;
+            # only x is constrained until the projectile crosses the viewport.
+            constrained_x = viewport.clamp(
+                PetPoint(state.position.x, viewport.top + pet_size),
+                pet_size,
+            ).x
+            position = PetPoint(constrained_x, next_y)
             return replace(
                 state,
                 position=position,
@@ -702,14 +990,10 @@ def _advance_fall(
             )
     position = viewport.clamp(PetPoint(state.position.x, landing.y), pet_size)
     if not math.isclose(position.x, landing.x, abs_tol=1e-6):
-        return replace(
-            state,
-            position=position,
-            mode=PetMode.FLY,
-            target_id=target.id,
-            movement_speed=0.0,
-            vertical_velocity=0.0,
-        )
+        # FALL is a vertical-only state.  A clipped/shifted support that no
+        # longer intersects the current x-ray is not a legal landing target;
+        # keep x fixed and continue toward the synthetic viewport floor.
+        return _advance_free_fall(replace(state, target_id=None), viewport, pet_size)
     impact_velocity = _fall_impact_velocity(
         state.vertical_velocity,
         landing.y - state.position.y,
@@ -723,6 +1007,7 @@ def _advance_fall(
             movement_speed=0.0,
             vertical_velocity=-FIRST_BOUNCE_SPEED,
             bounces_remaining=BOUNCE_COUNT,
+            horizontal_velocity=0.0,
         )
     return replace(
         state,
@@ -733,7 +1018,382 @@ def _advance_fall(
         movement_speed=0.0,
         vertical_velocity=0.0,
         bounces_remaining=0,
+        horizontal_velocity=0.0,
     )
+
+
+def _quadratic_positive_root(a: float, b: float, c: float, limit: float) -> float | None:
+    """Return the earliest root in ``[0, limit]`` for a contact equation."""
+    epsilon = 1e-9
+    if abs(a) <= epsilon:
+        if abs(b) <= epsilon:
+            return 0.0 if abs(c) <= epsilon else None
+        root = -c / b
+        return root if -epsilon <= root <= limit + epsilon else None
+    discriminant = b * b - 4.0 * a * c
+    if discriminant < -epsilon:
+        return None
+    root_discriminant = math.sqrt(max(0.0, discriminant))
+    roots = sorted(((-b - root_discriminant) / (2.0 * a), (-b + root_discriminant) / (2.0 * a)))
+    for root in roots:
+        if -epsilon <= root <= limit + epsilon:
+            return max(0.0, min(limit, root))
+    return None
+
+
+def _quadratic_descending_root(a: float, b: float, c: float, limit: float) -> float | None:
+    """Find the first root reached while moving from the positive side.
+
+    Fling support collision can begin below a support while the pet is still
+    travelling upward (for example after entering through a neighbouring
+    window's lower edge).  Selecting only the first quadratic root would
+    discard the later descending crossing.  This helper evaluates both roots
+    and requires the signed velocity at contact to be non-negative, with the
+    trajectory just before contact on/above the support.
+    """
+    epsilon = 1e-9
+    if abs(a) <= epsilon:
+        if abs(b) <= epsilon:
+            return 0.0 if abs(c) <= epsilon else None
+        roots = [-c / b]
+    else:
+        discriminant = b * b - 4.0 * a * c
+        if discriminant < -epsilon:
+            return None
+        root_discriminant = math.sqrt(max(0.0, discriminant))
+        roots = [
+            (-b - root_discriminant) / (2.0 * a),
+            (-b + root_discriminant) / (2.0 * a),
+        ]
+    for root in sorted(roots):
+        if root < -epsilon or root > limit + epsilon:
+            continue
+        root = max(0.0, min(limit, root))
+        contact_velocity = b + 2.0 * a * root
+        if contact_velocity < -1e-6:
+            continue
+        if root > 1e-7:
+            before = root - min(root, 1e-7)
+            if a * before * before + b * before + c > 1e-5:
+                continue
+        elif c > 1e-5:
+            continue
+        return root
+    return None
+
+
+def _fling_target_contact_time(
+    position: PetPoint,
+    horizontal_velocity: float,
+    vertical_velocity: float,
+    target: PetTarget,
+    pet_size: float,
+    duration: float,
+) -> float | None:
+    """Find the first descending intersection with a horizontal support."""
+    if target.kind == PetTargetKind.CHART and target.path:
+        # Curves are represented by short line strips.  A conservative sample
+        # over the strip endpoints prevents an upward fling from snapping to a
+        # curve while still allowing a descending projectile to land on it.
+        path = target.shifted_path(pet_size)
+        candidates: list[float] = []
+        for start, end in zip(path, path[1:]):
+            minimum_x, maximum_x = sorted((start.x, end.x))
+            if abs(horizontal_velocity) <= 1e-9:
+                if not minimum_x - 1e-6 <= position.x <= maximum_x + 1e-6:
+                    continue
+                support_y = start.y + (end.y - start.y) * ((position.x - start.x) / (end.x - start.x)) if not math.isclose(end.x, start.x, abs_tol=1e-9) else min(start.y, end.y)
+                root = _quadratic_descending_root(0.5 * FLING_GRAVITY, vertical_velocity, position.y - support_y, duration)
+                if root is not None:
+                    candidates.append(root)
+                continue
+            # Solve against the line y = m*x + q, yielding one quadratic.
+            if math.isclose(end.x, start.x, abs_tol=1e-9):
+                continue
+            slope = (end.y - start.y) / (end.x - start.x)
+            intercept = start.y - slope * start.x
+            a = 0.5 * FLING_GRAVITY
+            b = vertical_velocity - slope * horizontal_velocity
+            c = position.y - slope * position.x - intercept
+            root = _quadratic_descending_root(a, b, c, duration)
+            if root is None:
+                continue
+            x_at = position.x + horizontal_velocity * root
+            if minimum_x - 1e-6 <= x_at <= maximum_x + 1e-6:
+                candidates.append(root)
+        return min(candidates, default=None)
+
+    start, end = target.support_segment(position, pet_size)
+    if not math.isclose(start.y, end.y, abs_tol=1e-6):
+        return None
+    support_y = start.y
+    minimum_x, maximum_x = sorted((start.x, end.x))
+    # An upward fling cannot hit an upper support; the root check below also
+    # handles a projectile that starts exactly on the support.
+    root = _quadratic_descending_root(
+        0.5 * FLING_GRAVITY,
+        vertical_velocity,
+        position.y - support_y,
+        duration,
+    )
+    if root is None:
+        return None
+    x_at = position.x + horizontal_velocity * root
+    if not minimum_x - 1e-6 <= x_at <= maximum_x + 1e-6:
+        return None
+    return root
+
+
+def _fling_tangent_support_exit_time(
+    position: PetPoint,
+    horizontal_velocity: float,
+    vertical_velocity: float,
+    target: PetTarget,
+    pet_size: float,
+) -> float | None:
+    """Return when a purely tangential fling leaves a horizontal support."""
+    if (
+        target.kind == PetTargetKind.CHART
+        or abs(vertical_velocity) > 1e-6
+        or abs(horizontal_velocity) <= 1e-9
+    ):
+        return None
+    start, end = target.support_segment(position, pet_size)
+    if not math.isclose(start.y, end.y, abs_tol=1e-6):
+        return None
+    if not math.isclose(position.y, start.y, abs_tol=1e-6):
+        return None
+    minimum_x, maximum_x = sorted((start.x, end.x))
+    if not minimum_x - 1e-6 <= position.x <= maximum_x + 1e-6:
+        return None
+    if horizontal_velocity > 0.0:
+        return max(0.0, (maximum_x - position.x) / horizontal_velocity)
+    return max(0.0, (minimum_x - position.x) / horizontal_velocity)
+
+
+def _advance_fling_substep(
+    state: PetState,
+    targets: Sequence[PetTarget],
+    viewport: PetRect,
+    pet_size: float,
+    duration: float,
+) -> PetState:
+    """Integrate one fling substep, resolving the earliest wall/support hit."""
+    position = state.position
+    vx = float(state.horizontal_velocity)
+    vy = float(state.vertical_velocity)
+    remaining = max(0.0, duration)
+    minimum_x = viewport.left + pet_size
+    maximum_x = max(minimum_x, viewport.right - pet_size)
+    minimum_y = viewport.top + pet_size
+    maximum_y = max(minimum_y, viewport.bottom - pet_size)
+
+    # A handful of iterations handles a very fast vector reflecting from a
+    # wall and then reaching a support in the same 16 ms simulation tick.
+    for _ in range(4):
+        if remaining <= 1e-9:
+            break
+        # A horizontal throw that starts exactly on a support is a resting
+        # contact, not a downward impact at t=0.  Keep the normal coordinate
+        # constrained while the pet travels to the support edge, then resume
+        # the regular projectile integration for the unused substep time.
+        tangent_exit_times = [
+            exit_time
+            for target in targets
+            if (
+                exit_time := _fling_tangent_support_exit_time(
+                    position,
+                    vx,
+                    vy,
+                    target,
+                    pet_size,
+                )
+            )
+            is not None
+        ]
+        if tangent_exit_times:
+            support_exit_time = max(tangent_exit_times)
+            wall_time = math.inf
+            wall_kind: str | None = None
+            if vx > 1e-9:
+                wall_time = max(0.0, (maximum_x - position.x) / vx)
+                wall_kind = "right"
+            elif vx < -1e-9:
+                wall_time = max(0.0, (minimum_x - position.x) / vx)
+                wall_kind = "left"
+            travel_time = min(remaining, support_exit_time, wall_time)
+            position = PetPoint(position.x + vx * travel_time, position.y)
+            remaining -= travel_time
+            if wall_kind is not None and wall_time <= support_exit_time + 1e-9 and wall_time <= travel_time + 1e-9:
+                vx = -vx * FLING_HORIZONTAL_RESTITUTION
+                position = PetPoint(
+                    (minimum_x + 1e-6) if wall_kind == "left" else (maximum_x - 1e-6),
+                    position.y,
+                )
+                continue
+            if support_exit_time <= travel_time + 1e-9:
+                position = PetPoint(
+                    position.x + math.copysign(1e-6, vx),
+                    position.y,
+                )
+                continue
+            break
+        candidates: list[tuple[float, str, PetTarget | None]] = []
+        if vx > 1e-9:
+            wall_time = (maximum_x - position.x) / vx
+            if wall_time <= remaining + 1e-9:
+                candidates.append((max(0.0, wall_time), "right", None))
+        elif vx < -1e-9:
+            wall_time = (minimum_x - position.x) / vx
+            if wall_time <= remaining + 1e-9:
+                candidates.append((max(0.0, wall_time), "left", None))
+
+        for target in targets:
+            contact = _fling_target_contact_time(position, vx, vy, target, pet_size, remaining)
+            if contact is not None:
+                candidates.append((contact, "target", target))
+
+        # Keep an upward fling inside the host.  The top edge is a reflective
+        # boundary, whereas a FALL entering from above intentionally bypasses
+        # this reducer until it crosses into the new host.
+        top_contact = _quadratic_positive_root(
+            0.5 * FLING_GRAVITY,
+            vy,
+            position.y - minimum_y,
+            remaining,
+        )
+        if top_contact is not None and vy + FLING_GRAVITY * top_contact <= 1e-6:
+            candidates.append((top_contact, "top", None))
+        elif position.y < minimum_y and vy < 0.0:
+            candidates.append((0.0, "top", None))
+        elif position.y <= minimum_y + 1e-6 and vy < 0.0:
+            candidates.append((0.0, "top", None))
+
+        # Synthetic viewport bottom is always a legal landing surface.
+        bottom_contact = _quadratic_positive_root(
+            0.5 * FLING_GRAVITY,
+            vy,
+            position.y - maximum_y,
+            remaining,
+        )
+        if bottom_contact is not None and vy + FLING_GRAVITY * bottom_contact >= -1e-6:
+            candidates.append((bottom_contact, "bottom", None))
+        elif position.y >= maximum_y - 1e-6 and vy >= 0.0:
+            # If a previous coarse update left the centre just outside the
+            # viewport, resolve the boundary at t=0 instead of integrating
+            # farther out with no quadratic root.
+            candidates.append((0.0, "bottom", None))
+
+        if not candidates:
+            position = PetPoint(
+                position.x + vx * remaining,
+                position.y + vy * remaining + 0.5 * FLING_GRAVITY * remaining * remaining,
+            )
+            vy += FLING_GRAVITY * remaining
+            remaining = 0.0
+            break
+
+        contact_time, kind, target = min(candidates, key=lambda item: item[0])
+        # Ignore a zero-time wall candidate after a reflection to avoid looping
+        # on the same edge; the small epsilon is below display precision.
+        if contact_time <= 1e-9 and kind in {"left", "right"}:
+            vx = -vx * FLING_HORIZONTAL_RESTITUTION
+            position = PetPoint(
+                (minimum_x + 1e-6) if kind == "left" else (maximum_x - 1e-6),
+                position.y,
+            )
+            continue
+        if contact_time <= 1e-9 and kind == "top":
+            position = PetPoint(position.x, minimum_y)
+            vy = abs(vy) * 0.5
+            continue
+        position = PetPoint(
+            position.x + vx * contact_time,
+            position.y + vy * contact_time + 0.5 * FLING_GRAVITY * contact_time * contact_time,
+        )
+        vy_at_contact = vy + FLING_GRAVITY * contact_time
+        remaining -= contact_time
+        if kind in {"left", "right"}:
+            position = PetPoint(minimum_x if kind == "left" else maximum_x, position.y)
+            vx = -vx * FLING_HORIZONTAL_RESTITUTION
+            vy = vy_at_contact
+            continue
+        if kind == "top":
+            position = PetPoint(position.x, minimum_y)
+            vy = abs(vy_at_contact) * 0.5
+            continue
+        if kind == "target" and target is not None:
+            position = viewport.clamp(position, pet_size)
+            if abs(vy_at_contact) >= HARD_LANDING_SPEED:
+                return replace(
+                    state,
+                    position=position,
+                    mode=PetMode.BOUNCE,
+                    target_id=target.id,
+                    movement_speed=0.0,
+                    vertical_velocity=-FIRST_BOUNCE_SPEED,
+                    bounces_remaining=BOUNCE_COUNT,
+                    horizontal_velocity=0.0,
+                )
+            return replace(
+                state,
+                position=position,
+                mode=PetMode.IDLE,
+                target_id=target.id,
+                idle_ticks_remaining=IDLE_TICKS,
+                movement_speed=0.0,
+                vertical_velocity=0.0,
+                bounces_remaining=0,
+                horizontal_velocity=0.0,
+            )
+        # Bottom impact follows the existing continuous-contact/bounce rules.
+        position = PetPoint(min(max(position.x, minimum_x), maximum_x), maximum_y)
+        return _land_at_viewport_bottom(
+            replace(state, horizontal_velocity=vx),
+            position,
+            abs(vy_at_contact),
+        )
+
+    # Keep the vertical coordinate un-clamped for a frame while entering from
+    # a neighbouring window's top edge.  Horizontal bounds remain strict so a
+    # presentation portal can detect the edge without rendering a partial
+    # sprite; the next host maps the centre to its inner edge.
+    position = PetPoint(
+        min(max(position.x, minimum_x), maximum_x),
+        position.y,
+    )
+    return replace(
+        state,
+        position=position,
+        mode=PetMode.FLING,
+        target_id=None,
+        idle_ticks_remaining=0,
+        movement_speed=0.0,
+        vertical_velocity=vy,
+        bounces_remaining=0,
+        horizontal_velocity=vx,
+        facing=_facing_after_move(state.position, position, state.facing),
+    )
+
+
+def _advance_fling(
+    state: PetState,
+    targets: Sequence[PetTarget],
+    viewport: PetRect,
+    pet_size: float,
+) -> PetState:
+    """Advance one fixed tick using deterministic high-speed substeps."""
+    substeps = min(
+        MAX_SUBSTEPS_PER_TICK,
+        max(1, int(math.ceil(FALL_TIME_STEP_SECONDS / MAX_SUBSTEP_SECONDS))),
+    )
+    step = FALL_TIME_STEP_SECONDS / substeps
+    current = state
+    for _ in range(substeps):
+        if current.mode != PetMode.FLING:
+            break
+        current = _advance_fling_substep(current, targets, viewport, pet_size, step)
+    return current
 
 
 def _advance_chart(
@@ -753,7 +1413,7 @@ def _advance_chart(
     )
     remaining = _path_distance_to_endpoint(state.position, path, index, direction)
     distance, movement_speed = _accelerated_path_distance(state.movement_speed, remaining, speed)
-    position, index, reached_endpoint = _move_along_path(
+    position, index, reached_endpoint, remaining_budget = _move_along_path(
         state.position,
         path,
         index,
@@ -780,6 +1440,22 @@ def _advance_chart(
             )
         direction *= -1
         index = max(0, min(len(path) - 1, index + direction))
+        # Keep consuming the current tick's distance after a corner.  The
+        # previous implementation reset the speed at every endpoint, which
+        # produced a visible hitch on the memory curve.
+        if remaining_budget > 1e-6 and len(path) > 1:
+            position, index, reached_again, remaining_budget = _move_along_path(
+                position,
+                path,
+                index,
+                direction,
+                remaining_budget,
+            )
+            if reached_again:
+                # A very short path can be crossed twice in one tick.  Stop at
+                # the second endpoint and let the next tick continue smoothly.
+                direction *= -1
+                index = max(0, min(len(path) - 1, index + direction))
         return replace(
             state,
             position=position,
@@ -788,7 +1464,7 @@ def _advance_chart(
             path_index=index,
             path_direction=direction,
             roll_corners=completed_ends,
-            movement_speed=0.0,
+            movement_speed=movement_speed,
             vertical_velocity=0.0,
             facing=facing,
         )
@@ -902,7 +1578,21 @@ def advance_pet(
     pet_size: float = 0.0,
 ) -> PetState:
     margin = max(0.0, pet_size)
-    state = replace(state, position=viewport.clamp(state.position, margin))
+    # Fling/fall states may intentionally start just outside a newly opened
+    # window (for example, entering through its top edge).  Clamp only the
+    # horizontal coordinate here; vertical integration below brings the pet
+    # into the viewport naturally.  Legacy modes retain the strict viewport
+    # clamp used by the original reducer.
+    if state.mode in {PetMode.FLING, PetMode.FALL, PetMode.BOUNCE}:
+        state = replace(
+            state,
+            position=PetPoint(
+                viewport.clamp(PetPoint(state.position.x, 0.0), margin).x,
+                state.position.y,
+            ),
+        )
+    else:
+        state = replace(state, position=viewport.clamp(state.position, margin))
     if state.mode == PetMode.DRAGGING:
         return state
     target_list = tuple(target for target in targets if target.valid)
@@ -928,6 +1618,10 @@ def advance_pet(
         )
     if state.mode == PetMode.BOUNCE and state.target_id == _VIEWPORT_BOTTOM_TARGET_ID:
         return _advance_viewport_bottom_bounce(state, viewport, margin)
+    if state.mode == PetMode.FLING:
+        # Fling integration is independent of support selection; supports are
+        # queried by the integrator solely for continuous collision detection.
+        return _advance_fling(state, target_list, viewport, margin)
     target = _target_for_state(state, target_list, margin, viewport)
     if target is None:
         if state.mode == PetMode.FALL:
@@ -969,19 +1663,44 @@ class PetCompanion:
         return self.state
 
     def drag_start(self, pointer: PetPoint) -> PetState:
+        # Presentation adapters pass an already offset-adjusted centre to the
+        # wrapper.  Keep the low-level reducer's raw-pointer offset available,
+        # but avoid applying it a second time in ``drag_move`` here.
         self.state = begin_drag(self.state, pointer)
+        self.state = replace(self.state, drag_offset=None)
         return self.state
 
     def drag_move(self, pointer: PetPoint, viewport: PetRect) -> PetState:
-        self.state = move_drag(self.state, pointer, viewport, self.pet_size)
+        # The wrapper receives a centre position from presentation (which
+        # already applied its grab offset); the low-level ``move_drag`` helper
+        # remains available for raw pointer semantics.
+        if self.state.mode == PetMode.DRAGGING:
+            position = viewport.clamp(pointer, max(0.0, self.pet_size))
+            self.state = replace(
+                self.state,
+                position=position,
+                facing=_facing_after_move(self.state.position, position, self.state.facing),
+            )
         return self.state
 
     def drag_release(
         self,
         targets: Iterable[PetTarget] = (),
         viewport: PetRect | None = None,
+        release_velocity: PetPoint | Sequence[float] | None = None,
+        *,
+        velocity: PetPoint | Sequence[float] | None = None,
+        releaseVelocity: PetPoint | Sequence[float] | None = None,  # noqa: N803
     ) -> PetState:
-        self.state = release_drag(self.state, targets, viewport, self.pet_size)
+        if release_velocity is None:
+            release_velocity = velocity if velocity is not None else releaseVelocity
+        self.state = release_drag(
+            self.state,
+            targets,
+            viewport,
+            self.pet_size,
+            release_velocity,
+        )
         return self.state
 
     def tick(self, targets: Iterable[PetTarget], viewport: PetRect) -> PetState:
@@ -1000,3 +1719,5 @@ onNavigation = on_navigation
 beginDrag = begin_drag
 moveDrag = move_drag
 releaseDrag = release_drag
+limitFlingVelocity = limit_fling_velocity
+estimateDragVelocity = estimate_release_velocity

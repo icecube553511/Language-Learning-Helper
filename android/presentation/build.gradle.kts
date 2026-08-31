@@ -1,4 +1,5 @@
 import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     id("com.android.library")
@@ -55,4 +56,12 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+}
+
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "pet.companion.golden.path",
+        rootProject.file("../shared/contracts/pet-companion-golden-v1.json").absolutePath,
+    )
 }

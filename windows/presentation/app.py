@@ -9,12 +9,14 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
+from typing import Callable
 
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
 from domain.pet_companion import (
     CRUISE_SPEED,
+    estimate_release_velocity,
     PET_DISPLAY_SIZE,
     PET_TICK_MS,
     PetCompanion,
@@ -25,6 +27,16 @@ from domain.pet_companion import (
     PetState,
     PetTarget,
     PetTargetKind,
+)
+from presentation.pet_windows import (
+    PetWindow,
+    interpolate_pet_position,
+    map_pet_entry,
+    portal_direction,
+    portal_ray_origin,
+    predicted_exit_times,
+    select_adjacent_window_hit,
+    state_at_exit,
 )
 from presentation.widgets import (
     DictationLoadingOverlay,
@@ -49,6 +61,7 @@ BLUE = "#3973C6"
 ORANGE = "#D9822B"
 RED = "#C94B50"
 BORDER = "#DDE3E8"
+PET_RENDER_FRAME_MS = 4
 PET_CONTROL_CLASSES = {
     "Button", "TButton", "Entry", "TEntry", "Checkbutton", "TCheckbutton",
     "Radiobutton", "TRadiobutton", "Scale", "TScale", "Spinbox", "TSpinbox",
@@ -91,7 +104,22 @@ class DialogPetRuntime:
     companion: PetCompanion
     overlay: PetOverlay
     drag_offset: PetPoint = PetPoint(0.0, 0.0)
+    drag_samples: list[tuple[float, PetPoint]] | None = None
     tick_after_id: str | None = None
+    render_after_ids: list[str] | None = None
+    last_rendered_position: PetPoint | None = None
+    render_generation: int = 0
+
+
+def _resolve_pet_release_host(
+    source_host: object,
+    active_host: object | None,
+    final_move: Callable[[], object | None],
+) -> tuple[object | None, bool]:
+    """Re-read pet ownership when the release event supplies the final move."""
+    if active_host is None or active_host is source_host:
+        return final_move(), True
+    return active_host, False
 
 
 def dictation_candidate_display(entry: VocabularyEntry) -> DictationCandidateDisplay:
@@ -300,7 +328,16 @@ class LexiTrackApp(tk.Tk):
         self._pet_targets: tuple[PetTarget, ...] = ()
         self._pet_refresh_after_id: str | None = None
         self._pet_tick_after_id: str | None = None
+        self._pet_render_after_ids: list[str] = []
+        self._pet_render_generation = 0
         self._pet_drag_offset = PetPoint(0.0, 0.0)
+        self._pet_drag_samples: list[tuple[float, PetPoint]] = []
+        self._pet_dragging = False
+        # The active drag host can be the root window or any dialog.  Keeping
+        # the common ``tk.Misc`` type lets a grabbed overlay route a release
+        # after the pet crosses back into the root host.
+        self._pet_drag_host_dialog: tk.Misc | None = None
+        self._pet_last_rendered_position: PetPoint | None = None
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
@@ -353,7 +390,12 @@ class LexiTrackApp(tk.Tk):
             self._pet_release,
             display_size=PET_DISPLAY_SIZE,
         )
-        self._pet_overlay.place(x=0, y=0)
+        self._place_pet_overlay(
+            self._pet_overlay,
+            self.pet_companion.state,
+            self.pet_companion.state.position,
+        )
+        self._pet_last_rendered_position = self.pet_companion.state.position
         self.bind("<Configure>", lambda _event: self._schedule_pet_target_refresh(), add="+")
         self._schedule_pet_target_refresh()
         self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
@@ -363,8 +405,109 @@ class LexiTrackApp(tk.Tk):
         if image is not None:
             overlay.set_image(image)
 
+    def _place_pet_overlay(
+        self,
+        overlay: PetOverlay,
+        state: PetState,
+        position: PetPoint,
+    ) -> None:
+        self._apply_pet_facing(overlay, state)
+        width, height = overlay.sprite_size
+        overlay.place(
+            x=round(position.x - width / 2),
+            y=round(position.y - height / 2),
+            width=width,
+            height=height,
+        )
+        overlay.lift()
+
+    def _cancel_main_pet_render(self) -> None:
+        self._pet_render_generation += 1
+        for callback_id in self._pet_render_after_ids:
+            try:
+                self.after_cancel(callback_id)
+            except tk.TclError:
+                pass
+        self._pet_render_after_ids = []
+
+    def _cancel_dialog_pet_render(
+        self,
+        dialog: tk.Misc,
+        runtime: DialogPetRuntime,
+    ) -> None:
+        runtime.render_generation += 1
+        for callback_id in runtime.render_after_ids or []:
+            try:
+                dialog.after_cancel(callback_id)
+            except tk.TclError:
+                pass
+        runtime.render_after_ids = []
+
+    def _schedule_main_pet_render(
+        self,
+        state: PetState,
+        previous_position: PetPoint,
+    ) -> None:
+        overlay = self._pet_overlay
+        if overlay is None:
+            return
+        self._cancel_main_pet_render()
+        start = self._pet_last_rendered_position or previous_position
+        target = state.position
+        if state.mode == PetMode.DRAGGING or start == target:
+            self._place_pet_overlay(overlay, state, target)
+            self._pet_last_rendered_position = target
+            return
+        generation = self._pet_render_generation
+        steps = max(1, (PET_TICK_MS + PET_RENDER_FRAME_MS - 1) // PET_RENDER_FRAME_MS)
+        for step in range(1, steps + 1):
+            elapsed_ms = min(PET_TICK_MS, step * PET_RENDER_FRAME_MS)
+
+            def render(elapsed: float = elapsed_ms) -> None:
+                if generation != self._pet_render_generation or self._dialog_pet_stack:
+                    return
+                position = interpolate_pet_position(start, target, elapsed, PET_TICK_MS)
+                self._place_pet_overlay(overlay, state, position)
+                self._pet_last_rendered_position = position
+
+            self._pet_render_after_ids.append(self.after(elapsed_ms, render))
+
+    def _schedule_dialog_pet_render(
+        self,
+        dialog: tk.Toplevel,
+        runtime: DialogPetRuntime,
+        state: PetState,
+        previous_position: PetPoint,
+    ) -> None:
+        self._cancel_dialog_pet_render(dialog, runtime)
+        start = runtime.last_rendered_position or previous_position
+        target = state.position
+        if state.mode == PetMode.DRAGGING or start == target:
+            self._place_pet_overlay(runtime.overlay, state, target)
+            runtime.last_rendered_position = target
+            return
+        generation = runtime.render_generation
+        steps = max(1, (PET_TICK_MS + PET_RENDER_FRAME_MS - 1) // PET_RENDER_FRAME_MS)
+        for step in range(1, steps + 1):
+            elapsed_ms = min(PET_TICK_MS, step * PET_RENDER_FRAME_MS)
+
+            def render(elapsed: float = elapsed_ms) -> None:
+                if (
+                    generation != runtime.render_generation
+                    or not self._dialog_pet_stack
+                    or self._dialog_pet_stack[-1] is not dialog
+                ):
+                    return
+                position = interpolate_pet_position(start, target, elapsed, PET_TICK_MS)
+                self._place_pet_overlay(runtime.overlay, state, position)
+                runtime.last_rendered_position = position
+
+            runtime.render_after_ids = runtime.render_after_ids or []
+            runtime.render_after_ids.append(dialog.after(elapsed_ms, render))
+
     def destroy(self) -> None:
         """Stop the transient pet window before tearing down the Tk root."""
+        self._cancel_main_pet_render()
         for dialog in tuple(self._dialog_pet_runtimes):
             self._detach_pet_from_dialog(dialog)
         for callback_id in (self._pet_refresh_after_id, self._pet_tick_after_id):
@@ -394,6 +537,264 @@ class LexiTrackApp(tk.Tk):
 
     def _pet_viewport(self) -> PetRect:
         return self._pet_viewport_for(self)
+
+    @staticmethod
+    def _pet_now_ms() -> float:
+        """Monotonic clock used exclusively for transient drag samples."""
+        return time.monotonic_ns() / 1_000_000.0
+
+    @staticmethod
+    def _record_pet_sample(
+        samples: list[tuple[float, PetPoint]],
+        timestamp_ms: float,
+        position: PetPoint,
+        *,
+        window: tk.Misc | None = None,
+    ) -> None:
+        """Append a constrained centre in screen coordinates.
+
+        Domain positions are local to the active host window.  Keeping the
+        drag history in screen space makes a cross-window handoff a pure
+        translation, so the terminal velocity estimator never interprets the
+        portal mapping as a large physical impulse.
+        """
+        if window is not None:
+            try:
+                position = PetPoint(
+                    float(window.winfo_rootx()) + float(position.x),
+                    float(window.winfo_rooty()) + float(position.y),
+                )
+            except tk.TclError:
+                pass
+        if samples and timestamp_ms < samples[-1][0]:
+            timestamp_ms = samples[-1][0]
+        samples.append((float(timestamp_ms), PetPoint(float(position.x), float(position.y))))
+        cutoff = timestamp_ms - 250.0
+        if len(samples) > 2:
+            samples[:] = [sample for sample in samples if sample[0] >= cutoff]
+
+    @staticmethod
+    def _grab_pet_overlay(overlay: PetOverlay | None) -> None:
+        """Keep drag events flowing while the pointer crosses Tk windows."""
+        if overlay is None:
+            return
+        try:
+            overlay.grab_pointer()
+        except tk.TclError:
+            # A window can be unmapped between the press event and this call;
+            # the regular motion/release handlers still provide a safe
+            # fallback when no active grab is available.
+            pass
+
+    @staticmethod
+    def _release_pet_overlay(overlay: PetOverlay | None) -> None:
+        if overlay is None:
+            return
+        try:
+            overlay.release_pointer()
+        except tk.TclError:
+            pass
+
+    def _window_screen_rect(self, window: tk.Misc) -> PetRect | None:
+        try:
+            window.update_idletasks()
+            return PetRect(
+                float(window.winfo_rootx()),
+                float(window.winfo_rooty()),
+                float(max(1, window.winfo_width())),
+                float(max(1, window.winfo_height())),
+            )
+        except tk.TclError:
+            return None
+
+    @staticmethod
+    def _window_is_mapped_viewable(window: tk.Misc) -> bool:
+        try:
+            return bool(
+                window.winfo_exists()
+                and window.winfo_ismapped()
+                and window.winfo_viewable()
+            )
+        except tk.TclError:
+            return False
+
+    def _pet_window_registry(self) -> tuple[PetWindow, ...]:
+        """Return mapped application windows in deterministic stack order."""
+        windows: list[PetWindow] = []
+        main_rect = self._window_screen_rect(self)
+        if main_rect is not None:
+            windows.append(PetWindow("main", main_rect, order=0))
+        for order, dialog in enumerate(self._dialog_pet_stack, 1):
+            runtime = self._dialog_pet_runtimes.get(dialog)
+            rect = self._window_screen_rect(dialog)
+            if runtime is None or rect is None:
+                continue
+            try:
+                windows.append(PetWindow(
+                    runtime.key,
+                    rect,
+                    order=order,
+                    mapped=bool(dialog.winfo_ismapped()),
+                    viewable=bool(dialog.winfo_viewable()),
+                ))
+            except tk.TclError:
+                continue
+        return tuple(windows)
+
+    def _migrate_state_between_windows(
+        self,
+        source_window: tk.Misc,
+        target_window: tk.Misc,
+        source_state: PetState,
+        *,
+        dragging: bool = False,
+        movement_direction: str | None = None,
+    ) -> PetState | None:
+        source_rect = self._window_screen_rect(source_window)
+        target_rect = self._window_screen_rect(target_window)
+        if source_rect is None or target_rect is None:
+            return None
+        # First establish a real geometric adjacency.  Inferring an entry
+        # edge solely from rectangle ordering and velocity can teleport an
+        # idle (or oppositely-moving) pet to the far edge when focus changes
+        # between neighbouring windows.  Treat it as a portal only while the
+        # user is dragging or the current trajectory points out through that
+        # shared edge; otherwise preserve the absolute screen position below.
+        # A ray-selected gapped target already has an authoritative movement
+        # edge even when the two rectangles have no tangent-axis overlap.
+        movement = movement_direction or portal_direction(source_rect, target_rect)
+        direction = None
+        if movement is not None:
+            outward_velocity = {
+                "right": source_state.horizontal_velocity > 1e-3,
+                "left": source_state.horizontal_velocity < -1e-3,
+                "bottom": source_state.vertical_velocity > 1e-3,
+                "top": source_state.vertical_velocity < -1e-3,
+            }[movement]
+            if dragging or outward_velocity:
+                direction = {
+                    "right": "left",
+                    "left": "right",
+                    "bottom": "top",
+                    "top": "bottom",
+                }[movement]
+        if direction is None:
+            # Overlapping or non-adjacent hosts are not a portal.  Preserve
+            # the absolute centre instead of inventing an edge entry, which
+            # would teleport the pet to a misleading side of a modal dialog.
+            world = PetPoint(
+                source_rect.left + source_state.position.x,
+                source_rect.top + source_state.position.y,
+            )
+            half = PET_DISPLAY_SIZE / 2.0
+            local_x = min(
+                max(world.x - target_rect.left, half),
+                max(half, target_rect.width - half),
+            )
+            local_y = min(
+                max(world.y - target_rect.top, half),
+                max(half, target_rect.height - half),
+            )
+            return replace(
+                source_state,
+                position=PetPoint(local_x, local_y),
+                target_id=None,
+                idle_ticks_remaining=0,
+                avoid_target_id=None,
+            )
+        entry = map_pet_entry(
+            source_rect,
+            target_rect,
+            source_state.position,
+            direction,
+            PET_DISPLAY_SIZE / 2.0,
+            mode=source_state.mode,
+            velocity=source_state.velocity,
+            facing=source_state.facing,
+            dragging=dragging,
+        )
+        return replace(
+            source_state,
+            position=entry.position,
+            mode=entry.mode,
+            target_id=None,
+            idle_ticks_remaining=0,
+            vertical_velocity=entry.velocity.y,
+            horizontal_velocity=entry.velocity.x,
+            facing=entry.facing,
+        )
+
+    def _adjacent_pet_window(
+        self,
+        source_window: tk.Misc,
+        source_position: PetPoint,
+        direction: str,
+        *,
+        allow_overlap: bool = False,
+        motion: PetPoint | None = None,
+        max_time: float | None = None,
+    ) -> tuple[tk.Misc, PetPoint] | None:
+        source_rect = self._window_screen_rect(source_window)
+        if source_rect is None:
+            return None
+        source_id = "main" if source_window is self else next(
+            (runtime.key for dialog, runtime in self._dialog_pet_runtimes.items() if dialog is source_window),
+            "",
+        )
+        source = PetWindow(source_id, source_rect, order=0)
+        candidates: list[PetWindow] = []
+        windows_by_id: dict[str, tk.Misc] = {"main": self}
+        # Dialog-owned pets can travel back into the root host.  The previous
+        # registry only enumerated dialogs, making this direction impossible
+        # even though the root id was present in ``windows_by_id``.
+        if source_window is not self:
+            main_rect = self._window_screen_rect(self)
+            if main_rect is not None:
+                try:
+                    candidates.append(PetWindow(
+                        "main",
+                        main_rect,
+                        order=0,
+                        mapped=bool(self.winfo_ismapped()),
+                        viewable=bool(self.winfo_viewable()),
+                    ))
+                except tk.TclError:
+                    pass
+        for order, dialog in enumerate(self._dialog_pet_runtimes, 1):
+            rect = self._window_screen_rect(dialog)
+            runtime = self._dialog_pet_runtimes.get(dialog)
+            if rect is None or runtime is None:
+                continue
+            try:
+                candidate = PetWindow(
+                    runtime.key,
+                    rect,
+                    order=order,
+                    mapped=bool(dialog.winfo_ismapped()),
+                    viewable=bool(dialog.winfo_viewable()),
+                )
+            except tk.TclError:
+                continue
+            candidates.append(candidate)
+            windows_by_id[candidate.id] = dialog
+        hit = select_adjacent_window_hit(
+            source,
+            candidates,
+            direction,
+            portal_ray_origin(source_position, direction, PET_DISPLAY_SIZE / 2.0),
+            allow_overlap=allow_overlap,
+            motion=motion,
+            max_time=max_time,
+        )
+        if hit is None:
+            return None
+        target_window = windows_by_id.get(hit.window.id)
+        if target_window is None:
+            return None
+        return target_window, PetPoint(
+            hit.intersection_world.x - source.rect.left,
+            hit.intersection_world.y - source.rect.top,
+        )
 
     def _pet_widget_target(
         self,
@@ -516,17 +917,13 @@ class LexiTrackApp(tk.Tk):
         if self._pet_overlay is not None:
             try:
                 if active_dialog is None:
+                    self._cancel_main_pet_render()
                     state = self.pet_companion.state
-                    self._apply_pet_facing(self._pet_overlay, state)
-                    width, height = self._pet_overlay.sprite_size
-                    self._pet_overlay.place(
-                        x=round(state.position.x - width / 2),
-                        y=round(state.position.y - height / 2),
-                        width=width,
-                        height=height,
-                    )
-                    self._pet_overlay.lift()
+                    self._place_pet_overlay(self._pet_overlay, state, state.position)
+                    self._pet_last_rendered_position = state.position
                 else:
+                    self._cancel_main_pet_render()
+                    self._pet_last_rendered_position = None
                     self._pet_overlay.withdraw()
             except tk.TclError:
                 pass
@@ -534,34 +931,401 @@ class LexiTrackApp(tk.Tk):
         for dialog, runtime in tuple(self._dialog_pet_runtimes.items()):
             try:
                 if dialog is active_dialog:
+                    self._cancel_dialog_pet_render(dialog, runtime)
                     state = runtime.companion.state
-                    self._apply_pet_facing(runtime.overlay, state)
-                    width, height = runtime.overlay.sprite_size
-                    runtime.overlay.place(
-                        x=round(state.position.x - width / 2),
-                        y=round(state.position.y - height / 2),
-                        width=width,
-                        height=height,
-                    )
-                    runtime.overlay.lift()
+                    self._place_pet_overlay(runtime.overlay, state, state.position)
+                    runtime.last_rendered_position = state.position
                 else:
+                    self._cancel_dialog_pet_render(dialog, runtime)
+                    runtime.last_rendered_position = None
                     runtime.overlay.withdraw()
             except tk.TclError:
                 pass
 
-    def _promote_dialog_pet(self, dialog: tk.Toplevel) -> None:
+    def _migrate_main_pet_to_dialog(
+        self,
+        dialog: tk.Toplevel,
+        *,
+        dragging: bool = False,
+        source_state: PetState | None = None,
+        movement_direction: str | None = None,
+    ) -> bool:
+        """Transfer the main companion state into a newly mapped dialog."""
+        if self._pet_overlay is None or dialog not in self._dialog_pet_runtimes:
+            return False
+        runtime = self._dialog_pet_runtimes[dialog]
+        active_state = source_state or self.pet_companion.state
+        migrated = self._migrate_state_between_windows(
+            self,
+            dialog,
+            active_state,
+            dragging=dragging,
+            movement_direction=movement_direction,
+        )
+        if migrated is None:
+            return False
+        runtime.companion.state = migrated
+        if dragging:
+            runtime.drag_samples = list(self._pet_drag_samples)
+            runtime.drag_offset = self._pet_drag_offset
+            self._release_pet_overlay(self._pet_overlay)
+        self._pet_overlay.withdraw()
+        self._promote_dialog_pet(dialog, synchronize=False)
+        if dragging:
+            self._grab_pet_overlay(runtime.overlay)
+        return True
+
+    def _migrate_dialog_pet_to_dialog(
+        self,
+        source: tk.Toplevel,
+        target: tk.Toplevel,
+        *,
+        dragging: bool = False,
+        source_state: PetState | None = None,
+        movement_direction: str | None = None,
+    ) -> bool:
+        source_runtime = self._dialog_pet_runtimes.get(source)
+        target_runtime = self._dialog_pet_runtimes.get(target)
+        if source_runtime is None or target_runtime is None:
+            return False
+        active_state = source_state or source_runtime.companion.state
+        migrated = self._migrate_state_between_windows(
+            source,
+            target,
+            active_state,
+            dragging=dragging,
+            movement_direction=movement_direction,
+        )
+        if migrated is None:
+            return False
+        target_runtime.companion.state = migrated
+        target_runtime.drag_samples = list(source_runtime.drag_samples or [])
+        target_runtime.drag_offset = source_runtime.drag_offset
+        try:
+            if dragging:
+                self._release_pet_overlay(source_runtime.overlay)
+            source_runtime.overlay.withdraw()
+        except tk.TclError:
+            pass
+        self._promote_dialog_pet(target, synchronize=False)
+        if dragging:
+            self._grab_pet_overlay(target_runtime.overlay)
+        return True
+
+    def _migrate_dialog_pet_to_main(
+        self,
+        source: tk.Toplevel,
+        *,
+        dragging: bool = False,
+        source_state: PetState | None = None,
+        movement_direction: str | None = None,
+    ) -> bool:
+        """Transfer a dialog-owned companion back to the root host.
+
+        Dialogs are ordinary application windows, not one-way child stages.
+        Keep the state and terminal drag samples intact when a pet exits a
+        dialog toward the main window, then make the root overlay the sole
+        visible owner.  The dialog remains registered so it can be promoted
+        again when focus returns to it.
+        """
+        runtime = self._dialog_pet_runtimes.get(source)
+        if runtime is None or self._pet_overlay is None:
+            return False
+        active_state = source_state or runtime.companion.state
+        migrated = self._migrate_state_between_windows(
+            source,
+            self,
+            active_state,
+            dragging=dragging,
+            movement_direction=movement_direction,
+        )
+        if migrated is None:
+            return False
+        self.pet_companion.state = migrated
+        if dragging:
+            self._pet_drag_samples = list(runtime.drag_samples or [])
+            self._pet_drag_offset = runtime.drag_offset
+            self._release_pet_overlay(runtime.overlay)
+        try:
+            runtime.overlay.withdraw()
+        except tk.TclError:
+            pass
+        # The pet now physically belongs to the root host.  Clear the active
+        # dialog stack so a lower still-open Toplevel cannot hide the root
+        # overlay; those runtimes remain registered and will be promoted again
+        # if the user focuses one of them later.
+        self._dialog_pet_stack = []
+        self._sync_pet_overlay_visibility()
+        if dragging:
+            self._grab_pet_overlay(self._pet_overlay)
+        return True
+
+    def _migrate_main_pet_if_needed(self) -> bool:
+        state = self.pet_companion.state
+        if state.mode not in {PetMode.FLING, PetMode.FALL}:
+            return False
+        viewport = self._pet_viewport()
+        half = PET_DISPLAY_SIZE / 2.0
+        local_viewport = PetRect(0.0, 0.0, viewport.width, viewport.height)
+        for crossing_time, direction in predicted_exit_times(state, local_viewport, half):
+            crossing_state = state_at_exit(
+                state,
+                local_viewport,
+                half,
+                crossing_time,
+                direction,
+            )
+            selection = self._adjacent_pet_window(
+                self,
+                crossing_state.position,
+                direction,
+                motion=crossing_state.velocity,
+                max_time=max(0.0, PET_TICK_MS / 1_000.0 - crossing_time),
+            )
+            if selection is None:
+                continue
+            target, intersection_in_source = selection
+            intersection_state = replace(crossing_state, position=intersection_in_source)
+            if self._migrate_main_pet_to_dialog(
+                target,
+                source_state=intersection_state,
+                movement_direction=direction,
+            ):
+                return True
+        return False
+
+    def _migrate_dialog_pet_if_needed(self, dialog: tk.Toplevel) -> bool:
+        runtime = self._dialog_pet_runtimes.get(dialog)
+        if runtime is None or runtime.companion.state.mode not in {PetMode.FLING, PetMode.FALL}:
+            return False
+        state = runtime.companion.state
+        viewport = self._pet_viewport_for(dialog)
+        half = PET_DISPLAY_SIZE / 2.0
+        local_viewport = PetRect(0.0, 0.0, viewport.width, viewport.height)
+        for crossing_time, direction in predicted_exit_times(state, local_viewport, half):
+            crossing_state = state_at_exit(
+                state,
+                local_viewport,
+                half,
+                crossing_time,
+                direction,
+            )
+            selection = self._adjacent_pet_window(
+                dialog,
+                crossing_state.position,
+                direction,
+                motion=crossing_state.velocity,
+                max_time=max(0.0, PET_TICK_MS / 1_000.0 - crossing_time),
+            )
+            if selection is None:
+                continue
+            target, intersection_in_source = selection
+            if target is dialog:
+                continue
+            intersection_state = replace(crossing_state, position=intersection_in_source)
+            if isinstance(target, tk.Toplevel):
+                if self._migrate_dialog_pet_to_dialog(
+                    dialog,
+                    target,
+                    dragging=False,
+                    source_state=intersection_state,
+                    movement_direction=direction,
+                ):
+                    return True
+            elif target is self and self._migrate_dialog_pet_to_main(
+                dialog,
+                source_state=intersection_state,
+                movement_direction=direction,
+            ):
+                return True
+        return False
+
+    def _promote_dialog_pet(self, dialog: tk.Toplevel, *, synchronize: bool = True) -> None:
         """Make a focused or newly mapped application window own the pet."""
         if dialog not in self._dialog_pet_runtimes:
             return
+        # Focus can return to a dialog after the companion travelled through
+        # another host (including the root).  Refresh that runtime from the
+        # currently visible owner before changing the stack, otherwise the
+        # dialog would resurrect an old position and briefly render a second
+        # logical pet trajectory.
+        source_dialog = self._dialog_pet_stack[-1] if self._dialog_pet_stack else None
+        if synchronize and source_dialog is not dialog:
+            source_window: tk.Misc = source_dialog or self
+            source_runtime = self._dialog_pet_runtimes.get(source_dialog) if source_dialog is not None else None
+            source_state = source_runtime.companion.state if source_runtime is not None else self.pet_companion.state
+            migrated = self._migrate_state_between_windows(source_window, dialog, source_state)
+            if migrated is not None:
+                self._dialog_pet_runtimes[dialog].companion.state = migrated
         self._dialog_pet_stack = [item for item in self._dialog_pet_stack if item is not dialog]
         self._dialog_pet_stack.append(dialog)
         self._sync_pet_overlay_visibility()
 
+    def _handoff_dialog_state(self, source: tk.Toplevel, target: tk.Misc) -> PetState | None:
+        """Transfer an active dialog's transient pet state to ``target``.
+
+        A dialog can disappear via ``withdraw``/``unmap`` without being
+        destroyed.  In that case the live state must move before the overlay
+        is hidden.  Adjacent hosts use the same portal mapping as a normal
+        migration; non-adjacent fallbacks preserve absolute screen position
+        and clear source-local target/idle bookkeeping.
+        """
+        runtime = self._dialog_pet_runtimes.get(source)
+        if runtime is None:
+            return None
+        source_rect = self._window_screen_rect(source)
+        target_rect = self._window_screen_rect(target)
+        if source_rect is None or target_rect is None:
+            return None
+        state = runtime.companion.state
+        movement = portal_direction(source_rect, target_rect)
+        transferred: PetState | None
+        if movement is not None:
+            transferred = self._migrate_state_between_windows(
+                source,
+                target,
+                state,
+                dragging=state.mode == PetMode.DRAGGING,
+            )
+        else:
+            world = PetPoint(
+                source_rect.left + state.position.x,
+                source_rect.top + state.position.y,
+            )
+            local = self._pet_viewport_for(target).clamp(
+                PetPoint(world.x - target_rect.left, world.y - target_rect.top),
+                PET_DISPLAY_SIZE / 2.0,
+            )
+            transferred = replace(
+                state,
+                position=local,
+                target_id=None,
+                idle_ticks_remaining=0,
+                avoid_target_id=None,
+            )
+        if transferred is None:
+            return None
+        target_runtime = self._dialog_pet_runtimes.get(target) if isinstance(target, tk.Toplevel) else None
+        if target_runtime is not None:
+            target_runtime.companion.state = transferred
+            target_runtime.drag_samples = list(runtime.drag_samples or [])
+            target_runtime.drag_offset = runtime.drag_offset
+        else:
+            self.pet_companion.state = transferred
+            self._pet_drag_samples = list(runtime.drag_samples or [])
+            self._pet_drag_offset = runtime.drag_offset
+        # Keep the hidden runtime coherent for a possible remap.  Its local
+        # coordinates are intentionally replaced with the target state; the
+        # next synchronized promotion maps it back through the portal.
+        runtime.companion.state = transferred
+        return transferred
+
     def _deactivate_dialog_pet(self, dialog: tk.Toplevel) -> None:
         if dialog not in self._dialog_pet_stack:
             return
+        runtime = self._dialog_pet_runtimes.get(dialog)
+        was_active = bool(self._dialog_pet_stack and self._dialog_pet_stack[-1] is dialog)
+        if was_active and runtime is not None:
+            # Unmap events are not guaranteed to be followed by Destroy (for
+            # example a transient reminder can be withdrawn and shown again).
+            # Move the live state to the next mapped host before hiding this
+            # overlay so the companion never disappears from every window.
+            previous_dialog = next(
+                (
+                    item
+                    for item in reversed(self._dialog_pet_stack[:-1])
+                    if item in self._dialog_pet_runtimes
+                    and self._window_is_mapped_viewable(item)
+                ),
+                None,
+            )
+            target_window: tk.Misc = previous_dialog or self
+            self._handoff_dialog_state(dialog, target_window)
         self._dialog_pet_stack = [item for item in self._dialog_pet_stack if item is not dialog]
         self._sync_pet_overlay_visibility()
+
+    def _release_dialog_pet(
+        self,
+        event: object,
+        dialog: tk.Toplevel,
+        runtime: DialogPetRuntime,
+        key: str,
+        move: Callable[[object], None],
+    ) -> None:
+        def final_move() -> tk.Misc | None:
+            move(event)
+            return self._pet_drag_host_dialog
+
+        active_dialog, moved_for_release = _resolve_pet_release_host(
+            dialog,
+            self._pet_drag_host_dialog,
+            final_move,
+        )
+        if active_dialog is not None and active_dialog is not dialog:
+            if active_dialog is self:
+                if not moved_for_release:
+                    event_point = PetPoint(
+                        float(event.x_root - self.winfo_rootx()),
+                        float(event.y_root - self.winfo_rooty()),
+                    )
+                    moved = self.pet_companion.drag_move(
+                        PetPoint(event_point.x + self._pet_drag_offset.x, event_point.y + self._pet_drag_offset.y),
+                        self._pet_viewport(),
+                    )
+                    self._record_pet_sample(
+                        self._pet_drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=self,
+                    )
+                velocity = estimate_release_velocity(self._pet_drag_samples)
+                self.pet_companion.drag_release(
+                    self._collect_pet_targets(),
+                    self._pet_viewport(),
+                    release_velocity=velocity,
+                )
+                self._release_pet_overlay(self._pet_overlay)
+                self._pet_drag_samples = []
+            else:
+                target_runtime = self._dialog_pet_runtimes.get(active_dialog)
+                if target_runtime is not None:
+                    if not moved_for_release:
+                        target_point = PetPoint(
+                            float(event.x_root - active_dialog.winfo_rootx()),
+                            float(event.y_root - active_dialog.winfo_rooty()),
+                        )
+                        moved = target_runtime.companion.drag_move(
+                            PetPoint(target_point.x + target_runtime.drag_offset.x, target_point.y + target_runtime.drag_offset.y),
+                            self._pet_viewport_for(active_dialog),
+                        )
+                        target_runtime.drag_samples = target_runtime.drag_samples or []
+                        self._record_pet_sample(
+                            target_runtime.drag_samples,
+                            self._pet_now_ms(),
+                            moved.position,
+                            window=active_dialog,
+                        )
+                    velocity = estimate_release_velocity(target_runtime.drag_samples)
+                    target_runtime.companion.drag_release(
+                        self._collect_dialog_pet_targets(active_dialog, target_runtime.key),
+                        self._pet_viewport_for(active_dialog),
+                        release_velocity=velocity,
+                    )
+                    self._release_pet_overlay(target_runtime.overlay)
+                    target_runtime.drag_samples = []
+            self._pet_drag_host_dialog = None
+            self._pet_dragging = False
+            return
+        velocity = estimate_release_velocity(runtime.drag_samples or [])
+        runtime.companion.drag_release(
+            self._collect_dialog_pet_targets(dialog, key),
+            self._pet_viewport_for(dialog),
+            release_velocity=velocity,
+        )
+        self._release_pet_overlay(runtime.overlay)
+        runtime.drag_samples = []
+        self._pet_drag_host_dialog = None
+        self._pet_dragging = False
 
     def _attach_pet_to_dialog(self, dialog: tk.Toplevel, key: str) -> None:
         """Attach a transient companion that uses only this dialog's coordinates."""
@@ -571,7 +1335,29 @@ class LexiTrackApp(tk.Tk):
         half_size = PET_DISPLAY_SIZE / 2.0
         viewport = self._pet_viewport_for(dialog)
         start = viewport.clamp(PetPoint(half_size + 12.0, half_size + 12.0), half_size)
-        companion = PetCompanion(PetState(start), speed=CRUISE_SPEED, pet_size=half_size)
+        # Preserve the currently active companion when a new application
+        # window appears.  The source remains registered but hidden, allowing
+        # the state to be handed back if the dialog closes.
+        source_state: PetState | None = None
+        if self._dialog_pet_stack:
+            source_runtime = self._dialog_pet_runtimes.get(self._dialog_pet_stack[-1])
+            if source_runtime is not None:
+                source_state = source_runtime.companion.state
+        elif self._pet_overlay is not None:
+            source_state = self.pet_companion.state
+        if source_state is not None:
+            migrated = self._migrate_state_between_windows(
+                self._dialog_pet_stack[-1] if self._dialog_pet_stack else self,
+                dialog,
+                source_state,
+            )
+            if migrated is not None:
+                start_state = migrated
+            else:
+                start_state = PetState(start)
+        else:
+            start_state = PetState(start)
+        companion = PetCompanion(start_state, speed=CRUISE_SPEED, pet_size=half_size)
         runtime_holder: dict[str, DialogPetRuntime] = {}
 
         def pointer(event) -> PetPoint:
@@ -582,6 +1368,7 @@ class LexiTrackApp(tk.Tk):
 
         def press(event) -> None:
             runtime = runtime_holder["runtime"]
+            self._cancel_dialog_pet_render(dialog, runtime)
             event_point = pointer(event)
             state = runtime.companion.state
             runtime.drag_offset = PetPoint(
@@ -589,23 +1376,184 @@ class LexiTrackApp(tk.Tk):
                 state.position.y - event_point.y,
             )
             runtime.companion.drag_start(state.position)
+            runtime.drag_samples = []
+            self._record_pet_sample(
+                runtime.drag_samples,
+                self._pet_now_ms(),
+                runtime.companion.state.position,
+                window=dialog,
+            )
+            self._pet_dragging = True
+            self._pet_drag_host_dialog = dialog
+            self._grab_pet_overlay(runtime.overlay)
 
         def move(event) -> None:
             runtime = runtime_holder["runtime"]
             event_point = pointer(event)
-            runtime.companion.drag_move(
-                PetPoint(
-                    event_point.x + runtime.drag_offset.x,
-                    event_point.y + runtime.drag_offset.y,
-                ),
-                self._pet_viewport_for(dialog),
+            desired = PetPoint(
+                event_point.x + runtime.drag_offset.x,
+                event_point.y + runtime.drag_offset.y,
+            )
+            drag_origin = runtime.companion.state.position
+            drag_motion = PetPoint(
+                desired.x - drag_origin.x,
+                desired.y - drag_origin.y,
+            )
+            viewport_now = self._pet_viewport_for(dialog)
+            direction = None
+            if desired.x < viewport_now.left + PET_DISPLAY_SIZE / 2.0:
+                direction = "left"
+            elif desired.x > viewport_now.right - PET_DISPLAY_SIZE / 2.0:
+                direction = "right"
+            if direction is not None:
+                selection = self._adjacent_pet_window(
+                    dialog,
+                    drag_origin,
+                    direction,
+                    allow_overlap=True,
+                    motion=drag_motion,
+                    max_time=1.0,
+                )
+                target = selection[0] if selection is not None else None
+                intersection_state = (
+                    replace(runtime.companion.state, position=selection[1])
+                    if selection is not None
+                    else runtime.companion.state
+                )
+                if isinstance(target, tk.Toplevel) and target is not dialog and self._migrate_dialog_pet_to_dialog(
+                    dialog,
+                    target,
+                    dragging=True,
+                    source_state=intersection_state,
+                    movement_direction=direction,
+                ):
+                    self._pet_drag_host_dialog = target
+                    target_runtime = self._dialog_pet_runtimes.get(target)
+                    if target_runtime is not None:
+                        target_point = PetPoint(
+                            float(event.x_root - target.winfo_rootx()),
+                            float(event.y_root - target.winfo_rooty()),
+                        )
+                        moved = target_runtime.companion.drag_move(
+                            PetPoint(target_point.x + target_runtime.drag_offset.x, target_point.y + target_runtime.drag_offset.y),
+                            self._pet_viewport_for(target),
+                        )
+                        target_runtime.drag_samples = target_runtime.drag_samples or []
+                        self._record_pet_sample(
+                            target_runtime.drag_samples,
+                            self._pet_now_ms(),
+                            moved.position,
+                            window=target,
+                        )
+                    return
+                if target is self and self._migrate_dialog_pet_to_main(
+                    dialog,
+                    dragging=True,
+                    source_state=intersection_state,
+                    movement_direction=direction,
+                ):
+                    self._pet_drag_host_dialog = self
+                    event_point = PetPoint(
+                        float(event.x_root - self.winfo_rootx()),
+                        float(event.y_root - self.winfo_rooty()),
+                    )
+                    moved = self.pet_companion.drag_move(
+                        PetPoint(event_point.x + self._pet_drag_offset.x, event_point.y + self._pet_drag_offset.y),
+                        self._pet_viewport(),
+                    )
+                    self._record_pet_sample(
+                        self._pet_drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=self,
+                    )
+                    return
+            if desired.y < viewport_now.top + PET_DISPLAY_SIZE / 2.0:
+                direction = "top"
+            elif desired.y > viewport_now.bottom - PET_DISPLAY_SIZE / 2.0:
+                direction = "bottom"
+            else:
+                direction = None
+            if direction is not None:
+                selection = self._adjacent_pet_window(
+                    dialog,
+                    drag_origin,
+                    direction,
+                    allow_overlap=True,
+                    motion=drag_motion,
+                    max_time=1.0,
+                )
+                target = selection[0] if selection is not None else None
+                intersection_state = (
+                    replace(runtime.companion.state, position=selection[1])
+                    if selection is not None
+                    else runtime.companion.state
+                )
+                if isinstance(target, tk.Toplevel) and target is not dialog and self._migrate_dialog_pet_to_dialog(
+                    dialog,
+                    target,
+                    dragging=True,
+                    source_state=intersection_state,
+                    movement_direction=direction,
+                ):
+                    self._pet_drag_host_dialog = target
+                    target_runtime = self._dialog_pet_runtimes.get(target)
+                    if target_runtime is not None:
+                        target_point = PetPoint(
+                            float(event.x_root - target.winfo_rootx()),
+                            float(event.y_root - target.winfo_rooty()),
+                        )
+                        moved = target_runtime.companion.drag_move(
+                            PetPoint(target_point.x + target_runtime.drag_offset.x, target_point.y + target_runtime.drag_offset.y),
+                            self._pet_viewport_for(target),
+                        )
+                        target_runtime.drag_samples = target_runtime.drag_samples or []
+                        self._record_pet_sample(
+                            target_runtime.drag_samples,
+                            self._pet_now_ms(),
+                            moved.position,
+                            window=target,
+                        )
+                    return
+                if target is self and self._migrate_dialog_pet_to_main(
+                    dialog,
+                    dragging=True,
+                    source_state=intersection_state,
+                    movement_direction=direction,
+                ):
+                    self._pet_drag_host_dialog = self
+                    event_point = PetPoint(
+                        float(event.x_root - self.winfo_rootx()),
+                        float(event.y_root - self.winfo_rooty()),
+                    )
+                    moved = self.pet_companion.drag_move(
+                        PetPoint(event_point.x + self._pet_drag_offset.x, event_point.y + self._pet_drag_offset.y),
+                        self._pet_viewport(),
+                    )
+                    self._record_pet_sample(
+                        self._pet_drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=self,
+                    )
+                    return
+            moved = runtime.companion.drag_move(desired, viewport_now)
+            if runtime.drag_samples is None:
+                runtime.drag_samples = []
+            self._record_pet_sample(
+                runtime.drag_samples,
+                self._pet_now_ms(),
+                moved.position,
+                window=dialog,
             )
 
         def release(event) -> None:
-            move(event)
-            runtime_holder["runtime"].companion.drag_release(
-                self._collect_dialog_pet_targets(dialog, key),
-                self._pet_viewport_for(dialog),
+            self._release_dialog_pet(
+                event,
+                dialog,
+                runtime_holder["runtime"],
+                key,
+                move,
             )
 
         overlay = PetOverlay(
@@ -631,17 +1579,24 @@ class LexiTrackApp(tk.Tk):
                 if self._dialog_pet_stack and self._dialog_pet_stack[-1] is dialog:
                     viewport_now = self._pet_viewport_for(dialog)
                     targets = self._collect_dialog_pet_targets(dialog, key)
-                    state = companion.tick(targets, viewport_now)
-                    self._apply_pet_facing(overlay, state)
-                    width, height = overlay.sprite_size
-                    overlay.place(
-                        x=round(state.position.x - width / 2),
-                        y=round(state.position.y - height / 2),
-                        width=width,
-                        height=height,
+                    if self._migrate_dialog_pet_if_needed(dialog):
+                        runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
+                        return
+                    previous_position = companion.state.position
+                    companion.tick(targets, viewport_now)
+                    if self._migrate_dialog_pet_if_needed(dialog):
+                        runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
+                        return
+                    state = companion.state
+                    self._schedule_dialog_pet_render(
+                        dialog,
+                        runtime,
+                        state,
+                        previous_position,
                     )
-                    overlay.lift()
                 else:
+                    self._cancel_dialog_pet_render(dialog, runtime)
+                    runtime.last_rendered_position = None
                     overlay.withdraw()
                 runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
             except tk.TclError:
@@ -666,9 +1621,28 @@ class LexiTrackApp(tk.Tk):
         runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
 
     def _detach_pet_from_dialog(self, dialog: tk.Toplevel) -> None:
-        runtime = self._dialog_pet_runtimes.pop(dialog, None)
+        runtime = self._dialog_pet_runtimes.get(dialog)
         if runtime is None:
             return
+        self._cancel_dialog_pet_render(dialog, runtime)
+        self._release_pet_overlay(runtime.overlay)
+        was_active = bool(self._dialog_pet_stack and self._dialog_pet_stack[-1] is dialog)
+        if was_active:
+            # Return the latest state to the next visible host before removing
+            # this runtime.  Only the local position changes; velocities,
+            # facing and fling mode remain intact across the handoff.
+            previous_dialog = next(
+                (
+                    item
+                    for item in reversed(self._dialog_pet_stack[:-1])
+                    if item in self._dialog_pet_runtimes
+                    and self._window_is_mapped_viewable(item)
+                ),
+                None,
+            )
+            target_window: tk.Misc = previous_dialog or self
+            self._handoff_dialog_state(dialog, target_window)
+        self._dialog_pet_runtimes.pop(dialog, None)
         self._dialog_pet_stack = [item for item in self._dialog_pet_stack if item is not dialog]
         if runtime.tick_after_id is not None:
             try:
@@ -783,22 +1757,28 @@ class LexiTrackApp(tk.Tk):
             return
         try:
             if self._dialog_pet_stack:
+                self._cancel_main_pet_render()
+                self._pet_last_rendered_position = None
                 overlay.withdraw()
                 self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                 return
             # Geometry can change without resizing the root (scrolling, lazy rows,
             # pack/forget), so animation consumes a fresh visible target snapshot.
             self._pet_targets = self._collect_pet_targets()
-            state = self.pet_companion.tick(self._pet_targets, self._pet_viewport())
-            self._apply_pet_facing(overlay, state)
-            width, height = overlay.sprite_size
-            overlay.place(
-                x=round(state.position.x - width / 2),
-                y=round(state.position.y - height / 2),
-                width=width,
-                height=height,
-            )
-            overlay.lift()
+            # Portal checks run before the next physics step.  The domain keeps
+            # a fling inside a host with wall restitution, so waiting until
+            # after integration would reflect the outward velocity before the
+            # presentation had a chance to hand it to an adjacent window.
+            if self._migrate_main_pet_if_needed():
+                self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
+                return
+            previous_position = self.pet_companion.state.position
+            self.pet_companion.tick(self._pet_targets, self._pet_viewport())
+            if self._migrate_main_pet_if_needed():
+                self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
+                return
+            state = self.pet_companion.state
+            self._schedule_main_pet_render(state, previous_position)
             self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
         except tk.TclError:
             self._pet_tick_after_id = None
@@ -810,26 +1790,202 @@ class LexiTrackApp(tk.Tk):
         )
 
     def _pet_press(self, event) -> None:
+        self._cancel_main_pet_render()
         pointer = self._pet_pointer(event)
         state = self.pet_companion.state
         self._pet_drag_offset = PetPoint(state.position.x - pointer.x, state.position.y - pointer.y)
         self.pet_companion.drag_start(state.position)
+        self._pet_drag_samples = []
+        self._pet_dragging = True
+        self._pet_drag_host_dialog = None
+        self._record_pet_sample(
+            self._pet_drag_samples,
+            self._pet_now_ms(),
+            self.pet_companion.state.position,
+            window=self,
+        )
+        self._grab_pet_overlay(self._pet_overlay)
 
     def _pet_move(self, event) -> None:
         pointer = self._pet_pointer(event)
-        self.pet_companion.drag_move(
-            PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
-            self._pet_viewport(),
+        desired = PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y)
+        drag_origin = self.pet_companion.state.position
+        drag_motion = PetPoint(
+            desired.x - drag_origin.x,
+            desired.y - drag_origin.y,
+        )
+        viewport = self._pet_viewport()
+        direction = None
+        if desired.x < viewport.left + PET_DISPLAY_SIZE / 2.0:
+            direction = "left"
+        elif desired.x > viewport.right - PET_DISPLAY_SIZE / 2.0:
+            direction = "right"
+        if direction is not None:
+            selection = self._adjacent_pet_window(
+                self,
+                drag_origin,
+                direction,
+                allow_overlap=True,
+                motion=drag_motion,
+                max_time=1.0,
+            )
+            target = selection[0] if selection is not None else None
+            intersection_state = (
+                replace(self.pet_companion.state, position=selection[1])
+                if selection is not None
+                else self.pet_companion.state
+            )
+            if isinstance(target, tk.Toplevel) and self._migrate_main_pet_to_dialog(
+                target,
+                dragging=True,
+                source_state=intersection_state,
+                movement_direction=direction,
+            ):
+                self._pet_drag_host_dialog = target
+                runtime = self._dialog_pet_runtimes.get(target)
+                if runtime is not None:
+                    event_point = PetPoint(
+                        float(event.x_root - target.winfo_rootx()),
+                        float(event.y_root - target.winfo_rooty()),
+                    )
+                    moved = runtime.companion.drag_move(
+                        PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
+                        self._pet_viewport_for(target),
+                    )
+                    runtime.drag_samples = runtime.drag_samples or []
+                    self._record_pet_sample(
+                        runtime.drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=target,
+                    )
+                return
+        if desired.y < viewport.top + PET_DISPLAY_SIZE / 2.0:
+            direction = "top"
+        elif desired.y > viewport.bottom - PET_DISPLAY_SIZE / 2.0:
+            direction = "bottom"
+        else:
+            direction = None
+        if direction is not None:
+            selection = self._adjacent_pet_window(
+                self,
+                drag_origin,
+                direction,
+                allow_overlap=True,
+                motion=drag_motion,
+                max_time=1.0,
+            )
+            target = selection[0] if selection is not None else None
+            intersection_state = (
+                replace(self.pet_companion.state, position=selection[1])
+                if selection is not None
+                else self.pet_companion.state
+            )
+            if isinstance(target, tk.Toplevel) and self._migrate_main_pet_to_dialog(
+                target,
+                dragging=True,
+                source_state=intersection_state,
+                movement_direction=direction,
+            ):
+                self._pet_drag_host_dialog = target
+                runtime = self._dialog_pet_runtimes.get(target)
+                if runtime is not None:
+                    event_point = PetPoint(
+                        float(event.x_root - target.winfo_rootx()),
+                        float(event.y_root - target.winfo_rooty()),
+                    )
+                    moved = runtime.companion.drag_move(
+                        PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
+                        self._pet_viewport_for(target),
+                    )
+                    runtime.drag_samples = runtime.drag_samples or []
+                    self._record_pet_sample(
+                        runtime.drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=target,
+                    )
+                return
+        moved = self.pet_companion.drag_move(desired, viewport)
+        self._record_pet_sample(
+            self._pet_drag_samples,
+            self._pet_now_ms(),
+            moved.position,
+            window=self,
         )
 
     def _pet_release(self, event) -> None:
-        pointer = self._pet_pointer(event)
-        self.pet_companion.drag_move(
-            PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
-            self._pet_viewport(),
+        def final_move() -> tk.Misc | None:
+            self._pet_move(event)
+            return self._pet_drag_host_dialog
+
+        dialog, moved_for_release = _resolve_pet_release_host(
+            self,
+            self._pet_drag_host_dialog,
+            final_move,
         )
+        if dialog is not None:
+            if dialog is self:
+                if not moved_for_release:
+                    pointer = self._pet_pointer(event)
+                    moved = self.pet_companion.drag_move(
+                        PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
+                        self._pet_viewport(),
+                    )
+                    self._record_pet_sample(
+                        self._pet_drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=self,
+                    )
+                velocity = estimate_release_velocity(self._pet_drag_samples)
+                self.pet_companion.drag_release(
+                    self._collect_pet_targets(),
+                    self._pet_viewport(),
+                    release_velocity=velocity,
+                )
+                self._release_pet_overlay(self._pet_overlay)
+                self._pet_drag_samples = []
+            else:
+                runtime = self._dialog_pet_runtimes.get(dialog)
+                if runtime is not None:
+                    if not moved_for_release:
+                        event_point = PetPoint(
+                            float(event.x_root - dialog.winfo_rootx()),
+                            float(event.y_root - dialog.winfo_rooty()),
+                        )
+                        moved = runtime.companion.drag_move(
+                            PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
+                            self._pet_viewport_for(dialog),
+                        )
+                        runtime.drag_samples = runtime.drag_samples or []
+                        self._record_pet_sample(
+                            runtime.drag_samples,
+                            self._pet_now_ms(),
+                            moved.position,
+                            window=dialog,
+                        )
+                    velocity = estimate_release_velocity(runtime.drag_samples)
+                    runtime.companion.drag_release(
+                        self._collect_dialog_pet_targets(dialog, runtime.key),
+                        self._pet_viewport_for(dialog),
+                        release_velocity=velocity,
+                    )
+                    self._release_pet_overlay(runtime.overlay)
+                    runtime.drag_samples = []
+            self._pet_drag_host_dialog = None
+            self._pet_dragging = False
+            return
         self._pet_targets = self._collect_pet_targets()
-        self.pet_companion.drag_release(self._pet_targets, self._pet_viewport())
+        velocity = estimate_release_velocity(self._pet_drag_samples)
+        self.pet_companion.drag_release(
+            self._pet_targets,
+            self._pet_viewport(),
+            release_velocity=velocity,
+        )
+        self._release_pet_overlay(self._pet_overlay)
+        self._pet_drag_samples = []
+        self._pet_dragging = False
 
     def _configure_styles(self):
         style = ttk.Style(self)

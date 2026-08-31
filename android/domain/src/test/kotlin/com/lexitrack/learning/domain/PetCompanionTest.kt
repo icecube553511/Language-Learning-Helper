@@ -13,6 +13,21 @@ import kotlin.test.assertTrue
 
 class PetCompanionTest {
     private val viewport = PetRect(0f, 0f, 800f, 700f)
+    private val sharedGolden by lazy {
+        Json.parseToJsonElement(
+            File(requireNotNull(System.getProperty("pet.companion.golden.path"))).readText(),
+        ).jsonObject
+    }
+
+    private fun sharedPoint(value: kotlinx.serialization.json.JsonElement): PetPoint {
+        val coordinates = value.jsonArray.map { it.jsonPrimitive.float }
+        return PetPoint(coordinates[0], coordinates[1])
+    }
+
+    private fun sharedVector(section: String, name: String) =
+        sharedGolden.getValue(section).jsonArray
+            .map { it.jsonObject }
+            .single { it.getValue("name").jsonPrimitive.content == name }
 
     @Test
     fun `nearest target ignores zero sized regions and keeps registration order on ties`() {
@@ -152,6 +167,49 @@ class PetCompanionTest {
         assertEquals(unit, distances[0], 1e-6f)
         assertEquals(unit * 4f, distances[1], 1e-6f)
         assertEquals(unit * 9f, distances[2], 1e-6f)
+    }
+
+    @Test
+    fun `top portal fall preserves outside y and an upward entry arc`() {
+        val viewport = PetRect(0f, 0f, 400f, 300f)
+        val support = PetTarget("landing", PetTargetKind.SURFACE, PetRect(0f, 180f, 400f, 20f))
+        val entry = PetState(
+            PetPoint(200f, -56f),
+            PetMode.FALL,
+            verticalVelocity = -320f,
+        )
+
+        val first = advancePet(entry, listOf(support), viewport, halfSize = 56f)
+
+        assertEquals(PetMode.FALL, first.mode)
+        assertTrue(first.position.y < entry.position.y)
+        assertEquals(entry.position.x, first.position.x)
+
+        var descending = first
+        repeat(30) {
+            if (descending.verticalVelocity >= 0f) return@repeat
+            descending = advancePet(descending, listOf(support), viewport, halfSize = 56f)
+        }
+        assertTrue(descending.verticalVelocity >= 0f, "entry arc should turn downward")
+        assertTrue(descending.position.y < viewport.top + 56f)
+    }
+
+    @Test
+    fun `top portal fall keeps a positive entry velocity outside viewport`() {
+        val viewport = PetRect(0f, 0f, 400f, 300f)
+        val support = PetTarget("landing", PetTargetKind.SURFACE, PetRect(0f, 180f, 400f, 20f))
+        val entry = PetState(
+            PetPoint(200f, -56f),
+            PetMode.FALL,
+            verticalVelocity = 125f,
+        )
+
+        val first = advancePet(entry, listOf(support), viewport, halfSize = 56f)
+
+        assertEquals(PetMode.FALL, first.mode)
+        assertTrue(first.position.y > entry.position.y)
+        assertTrue(first.position.y < viewport.top + 56f)
+        assertEquals(entry.position.x, first.position.x)
     }
 
     @Test
@@ -673,6 +731,25 @@ class PetCompanionTest {
     }
 
     @Test
+    fun `chart segment midpoint is a legal release support`() {
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 160f),
+            listOf(PetPoint(20f, 100f), PetPoint(100f, 140f)),
+        )
+        val released = releaseDrag(
+            PetState(PetPoint(60f, 110f), PetMode.DRAGGING),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 160f),
+            halfSize = 10f,
+        )
+        assertEquals(PetMode.IDLE, released.mode)
+        assertEquals("curve", released.targetId)
+        assertEquals(PetPoint(60f, 110f), released.position)
+    }
+
+    @Test
     fun `support above the viewport is clamped instead of stalling`() {
         val smallViewport = PetRect(0f, 0f, 200f, 160f)
         val target = PetTarget("header", PetTargetKind.CONTROL, PetRect(20f, 20f, 80f, 30f))
@@ -828,5 +905,295 @@ class PetCompanionTest {
             state = advancePet(state, listOf(curve, other), viewport, 0f, step = 5f)
         }
         assertEquals("other", state.targetId)
+    }
+
+    @Test
+    fun `drag release launches a projectile and preserves terminal tangent`() {
+        val released = releaseDrag(
+            PetState(PetPoint(320f, 420f), PetMode.DRAGGING),
+            releaseVelocity = PetPoint(420f, -680f),
+        )
+        assertEquals(PetMode.FLING, released.mode)
+        assertEquals(420f, released.horizontalVelocity)
+        assertEquals(-680f, released.verticalVelocity)
+
+        val tick = advancePet(released, emptyList(), viewport, halfSize = 0f)
+        assertEquals(326.72f, tick.position.x, 1e-3f)
+        assertEquals(409.395f, tick.position.y, 1e-3f)
+        assertEquals(420f, tick.horizontalVelocity, 1e-3f)
+        assertEquals(-645.625f, tick.verticalVelocity, 1e-3f)
+    }
+
+    @Test
+    fun `release velocity is estimated from recent constrained centres and limited proportionally`() {
+        val samples = listOf(
+            PetMotionSample(0L, PetPoint(0f, 0f)),
+            PetMotionSample(40L, PetPoint(40f, -40f)),
+            PetMotionSample(80L, PetPoint(80f, -80f)),
+            PetMotionSample(120L, PetPoint(120f, -120f)),
+        )
+        val velocity = estimateReleaseVelocity(samples)
+        assertEquals(1_000f, velocity.x, 1e-3f)
+        assertEquals(-1_000f, velocity.y, 1e-3f)
+        val limited = limitFlingVelocity(PetPoint(1_800f, -2_400f))
+        assertEquals(1_080f, limited.x, 1e-3f)
+        assertEquals(-1_440f, limited.y, 1e-3f)
+    }
+
+    @Test
+    fun `chart slide uses the gentle curve acceleration`() {
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 400f, 200f),
+            listOf(PetPoint(20f, 80f), PetPoint(380f, 80f)),
+        )
+        var state = PetState(PetPoint(20f, 80f))
+        val speeds = mutableListOf<Float>()
+        repeat(5) {
+            state = advancePet(state, listOf(chart), viewport, halfSize = 0f, step = PET_CRUISE_SPEED)
+            speeds += state.movementSpeed
+        }
+        assertEquals(listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f), speeds)
+        assertTrue(speeds.zipWithNext().all { (a, b) -> b > a })
+    }
+
+    @Test
+    fun `fling resolves support after a wall reflection using remaining substep time`() {
+        val viewport = PetRect(0f, 0f, 200f, 300f)
+        val support = PetTarget("narrow", PetTargetKind.SURFACE, PetRect(198f, 120f, 2f, 10f))
+        val state = PetState(
+            PetPoint(198f, 115f),
+            PetMode.FLING,
+            horizontalVelocity = 1_000f,
+            verticalVelocity = 1_500f,
+        )
+        val landed = advancePet(state, listOf(support), viewport, halfSize = 0f)
+        assertEquals("narrow", landed.targetId)
+        assertEquals(PetMode.BOUNCE, landed.mode)
+        assertTrue(landed.position.x > 198.5f)
+    }
+
+    @Test
+    fun `non finite fling velocity is rejected`() {
+        assertEquals(PetPoint(0f, 0f), limitFlingVelocity(PetPoint(Float.NaN, 10f)))
+        assertEquals(PetPoint(0f, 0f), limitFlingVelocity(PetPoint(Float.POSITIVE_INFINITY, -10f)))
+    }
+
+    @Test
+    fun `fling facing follows reflected velocity even when net displacement is forward`() {
+        val viewport = PetRect(0f, 0f, 400f, 300f)
+        val state = PetState(
+            PetPoint(399.01f, 120f),
+            PetMode.FLING,
+            horizontalVelocity = 100f,
+            verticalVelocity = 0f,
+            facing = PetFacing.RIGHT,
+        )
+
+        val next = advancePet(state, emptyList(), viewport, halfSize = 0f)
+
+        assertEquals(PetFacing.LEFT, next.facing)
+        assertTrue(next.horizontalVelocity < 0f)
+        assertTrue(next.position.x > state.position.x)
+    }
+
+    @Test
+    fun `fling lands on the descending root after starting just below a support`() {
+        val viewport = PetRect(0f, 0f, 400f, 300f)
+        val support = PetTarget("support", PetTargetKind.SURFACE, PetRect(0f, 100f, 400f, 10f))
+        val state = PetState(
+            PetPoint(200f, 100.01f),
+            PetMode.FLING,
+            verticalVelocity = -16f,
+        )
+
+        val landed = advancePet(state, listOf(support), viewport, halfSize = 0f)
+
+        assertEquals(PetMode.IDLE, landed.mode)
+        assertEquals("support", landed.targetId)
+        assertEquals(100f, landed.position.y, 1e-5f)
+    }
+
+    @Test
+    fun `curve brakes near endpoint and consumes remaining budget after reversing`() {
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 40f, 200f),
+            listOf(PetPoint(0f, 100f), PetPoint(40f, 100f)),
+        )
+        val next = advancePet(
+            PetState(
+                position = PetPoint(39f, 100f),
+                mode = PetMode.SLIDE,
+                targetId = chart.id,
+                pathIndex = 1,
+                pathDirection = 1,
+                movementSpeed = 4f,
+            ),
+            listOf(chart),
+            viewport,
+            halfSize = 0f,
+            step = PET_CRUISE_SPEED,
+        )
+
+        assertEquals(PetMode.SLIDE, next.mode)
+        assertEquals(-1, next.pathDirection)
+        assertEquals(3.75f, next.movementSpeed, 1e-5f)
+        assertEquals(37.25f, next.position.x, 1e-5f)
+    }
+
+    @Test
+    fun `curve acceleration stays contractual with a larger cruise budget`() {
+        val vector = sharedVector(
+            "curveMotionVectors",
+            "curve-slide-step-override-keeps-contract-acceleration-and-corner-budget",
+        )
+        val remainingToCorner = vector.getValue("remainingToCorner").jsonPrimitive.float
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 400f, 200f),
+            listOf(PetPoint(0f, 80f), PetPoint(40f, 80f), PetPoint(80f, 80f)),
+        )
+
+        val next = advancePet(
+            PetState(
+                position = PetPoint(40f - remainingToCorner, 80f),
+                mode = PetMode.SLIDE,
+                targetId = chart.id,
+                pathIndex = 1,
+                pathDirection = 1,
+                movementSpeed = vector.getValue("initialMovementSpeed").jsonPrimitive.float,
+            ),
+            listOf(chart),
+            viewport,
+            halfSize = 0f,
+            step = vector.getValue("requestedStep").jsonPrimitive.float,
+        )
+
+        assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, next.mode.name.lowercase())
+        assertEquals(vector.getValue("expectedSpeedAfterCorner").jsonPrimitive.float, next.movementSpeed, 1e-6f)
+        assertEquals(
+            40f + vector.getValue("expectedBudgetAfterCorner").jsonPrimitive.float,
+            next.position.x,
+            1e-5f,
+        )
+    }
+
+    @Test
+    fun `horizontal fling touching support does not land at zero time`() {
+        val support = PetTarget("support", PetTargetKind.SURFACE, PetRect(50f, 120f, 200f, 30f))
+        var next = advancePet(
+            PetState(
+                position = PetPoint(100f, 100f),
+                mode = PetMode.FLING,
+                horizontalVelocity = 600f,
+                verticalVelocity = 0f,
+            ),
+            listOf(support),
+            viewport,
+            halfSize = 20f,
+        )
+
+        assertEquals(PetMode.FLING, next.mode)
+        assertTrue(next.position.x > 100f)
+        assertEquals(100f, next.position.y, 1e-5f)
+        assertEquals(600f, next.horizontalVelocity, 1e-5f)
+
+        val supportEdge = support.rect.right + 20f
+        while (next.position.x <= supportEdge + 1e-3f) {
+            assertEquals(100f, next.position.y, 1e-5f)
+            next = advancePet(next, listOf(support), viewport, halfSize = 20f)
+        }
+        assertTrue(next.position.y > 100f)
+    }
+
+    @Test
+    fun `sloped chart collision uses relative contact derivative`() {
+        val vector = sharedVector(
+            "flingPhysicsVectors",
+            "sloped-chart-contact-uses-relative-descending-derivative",
+        )
+        val segment = vector.getValue("chartSegment").jsonArray.map(::sharedPoint)
+        val releaseVelocity = sharedPoint(vector.getValue("releaseVelocity"))
+        val chart = PetTarget(
+            "descending-curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            segment,
+        )
+        val next = advancePet(
+            PetState(
+                position = sharedPoint(vector.getValue("initialPosition")),
+                mode = PetMode.FLING,
+                horizontalVelocity = releaseVelocity.x,
+                verticalVelocity = releaseVelocity.y,
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 400f, 400f),
+            halfSize = 0f,
+        )
+
+        assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, next.mode.name.lowercase())
+        assertEquals(chart.id, next.targetId)
+        assertEquals(0f, next.horizontalVelocity, 1e-6f)
+        val expectedContact = sharedPoint(vector.getValue("expectedContactPoint"))
+        assertEquals(expectedContact.x, next.position.x, 1e-3f)
+        assertEquals(expectedContact.y, next.position.y, 1e-3f)
+    }
+
+    @Test
+    fun `sloped chart hard landing threshold uses world vertical speed`() {
+        val chart = PetTarget(
+            "descending-curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            listOf(PetPoint(0f, 200f), PetPoint(200f, 0f)),
+        )
+
+        val next = advancePet(
+            PetState(
+                position = PetPoint(100f, 99f),
+                mode = PetMode.FLING,
+                horizontalVelocity = 1_000f,
+                verticalVelocity = -100f,
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 400f, 400f),
+            halfSize = 0f,
+        )
+
+        assertEquals(PetMode.IDLE, next.mode)
+        assertEquals(chart.id, next.targetId)
+        assertEquals(0f, next.horizontalVelocity, 1e-6f)
+        assertEquals(0f, next.verticalVelocity, 1e-6f)
+    }
+
+    @Test
+    fun `hard fling landing clears horizontal velocity throughout bounce`() {
+        val support = PetTarget("support", PetTargetKind.SURFACE, PetRect(50f, 120f, 200f, 30f))
+        var state = advancePet(
+            PetState(
+                position = PetPoint(100f, 90f),
+                mode = PetMode.FLING,
+                horizontalVelocity = 600f,
+                verticalVelocity = 1_000f,
+            ),
+            listOf(support),
+            viewport,
+            halfSize = 20f,
+        )
+        assertEquals(PetMode.BOUNCE, state.mode)
+        assertEquals(0f, state.horizontalVelocity, 1e-6f)
+
+        repeat(100) {
+            if (state.mode != PetMode.BOUNCE) return@repeat
+            state = advancePet(state, listOf(support), viewport, halfSize = 20f)
+            assertEquals(0f, state.horizontalVelocity, 1e-6f)
+        }
+        assertEquals(PetMode.IDLE, state.mode)
+        assertEquals(0f, state.horizontalVelocity, 1e-6f)
     }
 }
