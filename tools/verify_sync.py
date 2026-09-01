@@ -1633,6 +1633,58 @@ def verify_dictation_presentation_contract() -> None:
         fail("Android must cancel the dictation loading job when leaving the page")
 
 
+def verify_font_scale_popup_contract() -> None:
+    """Verify cross-platform safety rules for font settings and popup geometry."""
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    expected_font_scale = {
+        "minimum": 0.9,
+        "maximum": 1.4,
+        "default": 1.0,
+        "nonFinitePolicy": "fallback-to-default",
+        "clampPolicy": "finite-input-clamp-to-range",
+    }
+    if parity.get("fontScale") != expected_font_scale:
+        fail("Parity font-scale safety semantics differ")
+    minimum = float(expected_font_scale["minimum"])
+    maximum = float(expected_font_scale["maximum"])
+    default = float(expected_font_scale["default"])
+    if not (
+        math.isfinite(minimum)
+        and math.isfinite(maximum)
+        and math.isfinite(default)
+        and minimum <= default <= maximum
+    ):
+        fail("Parity font-scale bounds must be finite and contain the default")
+
+    def clamp_font_scale(value: float) -> float:
+        if not math.isfinite(value):
+            return default
+        return min(maximum, max(minimum, value))
+
+    # Pure contract vectors cover both invalid persisted values and ordinary
+    # finite values without importing either platform's settings code.
+    vectors = (
+        (float("nan"), default),
+        (float("-inf"), default),
+        (float("inf"), default),
+        (minimum - 1.0, minimum),
+        (minimum, minimum),
+        (default, default),
+        (maximum, maximum),
+        (maximum + 1.0, maximum),
+    )
+    for raw, expected in vectors:
+        observed = clamp_font_scale(raw)
+        if not math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Font-scale contract vector differs for {raw!r}: {observed} != {expected}")
+
+    expected_popup_geometry = {
+        "initialPlacement": "measure-before-position-and-viewport-clamp",
+    }
+    if parity.get("popupGeometry") != expected_popup_geometry:
+        fail("Parity popup initial-geometry semantics differ")
+
+
 def verify_catalog() -> None:
     catalog_path = CONTENT / "catalog.json"
     manifest_path = CONTENT / "catalog-manifest.json"
@@ -1747,7 +1799,15 @@ def verify_platform_markers() -> None:
         ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
-        for key in ("branding", "petCompanion", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+        for key in (
+            "branding",
+            "petCompanion",
+            "fontScale",
+            "popupGeometry",
+            "learningReminder",
+            "studyOrder",
+            "vocabularyFilters",
+        ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
@@ -1762,6 +1822,7 @@ def main() -> int:
     verify_word_bubble_contract()
     verify_pet_contract()
     verify_vocabulary_groups_contract()
+    verify_font_scale_popup_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()

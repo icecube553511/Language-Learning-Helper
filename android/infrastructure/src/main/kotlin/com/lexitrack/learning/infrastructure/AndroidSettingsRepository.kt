@@ -3,8 +3,10 @@ package com.lexitrack.learning.infrastructure
 import android.content.Context
 import com.lexitrack.learning.application.SettingsRepository
 import com.lexitrack.learning.application.DEFAULT_REVIEW_BATCH_SIZE
+import com.lexitrack.learning.application.DEFAULT_FONT_SCALE
 import com.lexitrack.learning.application.DEFAULT_REMINDER_INTERVAL_MINUTES
 import com.lexitrack.learning.application.MAX_REMINDER_INTERVAL_MINUTES
+import com.lexitrack.learning.application.sanitizeFontScale
 import com.lexitrack.learning.application.MIN_REMINDER_INTERVAL_MINUTES
 import com.lexitrack.learning.application.STUDY_ORDER_RANDOM
 import com.lexitrack.learning.application.SUPPORTED_VOCABULARY_LEVELS
@@ -24,7 +26,7 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
     override val settings: StateFlow<UserSettings> = _settings.asStateFlow()
 
     override suspend fun setFontScale(scale: Float) {
-        val safeScale = scale.coerceIn(0.9f, 1.4f)
+        val safeScale = sanitizeFontScale(scale)
         preferences.edit().putFloat(KEY_FONT_SCALE, safeScale).apply()
         _settings.value = _settings.value.copy(fontScale = safeScale)
     }
@@ -79,7 +81,7 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
     }
 
     private fun loadSettings() = UserSettings(
-        fontScale = preferences.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.9f, 1.4f),
+        fontScale = loadFontScale(),
         reviewBatchSize = preferences
             .getInt(KEY_REVIEW_BATCH_SIZE, DEFAULT_REVIEW_BATCH_SIZE)
             .coerceAtLeast(1),
@@ -98,6 +100,11 @@ class AndroidSettingsRepository(context: Context) : SettingsRepository {
         markMode = runCatching { MarkMode.valueOf(preferences.getString(KEY_MARK_MODE, MarkMode.ASK.name) ?: MarkMode.ASK.name) }
             .getOrDefault(MarkMode.ASK),
     )
+
+    private fun loadFontScale(): Float =
+        runCatching { preferences.getFloat(KEY_FONT_SCALE, DEFAULT_FONT_SCALE) }
+            .getOrDefault(DEFAULT_FONT_SCALE)
+            .let(::sanitizeFontScale)
 
     private companion object {
         const val PREFERENCES_NAME = "lexitrack_settings"

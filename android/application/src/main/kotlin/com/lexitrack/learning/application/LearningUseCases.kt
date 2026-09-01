@@ -326,7 +326,7 @@ class UpdateFontScaleUseCase(
     private val settings: SettingsRepository,
 ) {
     suspend operator fun invoke(scale: Float) {
-        settings.setFontScale(scale.coerceIn(0.9f, 1.4f))
+        settings.setFontScale(sanitizeFontScale(scale))
     }
 }
 

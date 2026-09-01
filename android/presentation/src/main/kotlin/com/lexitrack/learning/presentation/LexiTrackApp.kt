@@ -131,9 +131,12 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lexitrack.learning.application.DashboardSnapshot
+import com.lexitrack.learning.application.MAX_FONT_SCALE
+import com.lexitrack.learning.application.MIN_FONT_SCALE
 import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.application.ForecastDay
 import com.lexitrack.learning.application.LibraryGroup
+import com.lexitrack.learning.application.sanitizeFontScale
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
 import com.lexitrack.learning.domain.DictationFormat
@@ -2926,6 +2929,7 @@ private fun SettingsScreen(
     markMode: MarkMode,
     onMarkModeChange: (MarkMode) -> Unit,
 ) {
+    val safeFontScale = sanitizeFontScale(fontScale)
     var reminderEnabledDraft by remember(reminderEnabled) { mutableStateOf(reminderEnabled) }
     val registerPetTarget = LocalRegisterPetTarget.current
     var reminderIntervalDraft by remember(reminderIntervalMinutes) {
@@ -2948,12 +2952,12 @@ private fun SettingsScreen(
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("界面字号", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    Text("${(fontScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium, color = BrandTeal)
+                    Text("${(safeFontScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium, color = BrandTeal)
                 }
                 Slider(
-                    value = fontScale,
-                    onValueChange = onFontScaleChange,
-                    valueRange = 0.9f..1.4f,
+                    value = safeFontScale,
+                    onValueChange = { onFontScaleChange(sanitizeFontScale(it)) },
+                    valueRange = MIN_FONT_SCALE..MAX_FONT_SCALE,
                     steps = 4,
                     modifier = Modifier.petTarget(registerPetTarget, "settings-font-slider", PetTargetKind.CONTROL),
                 )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+import math
 import unicodedata
 
 
@@ -10,9 +11,47 @@ DEFAULT_REVIEW_BATCH_SIZE = 20
 DEFAULT_STUDY_ORDER = "random"
 STUDY_ORDER_ALPHABETICAL = "alphabetical"
 STUDY_ORDER_RANDOM = "random"
+DEFAULT_FONT_SCALE = 1.0
+MIN_FONT_SCALE = 0.9
+MAX_FONT_SCALE = 1.4
 DEFAULT_REMINDER_INTERVAL_MINUTES = 30.0
 MIN_REMINDER_INTERVAL_MINUTES = 0.5
 MAX_REMINDER_INTERVAL_MINUTES = 120.0
+
+
+def sanitize_font_scale(value: object, fallback: float = DEFAULT_FONT_SCALE) -> float:
+    """Return a finite, bounded UI scale suitable for text layout.
+
+    Tk and persisted settings can transiently contain an empty string, a
+    malformed value, or a non-finite float.  Keeping this rule in the domain
+    gives every Windows layer the same behavior and prevents ``round(nan)``
+    from reaching the presentation callbacks.
+    """
+    try:
+        safe_fallback = float(fallback)
+    except (TypeError, ValueError, OverflowError):
+        safe_fallback = DEFAULT_FONT_SCALE
+    if not math.isfinite(safe_fallback):
+        safe_fallback = DEFAULT_FONT_SCALE
+    safe_fallback = min(MAX_FONT_SCALE, max(MIN_FONT_SCALE, safe_fallback))
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        numeric = safe_fallback
+    if not math.isfinite(numeric):
+        numeric = safe_fallback
+    return min(MAX_FONT_SCALE, max(MIN_FONT_SCALE, numeric))
+
+
+def font_scale_from_percent(value: object, fallback: float = DEFAULT_FONT_SCALE) -> float:
+    """Normalize the percentage value emitted by a Tk scale widget."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return sanitize_font_scale(fallback)
+    if not math.isfinite(numeric):
+        return sanitize_font_scale(fallback)
+    return sanitize_font_scale(numeric / 100.0, fallback=fallback)
 
 
 INITIAL_REVIEW_WEIGHTS = {

@@ -21,6 +21,8 @@ from domain.models import (
     VocabularyEntry,
     initial_review_weight,
     updated_review_weight,
+    font_scale_from_percent,
+    sanitize_font_scale,
 )
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
@@ -65,6 +67,12 @@ class LearningServiceTests(unittest.TestCase):
     def test_font_scale_is_bounded(self):
         self.assertEqual(self.service.set_font_scale(2), 1.4)
         self.assertEqual(self.service.set_font_scale(0), 0.9)
+        self.assertEqual(self.service.set_font_scale(float("nan")), 1.0)
+        self.assertEqual(sanitize_font_scale(float("nan")), 1.0)
+        self.assertEqual(sanitize_font_scale(float("inf")), 1.0)
+        self.assertEqual(font_scale_from_percent("140"), 1.4)
+        self.assertEqual(font_scale_from_percent("bad", fallback=1.25), 1.25)
+        self.assertEqual(font_scale_from_percent("nan", fallback=1.25), 1.25)
 
     def test_study_order_defaults_to_random_and_supports_alphabetical(self):
         entries = [sample_entry("zeta"), sample_entry("alpha")]

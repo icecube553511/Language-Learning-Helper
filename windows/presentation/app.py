@@ -12,7 +12,14 @@ import tkinter.font as tkfont
 from typing import Callable
 
 from application.services import LearningService
-from domain.models import ImportReport, ReviewRating, VocabularyEntry
+from domain.models import (
+    DEFAULT_FONT_SCALE,
+    ImportReport,
+    ReviewRating,
+    VocabularyEntry,
+    font_scale_from_percent,
+    sanitize_font_scale,
+)
 from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
 from domain.pet_companion import (
     CRUISE_SPEED,
@@ -46,6 +53,7 @@ from presentation.widgets import (
     ScrollableExamplePanel,
     WordBubbleManager,
     WordClickableText,
+    centered_window_position,
     draw_icon,
 )
 
@@ -280,7 +288,7 @@ class FontManager:
         "LexiMono": 14,
     }
 
-    def __init__(self, root: tk.Tk, scale: float):
+    def __init__(self, root: tk.Tk, scale: object):
         self.root = root
         self.fonts: dict[str, tkfont.Font] = {}
         for name, size in self.BASE_SIZES.items():
@@ -289,7 +297,8 @@ class FontManager:
             self.fonts[name] = tkfont.Font(root=root, name=name, family=family, size=size, weight=weight)
         self.apply(scale)
 
-    def apply(self, scale: float):
+    def apply(self, scale: object):
+        scale = sanitize_font_scale(scale, fallback=DEFAULT_FONT_SCALE)
         for name, base_size in self.BASE_SIZES.items():
             if name == "LexiExample":
                 size = min(14, max(11, round(base_size * scale)))
@@ -321,7 +330,11 @@ class LexiTrackApp(tk.Tk):
         self.geometry("1220x800")
         self.minsize(960, 700)
         self.configure(bg=BG)
-        self.font_manager = FontManager(self, self.service.font_scale())
+        initial_font_scale = sanitize_font_scale(
+            self.service.font_scale(),
+            fallback=DEFAULT_FONT_SCALE,
+        )
+        self.font_manager = FontManager(self, initial_font_scale)
         self._configure_styles()
         self.pages: dict[str, tk.Frame] = {}
         self.nav_items: dict[str, NavItem] = {}
@@ -2127,6 +2140,47 @@ class LexiTrackApp(tk.Tk):
     def _card(self, parent):
         return tk.Frame(parent, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
 
+    def _center_toplevel(
+        self,
+        window: tk.Toplevel,
+        width: int,
+        height: int,
+        *,
+        owner: tk.Misc | None = None,
+    ) -> None:
+        """Apply one complete size+position geometry while ``window`` is hidden."""
+        owner_window = (owner or self).winfo_toplevel()
+        try:
+            owner_window.update_idletasks()
+            window.update_idletasks()
+            owner_bounds = (
+                owner_window.winfo_rootx(),
+                owner_window.winfo_rooty(),
+                owner_window.winfo_width(),
+                owner_window.winfo_height(),
+            )
+            x, y = centered_window_position(
+                width,
+                height,
+                owner_bounds=owner_bounds,
+                screen_width=window.winfo_screenwidth(),
+                screen_height=window.winfo_screenheight(),
+            )
+            window.geometry(f"{int(width)}x{int(height)}+{x}+{y}")
+            window.update_idletasks()
+        except tk.TclError:
+            # A dialog can be closed by its owner while it is being prepared.
+            return
+
+    @staticmethod
+    def _show_prepared_toplevel(window: tk.Toplevel) -> None:
+        """Map a dialog only after its final geometry has been assigned."""
+        try:
+            window.deiconify()
+            window.lift()
+        except tk.TclError:
+            pass
+
     def _build_dashboard_page(self):
         _, body = self._new_page("dashboard", "学习总览", "今日安排与近期记忆负载")
         stats = tk.Frame(body, bg=BG)
@@ -3097,11 +3151,10 @@ class LexiTrackApp(tk.Tk):
 
     def _confirm_manual_dictation(self, selected_count: int, requested_count: int) -> bool:
         dialog = tk.Toplevel(self)
+        dialog.withdraw()
         dialog.title("确认选择")
-        dialog.geometry("430x170")
         dialog.configure(bg=BG)
         dialog.transient(self)
-        dialog.grab_set()
         tk.Label(dialog, text=f"当前仅选择了{selected_count}/{requested_count}，是否确定选择", bg=BG, fg=TEXT, font="LexiBodyBold", wraplength=380).pack(padx=20, pady=(28, 18))
         result = {"value": False}
         buttons = tk.Frame(dialog, bg=BG)
@@ -3111,16 +3164,20 @@ class LexiTrackApp(tk.Tk):
             dialog.destroy()
         self._primary_button(buttons, "确定选择", lambda: finish(True), width=10).pack(side=tk.LEFT, padx=6)
         self._outline_button(buttons, "返回选择", lambda: finish(False), width=10).pack(side=tk.LEFT, padx=6)
+        self._center_toplevel(dialog, 430, 170)
+        self._show_prepared_toplevel(dialog)
         self._attach_pet_to_dialog(dialog, "dictation-confirm")
+        dialog.grab_set()
         self.wait_window(dialog)
         return result["value"]
 
     def _open_dictation_preview(self, document):
         preview = tk.Toplevel(self)
+        preview.withdraw()
         preview.title("默写预览 · A4 portrait")
-        preview.geometry("720x780")
         preview.minsize(620, 620)
         preview.configure(bg=BG)
+        preview.transient(self)
         tk.Label(preview, text="A4 页面预览", bg=BG, fg=TEXT, font="LexiTitle").pack(anchor="w", padx=20, pady=(18, 2))
         tk.Label(preview, text=f"{len(document.rows)} 个词条 · {document.options.font_size_pt} pt · {', '.join(item.value.upper() for item in sorted(document.options.formats, key=lambda value: value.value))}", bg=BG, fg=MUTED, font="LexiSmall").pack(anchor="w", padx=20, pady=(0, 10))
         frame = tk.Frame(preview, bg=BG)
@@ -3211,6 +3268,8 @@ class LexiTrackApp(tk.Tk):
         )
         download_button.pack(side=tk.RIGHT)
         self._outline_button(actions, "返回修改", preview.destroy, width=10).pack(side=tk.RIGHT, padx=8)
+        self._center_toplevel(preview, 720, 780)
+        self._show_prepared_toplevel(preview)
         self._attach_pet_to_dialog(preview, "dictation-preview")
 
     def download_dictation(self):
@@ -3259,11 +3318,10 @@ class LexiTrackApp(tk.Tk):
 
     def _show_dictation_mark_dialog(self, word_ids: set[str]):
         dialog = tk.Toplevel(self)
+        dialog.withdraw()
         dialog.title("标记默写词条")
-        dialog.geometry("420x205")
         dialog.configure(bg=BG)
         dialog.transient(self)
-        dialog.grab_set()
         tk.Label(dialog, text="是否将本次导出的词条标记为 evaluated？", bg=BG, fg=TEXT, font="LexiBodyBold", wraplength=370).pack(padx=20, pady=(26, 12))
         dont_ask = tk.BooleanVar(value=False)
         tk.Checkbutton(dialog, text="不再提示", variable=dont_ask, bg=BG, fg=TEXT, activebackground=BG, selectcolor=BG, font="LexiSmall").pack()
@@ -3277,7 +3335,10 @@ class LexiTrackApp(tk.Tk):
             dialog.destroy()
         self._primary_button(buttons, "标记", lambda: finish(True), width=8).pack(side=tk.LEFT, padx=6)
         self._outline_button(buttons, "不标记", lambda: finish(False), width=8).pack(side=tk.LEFT, padx=6)
+        self._center_toplevel(dialog, 420, 205)
+        self._show_prepared_toplevel(dialog)
         self._attach_pet_to_dialog(dialog, "dictation-mark")
+        dialog.grab_set()
         self.wait_window(dialog)
 
     def _resize_study_answer(self, event):
@@ -3551,7 +3612,11 @@ class LexiTrackApp(tk.Tk):
         tk.Label(display, text="字体大小", bg=SURFACE, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=22, pady=(20, 4))
         self.scale_text = tk.Label(display, text="", bg=SURFACE, fg=ACCENT, font="LexiBodyBold")
         self.scale_text.pack(anchor="w", padx=22)
-        self.scale_var = tk.DoubleVar(value=self.service.font_scale() * 100)
+        initial_font_scale = sanitize_font_scale(
+            self.service.font_scale(),
+            fallback=DEFAULT_FONT_SCALE,
+        )
+        self.scale_var = tk.DoubleVar(value=initial_font_scale * 100)
         scale = tk.Scale(
             display,
             from_=90,
@@ -3982,9 +4047,9 @@ class LexiTrackApp(tk.Tk):
         self._word_reminder_is_preview = preview
 
         popup = tk.Toplevel(self)
+        popup.withdraw()
         self._word_reminder_popup = popup
         popup.title("LexiTrack 词程 · 单词提醒")
-        popup.geometry(f"{REMINDER_POPUP_WIDTH}x{REMINDER_POPUP_HEIGHT}")
         popup.minsize(REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
         popup.maxsize(REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
         popup.resizable(False, False)
@@ -4067,6 +4132,8 @@ class LexiTrackApp(tk.Tk):
         self._outline_button(action_inner, "知道了", self._dismiss_word_reminder, width=8).pack(side=tk.RIGHT)
         actions.pack_configure(before=content)
         popup.protocol("WM_DELETE_WINDOW", self._dismiss_word_reminder)
+        self._center_toplevel(popup, REMINDER_POPUP_WIDTH, REMINDER_POPUP_HEIGHT)
+        self._show_prepared_toplevel(popup)
         self._attach_pet_to_dialog(popup, "word-reminder")
         try:
             self.bell()
@@ -4139,8 +4206,8 @@ class LexiTrackApp(tk.Tk):
 
     def _show_import_report(self, report: ImportReport):
         dialog = tk.Toplevel(self)
+        dialog.withdraw()
         dialog.title("CSV 导入结果")
-        dialog.geometry("820x500")
         dialog.minsize(700, 420)
         dialog.configure(bg=BG)
         dialog.transient(self)
@@ -4159,6 +4226,8 @@ class LexiTrackApp(tk.Tk):
             tree.insert("", tk.END, values=(issue.row, "跳过" if issue.status == "skipped" else "失败", issue.field, issue.error_code, issue.message))
         tree.pack(fill=tk.BOTH, expand=True)
         self._primary_button(dialog, "关闭", dialog.destroy, width=9).pack(anchor="e", padx=24, pady=(0, 20))
+        self._center_toplevel(dialog, 820, 500)
+        self._show_prepared_toplevel(dialog)
         self._attach_pet_to_dialog(dialog, "csv-import-report")
 
     def batch_edit_labels(self):
@@ -4172,8 +4241,8 @@ class LexiTrackApp(tk.Tk):
             messagebox.showinfo("批量标签", "请先在词库中选择一个或多个词条。", parent=self)
             return
         dialog = tk.Toplevel(self)
+        dialog.withdraw()
         dialog.title("批量修改标签")
-        dialog.geometry("520x330")
         dialog.configure(bg=BG)
         dialog.transient(self)
         tk.Label(dialog, text=f"已选择 {len(word_ids)} 个词条", bg=BG, fg=TEXT, font="LexiHeading").pack(anchor="w", padx=24, pady=(22, 8))
@@ -4206,6 +4275,8 @@ class LexiTrackApp(tk.Tk):
         actions.pack(side=tk.BOTTOM, fill=tk.X, pady=16)
         self._primary_button(actions, "保存标签", save, width=10).pack(side=tk.RIGHT, padx=24)
         self._outline_button(actions, "取消", dialog.destroy, width=8).pack(side=tk.RIGHT)
+        self._center_toplevel(dialog, 520, 330)
+        self._show_prepared_toplevel(dialog)
         self._attach_pet_to_dialog(dialog, "batch-labels")
 
     def set_forecast_days(self, days: int):
@@ -4224,41 +4295,64 @@ class LexiTrackApp(tk.Tk):
         selected.configure(bg="#D8EEE7", fg=ACCENT)
         other.configure(bg=SURFACE, fg=TEXT)
 
-    def change_font_scale(self, raw_value: str):
-        scale = min(1.4, max(0.9, float(raw_value) / 100.0))
-        self.font_manager.apply(scale)
-        self.minsize(960, 800 if scale >= 1.3 else 700)
-        meaning_font = "LexiMeaningCompact" if scale >= 1.3 else "LexiBodyBold"
-        self.study_meaning.configure(height=1, font=meaning_font)
-        self.review_meaning.configure(height=1, font=meaning_font)
-        self._apply_answer_text(
-            self.current_card,
-            self.study_meaning,
-            self.example_texts,
-            self.example_labels,
-            max(360, self.answer_panel.winfo_width() - 80),
-            max(360, self.answer_panel.winfo_width() - 80),
-            preserve_examples=True,
-        )
-        review_card = self.review_queue[0] if self.review_queue else None
-        self._apply_answer_text(
-            review_card,
-            self.review_meaning,
-            self.review_example_texts,
-            self.review_example_labels,
-            max(360, self.review_answer_panel.winfo_width() - 80),
-        )
-        if self.answer_visible and self.answer_panel.winfo_manager():
-            self.answer_panel.pack_forget()
-            self.answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
-        if self.review_answer_visible and self.review_answer_panel.winfo_manager():
-            self.review_answer_panel.pack_forget()
-            self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
-        self.service.set_font_scale(scale)
-        self.scale_text.configure(text=f"{round(scale * 100):d}%")
-        ttk.Style(self).configure("Treeview", rowheight=max(32, round(34 * scale)))
-        if self.current_page == "dictation":
-            self._render_dictation_candidates()
+    def change_font_scale(self, raw_value: object):
+        # Tk invokes Scale callbacks with strings; malformed values can also
+        # arrive while restoring a damaged local settings file.  Normalize
+        # before any arithmetic so ``round`` and Tk font metrics never see NaN.
+        # ``tk.Tk.__getattr__`` forwards unknown names into Tcl.  Reading
+        # ``__dict__`` avoids that fallback while the object is still being
+        # assembled (and makes this callback safe for headless tests).
+        if self.__dict__.get("_font_scale_callback_active", False):
+            return
+        self._font_scale_callback_active = True
+        try:
+            scale = font_scale_from_percent(
+                raw_value,
+                fallback=self.service.font_scale(),
+            )
+            percent = round(scale * 100)
+            scale_var = self.__dict__.get("scale_var")
+            if scale_var is not None:
+                try:
+                    scale_var.set(percent)
+                except (AttributeError, tk.TclError, TypeError, ValueError):
+                    pass
+
+            self.font_manager.apply(scale)
+            self.minsize(960, 800 if scale >= 1.3 else 700)
+            meaning_font = "LexiMeaningCompact" if scale >= 1.3 else "LexiBodyBold"
+            self.study_meaning.configure(height=1, font=meaning_font)
+            self.review_meaning.configure(height=1, font=meaning_font)
+            self._apply_answer_text(
+                self.current_card,
+                self.study_meaning,
+                self.example_texts,
+                self.example_labels,
+                max(360, self.answer_panel.winfo_width() - 80),
+                max(360, self.answer_panel.winfo_width() - 80),
+                preserve_examples=True,
+            )
+            review_card = self.review_queue[0] if self.review_queue else None
+            self._apply_answer_text(
+                review_card,
+                self.review_meaning,
+                self.review_example_texts,
+                self.review_example_labels,
+                max(360, self.review_answer_panel.winfo_width() - 80),
+            )
+            if self.answer_visible and self.answer_panel.winfo_manager():
+                self.answer_panel.pack_forget()
+                self.answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+            if self.review_answer_visible and self.review_answer_panel.winfo_manager():
+                self.review_answer_panel.pack_forget()
+                self.review_answer_panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+            self.service.set_font_scale(scale)
+            self.scale_text.configure(text=f"{percent:d}%")
+            ttk.Style(self).configure("Treeview", rowheight=max(32, round(34 * scale)))
+            if self.current_page == "dictation":
+                self._render_dictation_candidates()
+        finally:
+            self._font_scale_callback_active = False
 
     def change_review_batch_size(self, raw_value: str):
         learnt_count = self.service.learnt_word_count()
@@ -4395,11 +4489,13 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     pet_dialog_focus_promotion_ready = False
     if app._pet_image is not None:
         first_dialog = tk.Toplevel(app)
-        first_dialog.geometry("360x220")
+        first_dialog.withdraw()
         first_dialog.configure(bg=BG)
         first_surface = app._card(first_dialog)
         first_surface.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
         app._primary_button(first_surface, "确认", lambda: None).pack(pady=50)
+        app._center_toplevel(first_dialog, 360, 220)
+        app._show_prepared_toplevel(first_dialog)
         app._attach_pet_to_dialog(first_dialog, "smoke-dialog-first")
         app.update_idletasks()
         app.update()
@@ -4428,11 +4524,13 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         )
 
         second_dialog = tk.Toplevel(app)
-        second_dialog.geometry("320x180")
+        second_dialog.withdraw()
         second_dialog.configure(bg=BG)
         second_surface = app._card(second_dialog)
         second_surface.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
         app._primary_button(second_surface, "继续", lambda: None).pack(pady=32)
+        app._center_toplevel(second_dialog, 320, 180)
+        app._show_prepared_toplevel(second_dialog)
         app._attach_pet_to_dialog(second_dialog, "smoke-dialog-second")
         app.update_idletasks()
         app.update()
