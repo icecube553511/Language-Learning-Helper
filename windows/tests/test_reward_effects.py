@@ -19,10 +19,20 @@ from presentation.reward_effects import (
     RewardAnimationModel,
     RewardPoint,
     STUDY_REWARD_COLOR,
+    BURST_PARTICLE_GLOW_RADIUS,
+    BURST_PARTICLE_RADIUS,
+    TRAIL_GLOW_WIDTH_MULTIPLIER,
+    TRAIL_MAXIMUM_STROKE_WIDTH,
+    TRAIL_MINIMUM_STROKE_WIDTH,
+    TRAIL_STROKE_SPEED_FACTOR,
+    VISUAL_ORB_GLOW_RADIUS,
+    VISUAL_ORB_HIGHLIGHT_RADIUS,
+    VISUAL_ORB_RADIUS,
     TrailSample,
     clip_trail_to_length,
     trail_polyline_length,
     trail_length_for_speed,
+    trail_stroke_width_for_speed,
 )
 from presentation.app import LexiTrackApp
 from domain.models import ReviewRating, VocabularyEntry
@@ -52,6 +62,21 @@ class RewardEffectsTests(unittest.TestCase):
         self.assertEqual(DEFAULT_CONFIG.burst_duration_ms, feedback["burstDurationMs"])
         self.assertEqual(DEFAULT_CONFIG.maximum_lifetime_ms, feedback["maximumLifetimeMs"])
         self.assertEqual(DEFAULT_CONFIG.missing_target_timeout_ms, feedback["missingTargetTimeoutMs"])
+        visual = feedback["visual"]
+        self.assertEqual(VISUAL_ORB_RADIUS, visual["orbRadius"])
+        self.assertEqual(VISUAL_ORB_GLOW_RADIUS, visual["orbGlowRadius"])
+        self.assertEqual(VISUAL_ORB_HIGHLIGHT_RADIUS, visual["orbHighlightRadius"])
+        self.assertEqual(TRAIL_MINIMUM_STROKE_WIDTH, visual["trailMinimumStrokeWidth"])
+        self.assertEqual(TRAIL_MAXIMUM_STROKE_WIDTH, visual["trailMaximumStrokeWidth"])
+        self.assertEqual(TRAIL_STROKE_SPEED_FACTOR, visual["trailStrokeSpeedFactor"])
+        self.assertEqual(TRAIL_GLOW_WIDTH_MULTIPLIER, visual["trailGlowWidthMultiplier"])
+        self.assertEqual(BURST_PARTICLE_RADIUS, visual["burstParticleRadius"])
+        self.assertEqual(BURST_PARTICLE_GLOW_RADIUS, visual["burstParticleGlowRadius"])
+
+    def test_visual_trail_width_is_bounded_and_speed_responsive(self):
+        self.assertEqual(trail_stroke_width_for_speed(0.0), TRAIL_MINIMUM_STROKE_WIDTH)
+        self.assertGreater(trail_stroke_width_for_speed(1_000.0), trail_stroke_width_for_speed(100.0))
+        self.assertEqual(trail_stroke_width_for_speed(10_000.0), TRAIL_MAXIMUM_STROKE_WIDTH)
 
     def test_minimum_verified_concurrency_is_independent(self):
         model = RewardAnimationModel()

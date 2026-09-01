@@ -1685,6 +1685,17 @@ def verify_pet_vitals_contract() -> None:
         "homingAcceleration": 2400.0,
         "homingMaximumSpeed": 2800.0,
         "orbRadius": 6.0,
+        "visual": {
+            "orbRadius": 16.0,
+            "orbGlowRadius": 34.0,
+            "orbHighlightRadius": 4.0,
+            "trailMinimumStrokeWidth": 5.0,
+            "trailMaximumStrokeWidth": 12.0,
+            "trailStrokeSpeedFactor": 0.0025,
+            "trailGlowWidthMultiplier": 2.2,
+            "burstParticleRadius": 4.0,
+            "burstParticleGlowRadius": 10.0,
+        },
         "trailLifetimeMs": 180,
         "trailMaximumPoints": 20,
         "trailLengthFormula": "clamp(18,96,speed*0.04)",
@@ -1759,6 +1770,7 @@ def verify_pet_vitals_contract() -> None:
             "sourceAnchor": effect["sourceAnchor"],
             "targetTracking": effect["targetTracking"],
             "concurrency": effect["concurrency"],
+            "visual": effect["visual"],
         },
     }
     if parity.get("petVitals") != expected_manifest_vitals:

@@ -36,10 +36,21 @@ internal object RewardFlightTuning {
     const val HOMING_INITIAL_SPEED = 180.0f
     const val HOMING_ACCELERATION = 2_400.0f
     const val HOMING_MAXIMUM_SPEED = 2_800.0f
+    // Physical contact stays small; these values control the visible feedback
+    // and are centralized because later releases will tune the presentation.
     const val ORB_RADIUS = 6.0f
+    const val VISUAL_ORB_RADIUS = 16.0f
+    const val VISUAL_ORB_GLOW_RADIUS = 34.0f
+    const val VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0f
     const val TRAIL_LIFETIME_MS = 180L
     const val TRAIL_MAXIMUM_POINTS = 20
+    const val TRAIL_MINIMUM_STROKE_WIDTH = 5.0f
+    const val TRAIL_MAXIMUM_STROKE_WIDTH = 12.0f
+    const val TRAIL_STROKE_SPEED_FACTOR = 0.0025f
+    const val TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2f
     const val BURST_PARTICLE_COUNT = 18
+    const val BURST_PARTICLE_RADIUS = 4.0f
+    const val BURST_PARTICLE_GLOW_RADIUS = 10.0f
     const val BURST_DURATION_MS = 350L
     const val MAXIMUM_LIFETIME_MS = 2_500L
     const val MISSING_TARGET_TIMEOUT_MS = 500L
@@ -341,34 +352,82 @@ internal fun RewardEffectsCanvas(
         snapshot.flights.forEach { flight ->
             val color = rewardColor(flight.kind)
             val trail = flight.trail
+            val baseStrokeWidth = trailStrokeWidthForSpeed(flight.velocity.length())
             trail.zipWithNext().forEachIndexed { index, (from, to) ->
                 val ageAlpha = 1f - to.ageMs.toFloat() / RewardFlightTuning.TRAIL_LIFETIME_MS.toFloat()
                 val sequenceAlpha = (index + 1f) / max(1, trail.lastIndex).toFloat()
+                val segmentAlpha = (ageAlpha * sequenceAlpha).coerceIn(0f, 1f)
+                val taperedWidth = baseStrokeWidth * (0.55f + sequenceAlpha * 0.45f)
                 drawLine(
-                    color = color.copy(alpha = (ageAlpha * sequenceAlpha * 0.72f).coerceIn(0f, 0.72f)),
+                    color = color.copy(alpha = segmentAlpha * 0.24f),
                     start = from.position.toOffset(windowOrigin),
                     end = to.position.toOffset(windowOrigin),
-                    strokeWidth = 4f,
+                    strokeWidth = baseStrokeWidth * RewardFlightTuning.TRAIL_GLOW_WIDTH_MULTIPLIER,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = color.copy(alpha = segmentAlpha * 0.88f),
+                    start = from.position.toOffset(windowOrigin),
+                    end = to.position.toOffset(windowOrigin),
+                    strokeWidth = taperedWidth,
                     cap = StrokeCap.Round,
                 )
             }
             val center = flight.position.toOffset(windowOrigin)
-            drawCircle(color.copy(alpha = 0.20f), RewardFlightTuning.ORB_RADIUS * 2.4f, center)
-            drawCircle(color.copy(alpha = 0.55f), RewardFlightTuning.ORB_RADIUS * 1.5f, center)
-            drawCircle(color, RewardFlightTuning.ORB_RADIUS, center)
-            drawCircle(Color.White.copy(alpha = 0.82f), RewardFlightTuning.ORB_RADIUS * 0.35f, center)
+            drawCircle(
+                color = color.copy(alpha = 0.16f),
+                radius = RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS,
+                center = center,
+            )
+            drawCircle(
+                color = color.copy(alpha = 0.42f),
+                radius = RewardFlightTuning.VISUAL_ORB_RADIUS * 1.35f,
+                center = center,
+            )
+            drawCircle(
+                color = color,
+                radius = RewardFlightTuning.VISUAL_ORB_RADIUS,
+                center = center,
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.92f),
+                radius = RewardFlightTuning.VISUAL_ORB_HIGHLIGHT_RADIUS,
+                center = center,
+            )
         }
         snapshot.particles.forEach { particle ->
+            val particleCenter = particle.position.toOffset(windowOrigin)
+            drawCircle(
+                color = rewardColor(particle.kind).copy(alpha = particle.alpha * 0.24f),
+                radius = RewardFlightTuning.BURST_PARTICLE_GLOW_RADIUS,
+                center = particleCenter,
+            )
             drawCircle(
                 color = rewardColor(particle.kind).copy(alpha = particle.alpha),
-                radius = 2.2f,
-                center = particle.position.toOffset(windowOrigin),
+                radius = RewardFlightTuning.BURST_PARTICLE_RADIUS,
+                center = particleCenter,
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = particle.alpha * 0.78f),
+                radius = 1.4f,
+                center = particleCenter,
             )
         }
     }
 }
 
 internal fun trailLengthForSpeed(speed: Float): Float = (speed * 0.04f).coerceIn(18f, 96f)
+
+internal fun trailStrokeWidthForSpeed(speed: Float): Float {
+    val boundedSpeed = if (speed.isFinite()) speed.coerceAtLeast(0f) else 0f
+    return (
+        RewardFlightTuning.TRAIL_MINIMUM_STROKE_WIDTH +
+            boundedSpeed * RewardFlightTuning.TRAIL_STROKE_SPEED_FACTOR
+        ).coerceIn(
+            RewardFlightTuning.TRAIL_MINIMUM_STROKE_WIDTH,
+            RewardFlightTuning.TRAIL_MAXIMUM_STROKE_WIDTH,
+        )
+}
 
 internal fun visibleTrail(points: List<RewardTrailPoint>, maximumLength: Float): List<RewardTrailPoint> {
     require(maximumLength.isFinite() && maximumLength >= 0f) {

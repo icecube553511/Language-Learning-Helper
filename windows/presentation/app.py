@@ -519,6 +519,8 @@ class LexiTrackApp(tk.Tk):
             height=height,
         )
         overlay.lift()
+        if self._reward_effects is not None:
+            self._reward_effects.keep_above(overlay)
 
     def _cancel_main_pet_render(self) -> None:
         self._pet_render_generation += 1

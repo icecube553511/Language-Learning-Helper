@@ -22,12 +22,23 @@ SPIRAL_RADIUS_END = 18.0
 HOMING_INITIAL_SPEED = 180.0
 HOMING_ACCELERATION = 2400.0
 HOMING_MAXIMUM_SPEED = 2800.0
+# Keep the physical contact radius separate from the visible feedback.  These
+# presentation values are centralized because they will be tuned later.
 ORB_RADIUS = 6.0
+VISUAL_ORB_RADIUS = 16.0
+VISUAL_ORB_GLOW_RADIUS = 34.0
+VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0
 TRAIL_LIFETIME_MS = 180.0
 TRAIL_MAXIMUM_POINTS = 20
 TRAIL_MINIMUM_LENGTH = 18.0
 TRAIL_MAXIMUM_LENGTH = 96.0
+TRAIL_MINIMUM_STROKE_WIDTH = 5.0
+TRAIL_MAXIMUM_STROKE_WIDTH = 12.0
+TRAIL_STROKE_SPEED_FACTOR = 0.0025
+TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2
 BURST_PARTICLE_COUNT = 18
+BURST_PARTICLE_RADIUS = 4.0
+BURST_PARTICLE_GLOW_RADIUS = 10.0
 BURST_DURATION_MS = 350.0
 MAXIMUM_LIFETIME_MS = 2500.0
 MISSING_TARGET_TIMEOUT_MS = 500.0
@@ -113,6 +124,18 @@ def trail_length_for_speed(speed: float) -> float:
     return min(
         TRAIL_MAXIMUM_LENGTH,
         max(TRAIL_MINIMUM_LENGTH, max(0.0, float(speed)) * 0.04),
+    )
+
+
+def trail_stroke_width_for_speed(speed: float) -> float:
+    """Return a readable, speed-responsive core width for the trail."""
+    bounded_speed = max(0.0, float(speed)) if math.isfinite(float(speed)) else 0.0
+    return min(
+        TRAIL_MAXIMUM_STROKE_WIDTH,
+        max(
+            TRAIL_MINIMUM_STROKE_WIDTH,
+            TRAIL_MINIMUM_STROKE_WIDTH + bounded_speed * TRAIL_STROKE_SPEED_FACTOR,
+        ),
     )
 
 
@@ -457,8 +480,20 @@ class RewardEffectLayer(tk.Toplevel):
     def show(self) -> None:
         if self.state() == "withdrawn":
             self.deiconify()
-            self.lift()
-            self._enable_mouse_passthrough()
+        self.lift()
+        self._enable_mouse_passthrough()
+
+    def keep_above(self, other: tk.Misc | None = None) -> None:
+        """Keep the transparent surface above the independently placed pet window."""
+        if self.state() == "withdrawn":
+            return
+        try:
+            if other is None:
+                self.lift()
+            else:
+                self.lift(aboveThis=other)
+        except tk.TclError:
+            pass
 
     def hide(self) -> None:
         if self.state() != "withdrawn":
@@ -471,10 +506,22 @@ class RewardEffectLayer(tk.Toplevel):
         self.canvas.delete("all")
         for flight in model.flights:
             trail = flight.trail
+            base_stroke_width = trail_stroke_width_for_speed(flight.speed)
             for index in range(1, len(trail)):
                 x1, y1 = self._canvas_point(trail[index - 1].position)
                 x2, y2 = self._canvas_point(trail[index].position)
-                width = max(1.0, 4.0 * index / max(1, len(trail) - 1))
+                sequence = index / max(1, len(trail) - 1)
+                width = base_stroke_width * (0.55 + sequence * 0.45)
+                self.canvas.create_line(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    fill=flight.color,
+                    width=base_stroke_width * TRAIL_GLOW_WIDTH_MULTIPLIER,
+                    capstyle=tk.ROUND,
+                    stipple="gray50",
+                )
                 self.canvas.create_line(
                     x1,
                     y1,
@@ -486,7 +533,16 @@ class RewardEffectLayer(tk.Toplevel):
                 )
             if flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
                 x, y = self._canvas_point(flight.position)
-                radius = flight.config.orb_radius
+                self.canvas.create_oval(
+                    x - VISUAL_ORB_GLOW_RADIUS,
+                    y - VISUAL_ORB_GLOW_RADIUS,
+                    x + VISUAL_ORB_GLOW_RADIUS,
+                    y + VISUAL_ORB_GLOW_RADIUS,
+                    fill=flight.color,
+                    outline="",
+                    stipple="gray50",
+                )
+                radius = VISUAL_ORB_RADIUS
                 self.canvas.create_oval(
                     x - radius,
                     y - radius,
@@ -495,16 +551,41 @@ class RewardEffectLayer(tk.Toplevel):
                     fill=flight.color,
                     outline=flight.color,
                 )
+                self.canvas.create_oval(
+                    x - VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    y - VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    x + VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    y + VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    fill="#FFFFFF",
+                    outline="#FFFFFF",
+                )
             elif flight.phase is FlightPhase.BURST:
                 for particle in flight.particles:
                     x, y = self._canvas_point(particle.position_at(now_ms))
                     self.canvas.create_oval(
-                        x - 2.0,
-                        y - 2.0,
-                        x + 2.0,
-                        y + 2.0,
+                        x - BURST_PARTICLE_GLOW_RADIUS,
+                        y - BURST_PARTICLE_GLOW_RADIUS,
+                        x + BURST_PARTICLE_GLOW_RADIUS,
+                        y + BURST_PARTICLE_GLOW_RADIUS,
+                        fill=flight.color,
+                        outline="",
+                        stipple="gray50",
+                    )
+                    self.canvas.create_oval(
+                        x - BURST_PARTICLE_RADIUS,
+                        y - BURST_PARTICLE_RADIUS,
+                        x + BURST_PARTICLE_RADIUS,
+                        y + BURST_PARTICLE_RADIUS,
                         fill=flight.color,
                         outline=flight.color,
+                    )
+                    self.canvas.create_oval(
+                        x - 1.4,
+                        y - 1.4,
+                        x + 1.4,
+                        y + 1.4,
+                        fill="#FFFFFF",
+                        outline="#FFFFFF",
                     )
 
 
@@ -537,6 +618,9 @@ class RewardEffectsController:
             self._after_id = self.host.after(FRAME_MS, self._tick)
         return flight
 
+    def keep_above(self, other: tk.Misc | None = None) -> None:
+        self.layer.keep_above(other)
+
     def _host_visible(self) -> bool:
         try:
             state = str(self.host.wm_state()) if hasattr(self.host, "wm_state") else "normal"
@@ -563,6 +647,7 @@ class RewardEffectsController:
             if self.model.active_count:
                 self.layer.show()
                 self.layer.render(self.model, self._animation_now_ms)
+                self.layer.keep_above()
             else:
                 self.layer.hide()
         if self.model.active_count:
