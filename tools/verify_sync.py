@@ -10,6 +10,7 @@ import unicodedata
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import prepare_pet_appearance_assets as pet_appearance_assets
 from opencc import OpenCC
 
 from prepare_pet_asset import prepare as prepare_pet_asset
@@ -2117,6 +2118,297 @@ def verify_branding() -> None:
             fail("Shared mirrored pet image is not reproducible from the canonical source")
 
 
+def verify_pet_appearance_contract() -> None:
+    contract_path = CONTRACTS / "pet-appearance-v1.md"
+    golden_path = CONTRACTS / "pet-appearance-golden-v1.json"
+    if not contract_path.is_file() or "pet-appearance-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet appearance contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Pet appearance golden file is missing")
+
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    required_states = ["pain.png", "scared.png", "sleep.png", "hungry.png"]
+    expected_thresholds = {
+        "largeLandingSpeed": 437.5,
+        "airborneSeconds": 3.0,
+        "stationarySeconds": 30.0,
+        "doubleTapWindowMs": 300,
+        "hungrySatiety": 0.0,
+    }
+    expected_priority = ["pain", "scared", "hungry", "sleep", "happy", "normal"]
+    if payload.get("contractVersion") != "pet-appearance-v1":
+        fail("Unexpected pet appearance contract version")
+    if payload.get("sourceDirectory") != "shared/assets/branding/pet_states":
+        fail("Pet appearance source directory differs")
+    if payload.get("runtimeDirectory") != "shared/assets/pets/states":
+        fail("Pet appearance runtime directory differs")
+    if payload.get("requiredStateAssets") != required_states:
+        fail("Pet appearance required state assets differ")
+    if payload.get("happyAssetPattern") != r"^happy([1-9][0-9]*)\.png$":
+        fail("Pet appearance happy filename pattern differs")
+    if payload.get("thresholds") != expected_thresholds:
+        fail("Pet appearance thresholds differ")
+    if payload.get("priority") != expected_priority:
+        fail("Pet appearance priority differs")
+    priority_decision = payload.get("priorityDecision")
+    priority_confirmed = payload.get("priorityConfirmed")
+    if priority_decision not in {"recommended-pain-before-scared", "confirmed-pain-before-scared"}:
+        fail("Pet appearance priority decision is missing")
+    if not isinstance(priority_confirmed, bool):
+        fail("Pet appearance priority confirmation must be boolean")
+    if priority_confirmed != (priority_decision == "confirmed-pain-before-scared"):
+        fail("Pet appearance priority confirmation does not match the decision marker")
+    if payload.get("missingAssetPolicy") != "skip-missing-choice-and-fallback-to-normal":
+        fail("Pet appearance missing-asset policy differs")
+    if payload.get("featureEnabledWhen") != "all-required-state-assets-and-at-least-one-happy-asset-exist-and-priority-is-confirmed":
+        fail("Pet appearance enablement rule differs")
+
+    source_path = ROOT / payload["sourceDirectory"]
+    runtime_path = ROOT / payload["runtimeDirectory"]
+    if not source_path.is_dir() or not runtime_path.is_dir():
+        fail("Pet appearance source and runtime directories must both exist")
+
+    try:
+        discovered = pet_appearance_assets.discover(source_path)
+    except Exception as exc:
+        fail(f"Pet appearance source assets are invalid: {exc}")
+    manifest_path = runtime_path / "manifest.json"
+    if not manifest_path.is_file():
+        fail("Pet appearance runtime manifest is missing")
+    generated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    generated_projection = {
+        "contractVersion": discovered["contractVersion"],
+        "stateAssets": discovered["stateAssets"],
+        "happyAssets": discovered["happyAssets"],
+        "enabled": discovered["enabled"],
+        "disabledReason": discovered["disabledReason"],
+        "sourceDirectory": "shared/assets/branding/pet_states",
+        "runtimeDirectory": "shared/assets/pets/states",
+    }
+    if generated != generated_projection:
+        fail("Generated pet appearance manifest is stale or has unexpected fields")
+
+    def runtime_asset_path(relative_name: str) -> Path:
+        return runtime_path / relative_name
+
+    expected_runtime_pngs: set[str] = set()
+    for filename in pet_appearance_assets.STATE_FILES.values():
+        source_file = source_path / filename
+        runtime_file = runtime_asset_path(filename)
+        if source_file.is_file():
+            expected_runtime_pngs.add(filename)
+            if not runtime_file.is_file():
+                fail(f"Generated runtime asset is missing: {filename}")
+            if source_file.read_bytes() != runtime_file.read_bytes():
+                fail(f"Generated runtime asset differs from source: {filename}")
+            if runtime_file.read_bytes()[:8] != pet_appearance_assets.PNG_SIGNATURE:
+                fail(f"Generated runtime asset is not a PNG: {filename}")
+        elif runtime_file.is_file():
+            fail(f"Runtime asset exists without a source asset: {filename}")
+
+    happy_source_path = source_path / "happy"
+    happy_runtime_path = runtime_path / "happy"
+    for filename in discovered["happyAssets"]:
+        expected_runtime_pngs.add(f"happy/{filename}")
+        source_file = happy_source_path / filename
+        runtime_file = happy_runtime_path / filename
+        if not runtime_file.is_file() or source_file.read_bytes() != runtime_file.read_bytes():
+            fail(f"Generated happy runtime asset differs or is missing: {filename}")
+        if runtime_file.read_bytes()[:8] != pet_appearance_assets.PNG_SIGNATURE:
+            fail(f"Generated happy runtime asset is not a PNG: {filename}")
+
+    observed_runtime_pngs = {
+        path.relative_to(runtime_path).as_posix()
+        for path in runtime_path.rglob("*.png")
+        if path.is_file()
+    }
+    if observed_runtime_pngs != expected_runtime_pngs:
+        fail("Runtime pet appearance PNG set differs from the generated manifest")
+
+    availability = payload.get("currentAvailability")
+    expected_availability = {
+        "enabled": discovered["enabled"],
+        "stateAssets": discovered["stateAssets"],
+        "happyAssets": discovered["happyAssets"],
+        "disabledReason": discovered["disabledReason"],
+    }
+    if availability != expected_availability:
+        fail("Pet appearance golden current availability differs from generated assets")
+
+    asset_set = payload.get("assetSet", {})
+    if asset_set.get("stateAssets") != {
+        "pain": "pain.png",
+        "scared": "scared.png",
+        "sleep": "sleep.png",
+        "hungry": "hungry.png",
+    } or asset_set.get("happyAssets") != ["happy1.png", "happy2.png"]:
+        fail("Pet appearance golden asset set differs")
+
+    def at_least(value: float, threshold: float) -> bool:
+        return math.isfinite(value) and value >= threshold
+
+    def expected_decision(context: dict) -> tuple[str, str | None, str]:
+        if at_least(float(context.get("landingImpactSpeed", 0.0)), expected_thresholds["largeLandingSpeed"]):
+            return "pain", "pain.png", "large-landing"
+        if at_least(float(context.get("airborneSeconds", 0.0)), expected_thresholds["airborneSeconds"]):
+            return "scared", "scared.png", "airborne-too-long"
+        satiety = context.get("satiety")
+        if satiety is not None and math.isfinite(float(satiety)) and float(satiety) <= expected_thresholds["hungrySatiety"]:
+            return "hungry", "hungry.png", "satiety-zero"
+        if (
+            not bool(context.get("moving", False))
+            and at_least(float(context.get("stationarySeconds", 0.0)), expected_thresholds["stationarySeconds"])
+        ):
+            return "sleep", "sleep.png", "stationary-too-long"
+        if not bool(context.get("moving", False)) and bool(context.get("rapidDoubleTap", False)):
+            happy_index = int(context.get("happyAssetIndex", 0)) % 2
+            return "happy", ["happy1.png", "happy2.png"][happy_index], "stationary-double-tap"
+        return "normal", None, "normal"
+
+    vectors = payload.get("vectors", [])
+    if not vectors:
+        fail("Pet appearance golden vectors are missing")
+    for vector in vectors:
+        expected = (
+            ("normal", None, "normal")
+            if vector.get("assetSet") == "empty"
+            else expected_decision(vector.get("context", {}))
+        )
+        observed = vector.get("expected", {})
+        if (observed.get("appearance"), observed.get("asset"), observed.get("reason")) != expected:
+            fail(f"Pet appearance golden vector differs: {vector.get('name')}")
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    for marker in (
+        "`shared/assets/branding/pet_states/`",
+        "`shared/assets/pets/states/`",
+        "dragging",
+        "airborneSeconds >= 3.0",
+        "stationarySeconds >= 30.0",
+        "listdir",
+        "pain > scared > hungry > sleep > happy > normal",
+        "priorityConfirmed",
+        "disabled",
+    ):
+        if marker not in contract_text:
+            fail(f"Pet appearance contract is missing {marker}")
+
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    expected_manifest = {
+        "sourceDirectory": payload["sourceDirectory"],
+        "runtimeDirectory": payload["runtimeDirectory"],
+        "requiredStateAssets": required_states,
+        "happyAssetPattern": payload["happyAssetPattern"],
+        "thresholds": expected_thresholds,
+        "priority": expected_priority,
+        "priorityDecision": payload["priorityDecision"],
+        "missingAssetPolicy": payload["missingAssetPolicy"],
+        "featureEnabledWhen": payload["featureEnabledWhen"],
+        "enabled": discovered["enabled"] and priority_confirmed,
+        "disabledReason": discovered["disabledReason"],
+        "priorityConfirmed": priority_confirmed,
+    }
+    if parity.get("petAppearanceVersion") != "pet-appearance-v1":
+        fail("Parity manifest does not declare pet-appearance-v1")
+    if parity.get("petAppearance") != expected_manifest:
+        fail("Parity petAppearance projection differs from the golden contract or asset manifest")
+    expected_capability = "ready" if discovered["enabled"] and priority_confirmed else "disabled"
+    if parity.get("capabilities", {}).get("petAppearanceStates") != expected_capability:
+        fail("Pet appearance capability does not match asset availability")
+
+    implementation_markers = {
+        "tools/prepare_pet_appearance_assets.py": (
+            "def discover",
+            "def prepare",
+            "_validate_png",
+            "shared/assets/branding/pet_states",
+            "shared/assets/pets/states",
+        ),
+        "windows/domain/pet_appearance.py": (
+            "PET_APPEARANCE_VERSION",
+            "class PetAppearance",
+            "class PetAppearanceAssets",
+            "class PetAppearanceContext",
+            "def select_pet_appearance",
+        ),
+        "windows/tests/test_pet_appearance.py": (
+            "pet-appearance-golden-v1.json",
+            "select_pet_appearance",
+        ),
+        "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetAppearance.kt": (
+            "PET_APPEARANCE_VERSION",
+            "enum class PetAppearance",
+            "data class PetAppearanceAssets",
+            "data class PetAppearanceContext",
+            "fun selectPetAppearance",
+        ),
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetAppearanceTest.kt": (
+            "pet.appearance.golden.path",
+            "selectPetAppearance",
+        ),
+        "android/presentation/build.gradle.kts": (
+            "shared/assets/pets/states",
+            "happy/*.png",
+        ),
+        "windows/build.ps1": (
+            "shared\\assets\\pets",
+            "--add-data",
+        ),
+    }
+    for relative_path, markers in implementation_markers.items():
+        source_path = ROOT / relative_path
+        if not source_path.is_file():
+            fail(f"Pet appearance implementation is missing {relative_path}")
+        source = source_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in source:
+                fail(f"Pet appearance implementation {relative_path} is missing {marker}")
+
+    windows_domain_path = ROOT / "windows" / "domain" / "pet_appearance.py"
+    windows_domain_tree = ast.parse(windows_domain_path.read_text(encoding="utf-8"))
+    forbidden_windows_imports = {"tkinter", "pathlib", "os", "io"}
+    for node in ast.walk(windows_domain_tree):
+        if isinstance(node, ast.Import):
+            imported_modules = {alias.name.split(".", 1)[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported_modules = {(node.module or "").split(".", 1)[0]}
+        else:
+            continue
+        if forbidden_windows_imports & imported_modules:
+            fail("Windows pet appearance domain imports a platform or filesystem module")
+
+    android_domain_source = (
+        ROOT / "android" / "domain" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "domain" / "PetAppearance.kt"
+    ).read_text(encoding="utf-8")
+    if re.search(r"(?m)^import\s+(?:android|androidx|java\.io|java\.nio|kotlin\.io)\.", android_domain_source):
+        fail("Android pet appearance domain imports a platform or filesystem module")
+    if "listdir" in windows_domain_path.read_text(encoding="utf-8") or "listFiles" in android_domain_source:
+        fail("Pet appearance domain must not discover files")
+
+    presentation_sources = (
+        ROOT / "windows" / "presentation",
+        ROOT / "android" / "presentation" / "src" / "main",
+    )
+    source_directory_marker = "shared/assets/branding/pet_states"
+    for presentation_root in presentation_sources:
+        for source_path in presentation_root.rglob("*.py"):
+            if source_directory_marker in source_path.read_text(encoding="utf-8"):
+                fail(f"Presentation directly references canonical pet appearance sources: {source_path.relative_to(ROOT)}")
+        for source_path in presentation_root.rglob("*.kt"):
+            if source_directory_marker in source_path.read_text(encoding="utf-8"):
+                fail(f"Presentation directly references canonical pet appearance sources: {source_path.relative_to(ROOT)}")
+
+    if discovered["enabled"] is False:
+        for relative_path in (
+            "windows/domain/pet_appearance.py",
+            "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetAppearance.kt",
+        ):
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            if "normal" not in source:
+                fail(f"Disabled pet appearance implementation lacks normal fallback: {relative_path}")
+
+
 def verify_platform_markers() -> None:
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     for platform in parity["platforms"]:
@@ -2131,6 +2423,7 @@ def verify_platform_markers() -> None:
             "wordBubbleVersion",
             "petCompanionVersion",
             "petVitalsVersion",
+            "petAppearanceVersion",
             "vocabularyGroupsVersion",
             "contentVersion",
         ):
@@ -2140,6 +2433,7 @@ def verify_platform_markers() -> None:
             "branding",
             "petCompanion",
             "petVitals",
+            "petAppearance",
             "fontScale",
             "learningReminder",
             "studyOrder",
@@ -2158,6 +2452,7 @@ def main() -> int:
     verify_dictation_presentation_contract()
     verify_word_bubble_contract()
     verify_pet_contract()
+    verify_pet_appearance_contract()
     verify_pet_vitals_contract()
     verify_vocabulary_groups_contract()
     verify_catalog()

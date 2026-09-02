@@ -12,6 +12,11 @@ val preparePetAsset by tasks.registering(Copy::class) {
         include("bingzi.png", "bingzi-left.png")
         rename("bingzi-left.png", "bingzi_left.png")
     }
+    from(rootProject.file("../shared/assets/pets/states")) {
+        include("pain.png", "scared.png", "sleep.png", "hungry.png", "happy/*.png")
+        eachFile { path = name }
+        includeEmptyDirs = false
+    }
     into(layout.buildDirectory.dir("generated/pet-res/drawable"))
 }
 
@@ -67,5 +72,9 @@ tasks.withType<Test>().configureEach {
     systemProperty(
         "pet.vitals.golden.path",
         rootProject.file("../shared/contracts/pet-vitals-golden-v1.json").absolutePath,
+    )
+    systemProperty(
+        "pet.appearance.golden.path",
+        rootProject.file("../shared/contracts/pet-appearance-golden-v1.json").absolutePath,
     )
 }

@@ -5,6 +5,7 @@
   "wordBubbleVersion": "word-bubble-v1",
   "petCompanionVersion": "pet-companion-v1",
   "petVitalsVersion": "pet-vitals-v1",
+  "petAppearanceVersion": "pet-appearance-v1",
   "vocabularyGroupsVersion": "vocabulary-groups-v1",
   "contentVersion": "cet-2026.08-v2",
   "branding": {
@@ -122,6 +123,26 @@
       }
     }
   },
+  "petAppearance": {
+    "sourceDirectory": "shared/assets/branding/pet_states",
+    "runtimeDirectory": "shared/assets/pets/states",
+    "requiredStateAssets": ["pain.png", "scared.png", "sleep.png", "hungry.png"],
+    "happyAssetPattern": "^happy([1-9][0-9]*)\\.png$",
+    "thresholds": {
+      "largeLandingSpeed": 437.5,
+      "airborneSeconds": 3.0,
+      "stationarySeconds": 30.0,
+      "doubleTapWindowMs": 300,
+      "hungrySatiety": 0.0
+    },
+    "priority": ["pain", "scared", "hungry", "sleep", "happy", "normal"],
+    "priorityDecision": "recommended-pain-before-scared",
+    "priorityConfirmed": false,
+    "missingAssetPolicy": "skip-missing-choice-and-fallback-to-normal",
+    "featureEnabledWhen": "all-required-state-assets-and-at-least-one-happy-asset-exist-and-priority-is-confirmed",
+    "enabled": false,
+    "disabledReason": "appearance PNG set is incomplete"
+  },
   "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
   "learningReminder": { "minimumMinutes": 0.5, "maximumMinutes": 120.0, "defaultMinutes": 30.0 },
   "studyOrder": { "default": "random", "allowed": ["random", "alphabetical"] },
@@ -157,7 +178,8 @@
     "dictationBookLoadingAnimation": "ready",
     "petCurveLandingPhysics": "ready",
     "petVitalsAndRatingRewards": "ready",
-    "ratingRewardFlightEffect": "ready"
+    "ratingRewardFlightEffect": "ready",
+    "petAppearanceStates": "disabled"
   },
   "platforms": ["windows", "android"]
 }
