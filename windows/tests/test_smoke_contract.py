@@ -10,26 +10,112 @@ WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.dictation import DictationDocument, DictationOptions, DictationRow
+from domain.dictation_sync import DictationDraftSyncResult, DictationDraftSyncStatus
 from domain.models import VocabularyEntry
 from presentation.app import (
     DICTATION_CHECKBOX_FONT,
     DICTATION_CHECKBOX_PAD_Y,
     DICTATION_MEANING_COLUMN_WIDTH,
     DICTATION_SELECTION_COLUMN_WIDTH,
+    DictationGroupNavigation,
     LexiTrackApp,
     RED,
+    close_dictation_group,
     dictation_candidate_display,
     dictation_preview_blocks,
     dictation_preview_scroll_units,
     dictation_render_range,
     distribute_dictation_columns,
+    open_dictation_group,
     scroll_contract_ready,
+    set_dictation_group_mode,
     visible_dictation_selection,
 )
 from presentation.widgets import popup_position_with_escape_corridor
 
 
 class SmokeContractTests(unittest.TestCase):
+    def test_smoke_mode_never_opens_the_unsaved_dictation_dialog(self):
+        app = object.__new__(LexiTrackApp)
+        app._smoke_testing = True
+        app.current_page = "dictation"
+        app._dictation_has_unsaved_changes = Mock(return_value=True)
+
+        self.assertTrue(app._confirm_dictation_leave())
+        app._dictation_has_unsaved_changes.assert_not_called()
+
+    def test_entering_dictation_starts_loading_and_optional_sync_pull(self):
+        app = object.__new__(LexiTrackApp)
+        app.current_page = None
+        app.word_bubbles = []
+        app.pages = {"dictation": Mock()}
+        app.nav_items = {"dictation": Mock()}
+        app._begin_dictation_loading = Mock()
+        app._pull_dictation_draft_async = Mock()
+        app._schedule_pet_target_refresh = Mock()
+
+        app.show_page("dictation")
+
+        app._begin_dictation_loading.assert_called_once_with()
+        app._pull_dictation_draft_async.assert_called_once_with()
+
+    def test_dictation_pull_is_single_flight_and_completion_releases_guard(self):
+        app = object.__new__(LexiTrackApp)
+        app.dictation_sync_account_id = "user-1"
+        app.service = Mock(dictation_draft_sync=Mock(enabled=True))
+        app._dictation_sync_generation = 3
+        app._dictation_sync_in_flight = True
+
+        with patch("presentation.app.threading.Thread") as thread:
+            app._pull_dictation_draft_async()
+
+        thread.assert_not_called()
+        self.assertEqual(app._dictation_sync_generation, 3)
+        app._finish_dictation_sync_pull(
+            DictationDraftSyncResult(status=DictationDraftSyncStatus.INVALID),
+            generation=3,
+        )
+        self.assertFalse(app._dictation_sync_in_flight)
+
+    def test_returning_to_foreground_retries_optional_dictation_pull_once(self):
+        app = object.__new__(LexiTrackApp)
+        app._dictation_window_active = False
+        app._pull_dictation_draft_async = Mock()
+
+        app._on_app_focus_in(None)
+        app._on_app_focus_in(None)
+
+        app._pull_dictation_draft_async.assert_called_once_with()
+
+    def test_random_dictation_group_opens_read_only_scope_then_switches_to_manual(self):
+        state = open_dictation_group(DictationGroupNavigation(), "cet4")
+
+        self.assertEqual(state.mode, "random")
+        self.assertEqual(state.scope_group, "cet4")
+        self.assertEqual(state.open_group, "cet4")
+
+        state = set_dictation_group_mode(state, "manual")
+        self.assertEqual(state.mode, "manual")
+        self.assertEqual(state.scope_group, "cet4")
+        self.assertEqual(state.open_group, "cet4")
+
+        state = close_dictation_group(state)
+        self.assertIsNone(state.open_group)
+        self.assertEqual(state.scope_group, "cet4")
+
+    def test_switching_an_open_manual_group_to_random_uses_that_group_as_scope(self):
+        manual = DictationGroupNavigation(
+            mode="manual",
+            scope_group="all",
+            open_group="custom",
+        )
+
+        random_state = set_dictation_group_mode(manual, "random")
+
+        self.assertEqual(random_state.mode, "random")
+        self.assertEqual(random_state.scope_group, "custom")
+        self.assertEqual(random_state.open_group, "custom")
+
     def test_word_bubble_keeps_a_pet_escape_corridor_on_small_screens(self):
         position = popup_position_with_escape_corridor(
             default_x=192,

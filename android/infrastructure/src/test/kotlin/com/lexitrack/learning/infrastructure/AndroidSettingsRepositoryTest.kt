@@ -3,6 +3,7 @@ package com.lexitrack.learning.infrastructure
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.lexitrack.learning.application.DEFAULT_REVIEW_BATCH_SIZE
+import com.lexitrack.learning.application.DEFAULT_FONT_SCALE
 import com.lexitrack.learning.application.STUDY_ORDER_RANDOM
 import com.lexitrack.learning.domain.MarkMode
 import kotlinx.coroutines.runBlocking
@@ -46,6 +47,29 @@ class AndroidSettingsRepositoryTest {
         repository.setReviewBatchSize(0)
 
         assertEquals(1, repository.settings.value.reviewBatchSize)
+    }
+
+    @Test
+    fun fontScaleRejectsNonFiniteValuesAndRecoversCorruptPreference() = runBlocking {
+        val repository = AndroidSettingsRepository(context)
+
+        repository.setFontScale(Float.NaN)
+        assertEquals(DEFAULT_FONT_SCALE, repository.settings.value.fontScale)
+        assertEquals(DEFAULT_FONT_SCALE, AndroidSettingsRepository(context).settings.value.fontScale)
+
+        context.getSharedPreferences("lexitrack_settings", Context.MODE_PRIVATE)
+            .edit()
+            .putFloat("font_scale", Float.POSITIVE_INFINITY)
+            .commit()
+
+        assertEquals(DEFAULT_FONT_SCALE, AndroidSettingsRepository(context).settings.value.fontScale)
+
+        context.getSharedPreferences("lexitrack_settings", Context.MODE_PRIVATE)
+            .edit()
+            .putString("font_scale", "1.2")
+            .commit()
+
+        assertEquals(DEFAULT_FONT_SCALE, AndroidSettingsRepository(context).settings.value.fontScale)
     }
 
     @Test

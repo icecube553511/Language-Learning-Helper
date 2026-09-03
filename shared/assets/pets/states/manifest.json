@@ -1,0 +1,14 @@
+{
+  "contractVersion": "pet-appearance-v1",
+  "stateAssets": {
+    "pain": null,
+    "scared": null,
+    "sleep": null,
+    "hungry": null
+  },
+  "happyAssets": [],
+  "enabled": false,
+  "disabledReason": "appearance PNG set is incomplete",
+  "sourceDirectory": "shared/assets/branding/pet_states",
+  "runtimeDirectory": "shared/assets/pets/states"
+}

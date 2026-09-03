@@ -12,6 +12,11 @@ val preparePetAsset by tasks.registering(Copy::class) {
         include("bingzi.png", "bingzi-left.png")
         rename("bingzi-left.png", "bingzi_left.png")
     }
+    from(rootProject.file("../shared/assets/pets/states")) {
+        include("pain.png", "scared.png", "sleep.png", "hungry.png", "happy/*.png")
+        eachFile { path = name }
+        includeEmptyDirs = false
+    }
     into(layout.buildDirectory.dir("generated/pet-res/drawable"))
 }
 
@@ -45,6 +50,7 @@ dependencies {
     api(project(":application"))
     implementation(platform("androidx.compose:compose-bom:2025.04.01"))
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
@@ -63,5 +69,13 @@ tasks.withType<Test>().configureEach {
     systemProperty(
         "pet.companion.golden.path",
         rootProject.file("../shared/contracts/pet-companion-golden-v1.json").absolutePath,
+    )
+    systemProperty(
+        "pet.vitals.golden.path",
+        rootProject.file("../shared/contracts/pet-vitals-golden-v1.json").absolutePath,
+    )
+    systemProperty(
+        "pet.appearance.golden.path",
+        rootProject.file("../shared/contracts/pet-appearance-golden-v1.json").absolutePath,
     )
 }

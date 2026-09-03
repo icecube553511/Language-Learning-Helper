@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+import math
 import unicodedata
+
+from .pet_vitals import ReviewRecoveryTag, normalize_review_marker
 
 
 ALGORITHM_VERSION = "lexi-sm2-v1"
@@ -10,9 +13,47 @@ DEFAULT_REVIEW_BATCH_SIZE = 20
 DEFAULT_STUDY_ORDER = "random"
 STUDY_ORDER_ALPHABETICAL = "alphabetical"
 STUDY_ORDER_RANDOM = "random"
+DEFAULT_FONT_SCALE = 1.0
+MIN_FONT_SCALE = 0.9
+MAX_FONT_SCALE = 1.4
 DEFAULT_REMINDER_INTERVAL_MINUTES = 30.0
 MIN_REMINDER_INTERVAL_MINUTES = 0.5
 MAX_REMINDER_INTERVAL_MINUTES = 120.0
+
+
+def sanitize_font_scale(value: object, fallback: float = DEFAULT_FONT_SCALE) -> float:
+    """Return a finite, bounded UI scale suitable for text layout.
+
+    Tk and persisted settings can transiently contain an empty string, a
+    malformed value, or a non-finite float.  Keeping this rule in the domain
+    gives every Windows layer the same behavior and prevents ``round(nan)``
+    from reaching the presentation callbacks.
+    """
+    try:
+        safe_fallback = float(fallback)
+    except (TypeError, ValueError, OverflowError):
+        safe_fallback = DEFAULT_FONT_SCALE
+    if not math.isfinite(safe_fallback):
+        safe_fallback = DEFAULT_FONT_SCALE
+    safe_fallback = min(MAX_FONT_SCALE, max(MIN_FONT_SCALE, safe_fallback))
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        numeric = safe_fallback
+    if not math.isfinite(numeric):
+        numeric = safe_fallback
+    return min(MAX_FONT_SCALE, max(MIN_FONT_SCALE, numeric))
+
+
+def font_scale_from_percent(value: object, fallback: float = DEFAULT_FONT_SCALE) -> float:
+    """Normalize the percentage value emitted by a Tk scale widget."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return sanitize_font_scale(fallback)
+    if not math.isfinite(numeric):
+        return sanitize_font_scale(fallback)
+    return sanitize_font_scale(numeric / 100.0, fallback=fallback)
 
 
 INITIAL_REVIEW_WEIGHTS = {
@@ -174,6 +215,7 @@ class LearntWord:
     learnt_at_utc: float
     last_reviewed_at_utc: float
     review_count: int = 0
+    review_marker: ReviewRecoveryTag | None = None
 
     @classmethod
     def create(
@@ -181,6 +223,7 @@ class LearntWord:
         word_id: str,
         rating: ReviewRating | str,
         learnt_at_utc: float,
+        review_marker: ReviewRecoveryTag | None = None,
     ) -> "LearntWord":
         return cls(
             word_id=word_id,
@@ -188,6 +231,7 @@ class LearntWord:
             learnt_at_utc=float(learnt_at_utc),
             last_reviewed_at_utc=float(learnt_at_utc),
             review_count=0,
+            review_marker=review_marker,
         )
 
     def reviewed(self, rating: ReviewRating | str, reviewed_at_utc: float) -> "LearntWord":
@@ -197,6 +241,20 @@ class LearntWord:
             learnt_at_utc=self.learnt_at_utc,
             last_reviewed_at_utc=float(reviewed_at_utc),
             review_count=self.review_count + 1,
+            review_marker=self.review_marker,
+        )
+
+    def with_review_marker(
+        self,
+        marker: ReviewRecoveryTag | None,
+    ) -> "LearntWord":
+        return LearntWord(
+            word_id=self.word_id,
+            weight=self.weight,
+            learnt_at_utc=self.learnt_at_utc,
+            last_reviewed_at_utc=self.last_reviewed_at_utc,
+            review_count=self.review_count,
+            review_marker=marker,
         )
 
     def to_dict(self) -> dict:
@@ -206,6 +264,9 @@ class LearntWord:
             "learntAtUtc": self.learnt_at_utc,
             "lastReviewedAtUtc": self.last_reviewed_at_utc,
             "reviewCount": self.review_count,
+            "reviewMarker": (
+                self.review_marker.value if self.review_marker is not None else None
+            ),
         }
 
     @classmethod
@@ -213,6 +274,16 @@ class LearntWord:
         weight = float(payload.get("weight", 0.2))
         if weight not in INITIAL_REVIEW_WEIGHTS.values():
             weight = INITIAL_REVIEW_WEIGHTS[ReviewRating.GOOD.value]
+        marker_values = [
+            payload[key]
+            for key in (
+                "reviewMarker",
+                "reviewMarkers",
+                "reviewRecoveryTag",
+                "temporaryReviewTags",
+            )
+            if key in payload
+        ]
         return cls(
             word_id=word_id,
             weight=weight,
@@ -221,6 +292,7 @@ class LearntWord:
                 payload.get("lastReviewedAtUtc", payload.get("learntAtUtc", 0.0))
             ),
             review_count=max(0, int(payload.get("reviewCount", 0))),
+            review_marker=normalize_review_marker(marker_values),
         )
 
 

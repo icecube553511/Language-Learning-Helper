@@ -14,6 +14,7 @@ sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.dictation import (
     DictationField, DictationFormat, DictationOptions,
+    DictationDraft, dictation_range_ids, nearest_dictation_id,
     blank_count, build_document, cloze_example, parse_meaning, word_prompt,
 )
 from domain.models import ExampleSentence, VocabularyEntry
@@ -31,6 +32,31 @@ def entry(word="conduct"):
 
 
 class DictationDomainTests(unittest.TestCase):
+    def test_range_selection_is_inclusive_and_stable(self):
+        entries = [entry("Canada"), entry("apple"), entry("banana"), entry("dear")]
+        self.assertEqual(
+            dictation_range_ids(entries, "banana", "apple"),
+            frozenset({"apple", "banana"}),
+        )
+        self.assertEqual(dictation_range_ids(entries, "missing", "apple"), frozenset())
+
+    def test_nearest_selected_id_prefers_earlier_tie(self):
+        entries = [entry("a"), entry("b"), entry("c"), entry("d")]
+        self.assertEqual(nearest_dictation_id(entries, "c", {"b", "d"}), "b")
+
+    def test_draft_round_trip_is_versioned(self):
+        draft = DictationDraft(
+            mode="random", scope_group="cet4", count=3,
+            selected_ids=("apple", "banana"),
+            group_selected_ids={"cet4": ("apple", "banana")},
+            group_anchors={"cet4": "apple"},
+            group_endpoints={"cet4": "banana"},
+            group_scroll_positions={"cet4": 0.25},
+            expanded_groups=("cet4",),
+        )
+        restored = DictationDraft.from_dict(draft.to_dict())
+        self.assertEqual(restored, draft)
+        self.assertIsNone(DictationDraft.from_dict({"version": 999}))
     def test_blank_count_and_first_code_point(self):
         self.assertEqual(blank_count("abcd"), 8)
         self.assertEqual(word_prompt("😀ab"), "______")
@@ -139,6 +165,82 @@ class DictationLoadingTests(unittest.TestCase):
             self.assertLessEqual(value, 2000)
             self.assertEqual(value % 100, 0)
         self.assertGreater(len(seen), 1)
+
+    def test_book_turning_frame_sweeps_from_right_page_to_left_page(self):
+        from presentation.widgets import (
+            BOOK_TURNING_FRAMES_PER_PAGE,
+            BOOK_TURNING_TICK_MS,
+            book_turning_frame,
+            book_turning_progress,
+        )
+
+        right = book_turning_frame(0.0, 56)
+        edge_on = book_turning_frame(0.5, 56)
+        left = book_turning_frame(1.0, 56)
+
+        self.assertGreater(right.edge_x, right.spine_x)
+        self.assertAlmostEqual(edge_on.edge_x, edge_on.spine_x)
+        self.assertGreater(edge_on.lift, right.lift)
+        self.assertLess(left.edge_x, left.spine_x)
+        self.assertAlmostEqual(right.edge_x - right.spine_x, left.spine_x - left.edge_x)
+        page_progress = [
+            book_turning_progress(frame_index)
+            for frame_index in range(BOOK_TURNING_FRAMES_PER_PAGE)
+        ]
+        self.assertEqual(page_progress[0], 0.0)
+        self.assertEqual(page_progress[-1], 1.0)
+        self.assertTrue(all(left < right for left, right in zip(page_progress, page_progress[1:])))
+        self.assertEqual(book_turning_progress(BOOK_TURNING_FRAMES_PER_PAGE), 0.0)
+        self.assertLessEqual(BOOK_TURNING_FRAMES_PER_PAGE * BOOK_TURNING_TICK_MS, 1000)
+
+    def test_book_turning_frame_clamps_progress_and_stays_inside_canvas(self):
+        from presentation.widgets import book_turning_frame
+
+        before = book_turning_frame(-5.0, 56)
+        after = book_turning_frame(5.0, 56)
+
+        self.assertEqual(before.progress, 0.0)
+        self.assertEqual(after.progress, 1.0)
+        for frame in (before, after):
+            self.assertLessEqual(frame.left, frame.edge_x)
+            self.assertLessEqual(frame.edge_x, frame.right)
+            self.assertLess(frame.top, frame.bottom)
+
+    def test_loading_overlay_draws_a_moving_page_without_tk_display(self):
+        from presentation.widgets import BOOK_TURNING_FRAMES_PER_PAGE, DictationLoadingOverlay
+
+        class RecordingCanvas:
+            def __init__(self):
+                self.polygons = []
+
+            def delete(self, *_args, **_kwargs):
+                self.polygons.clear()
+
+            def create_rectangle(self, *_args, **_kwargs):
+                return None
+
+            def create_line(self, *_args, **_kwargs):
+                return None
+
+            def create_polygon(self, *coords, **_kwargs):
+                self.polygons.append(coords)
+
+        overlay = object.__new__(DictationLoadingOverlay)
+        overlay._spinner = RecordingCanvas()
+        overlay._size = 56
+        overlay._surface = "#FFFFFF"
+        overlay._border = "#DDE3E8"
+        overlay._accent = "#16866F"
+
+        overlay._draw(BOOK_TURNING_FRAMES_PER_PAGE - 1)
+        finishing_page = overlay._spinner.polygons[-1]
+        overlay._draw(BOOK_TURNING_FRAMES_PER_PAGE)
+        next_page = overlay._spinner.polygons[-1]
+
+        self.assertNotEqual(finishing_page, next_page)
+        self.assertLess(finishing_page[2], finishing_page[0])
+        self.assertGreater(next_page[2], next_page[0])
+        self.assertGreaterEqual(len(overlay._spinner.polygons), 1)
 
 
 if __name__ == "__main__":

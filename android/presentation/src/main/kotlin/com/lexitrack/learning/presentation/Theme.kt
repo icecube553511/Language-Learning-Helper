@@ -10,6 +10,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.lexitrack.learning.application.sanitizeFontScale
 
 val BrandTeal = Color(0xFF087E8B)
 val BrandNavy = Color(0xFF274C77)
@@ -44,7 +45,7 @@ private val scheme: ColorScheme = lightColorScheme(
 
 @Composable
 fun LexiTrackTheme(fontScale: Float, content: @Composable () -> Unit) {
-    val scale = fontScale.coerceIn(0.9f, 1.4f)
+    val scale = sanitizeFontScale(fontScale)
     MaterialTheme(
         colorScheme = scheme,
         typography = scaledTypography(scale),

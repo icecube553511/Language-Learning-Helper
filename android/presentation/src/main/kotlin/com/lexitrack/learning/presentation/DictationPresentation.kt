@@ -9,7 +9,30 @@ import com.lexitrack.learning.domain.canonicalMemberships
 import com.lexitrack.learning.domain.classifyGroups
 import com.lexitrack.learning.domain.groupLabel
 import com.lexitrack.learning.domain.normalizeGroupMembership
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.Random
+
+internal const val DICTATION_BOOK_PAGE_TURN_MS = 640
+
+internal data class DictationBookFrame(
+    val progress: Float,
+    val edgeOffset: Float,
+    val liftFraction: Float,
+)
+
+/** Geometry for one right-to-left page turn, independent of Compose drawing. */
+internal fun dictationBookFrame(rawProgress: Float): DictationBookFrame {
+    val progress = if (rawProgress.isFinite()) rawProgress.coerceIn(0f, 1f) else 0f
+    val radians = progress * PI
+    return DictationBookFrame(
+        progress = progress,
+        edgeOffset = cos(radians).toFloat(),
+        liftFraction = (abs(sin(radians)) * 0.10).toFloat(),
+    )
+}
 
 internal data class DictationSelectionRow(
     val id: String,
@@ -21,6 +44,31 @@ internal data class DictationSelectionRow(
     val evaluationStatus: String
         get() = if (isEvaluated) "已考察" else "未考察"
 }
+
+internal data class DictationGroupNavigation(
+    val manual: Boolean = false,
+    val scopeGroup: String = "all",
+    val openGroup: String? = null,
+)
+
+internal fun openDictationGroup(
+    state: DictationGroupNavigation,
+    group: String,
+): DictationGroupNavigation = state.copy(
+    scopeGroup = if (state.manual) state.scopeGroup else group,
+    openGroup = group,
+)
+
+internal fun setDictationGroupMode(
+    state: DictationGroupNavigation,
+    manual: Boolean,
+): DictationGroupNavigation = state.copy(
+    manual = manual,
+    scopeGroup = if (!manual && state.openGroup != null) state.openGroup else state.scopeGroup,
+)
+
+internal fun closeDictationGroup(state: DictationGroupNavigation): DictationGroupNavigation =
+    state.copy(openGroup = null)
 
 internal fun VocabularyEntry.toDictationSelectionRow(): DictationSelectionRow {
     val isEvaluated = tags.any { it.equals(TAG_EVALUATED, ignoreCase = true) }

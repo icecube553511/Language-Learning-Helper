@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
@@ -9,6 +10,7 @@ import unicodedata
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import prepare_pet_appearance_assets as pet_appearance_assets
 from opencc import OpenCC
 
 from prepare_pet_asset import prepare as prepare_pet_asset
@@ -104,6 +106,35 @@ def verify_dictation_contract() -> None:
         fail("Dictation export formats differ from the shared contract")
     if payload.get("allowedTags") != ["cet4", "cet6", "gk", "zk", "evaluated"]:
         fail("Dictation program tag allowlist differs from the shared contract")
+    selection = payload.get("selectionVector", {})
+    if (
+        selection.get("selectedIds") != ["adapt", "re-enter"]
+        or selection.get("crossGroupUnion") is not True
+        or selection.get("emptySelectionFallsBackToScope") is not True
+        or selection.get("sampleWithoutReplacement") is not True
+    ):
+        fail("Dictation random subset semantics differ from the shared contract")
+    range_vector = payload.get("rangeSelectionVector", {})
+    if (
+        range_vector.get("inclusiveIds") != ["banana", "canada", "dear"]
+        or range_vector.get("reverseInclusiveIds") != ["banana", "canada", "dear"]
+        or range_vector.get("sameGroupOnly") is not True
+        or range_vector.get("markerText") != "选取到这里"
+        or range_vector.get("noAnchorHidesMarker") is not True
+    ):
+        fail("Dictation range-selection semantics differ from the shared contract")
+    draft_vector = payload.get("draftVector", {})
+    if draft_vector.get("version") != 1 or draft_vector.get("maxBytes") != 1048576:
+        fail("Dictation draft version or size limit differs from the shared contract")
+    if draft_vector.get("leaveActions") != ["save", "discard", "continue"]:
+        fail("Dictation leave actions differ from the shared contract")
+    draft_contract = CONTRACTS / "dictation-draft-v1.md"
+    draft_contract_text = draft_contract.read_text(encoding="utf-8") if draft_contract.is_file() else ""
+    if "dictation-draft-v1" not in draft_contract_text:
+        fail("Dictation draft contract is missing or has the wrong version")
+    for marker in ("last synced envelope", "three conflict", "encrypted local ring"):
+        if marker not in draft_contract_text:
+            fail(f"Dictation draft conflict-backup contract is missing {marker}")
     confirmation = payload.get("confirmation", {})
     if confirmation.get("rendered") != "当前仅选择了3/10，是否确定选择":
         fail("Dictation manual-selection confirmation text differs from the shared contract")
@@ -208,6 +239,16 @@ def verify_pet_contract() -> None:
         "cruiseSpeed": 4.0,
         "curveAcceleration": 0.25,
         "curveAccelerationPolicy": "constant-independent-of-requested-step",
+        "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
+        "curveVelocityUnits": "logical-units-per-tick",
+        "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
+        "curveLandingSpeedLimit": 8.0,
+        "curveDownhillTerminalSpeed": 4.0,
+        "curveDownhillResponsePerTick": 0.0625,
+        "curveDirectionEpsilon": 0.000001,
+        "curveLandingRestDirection": "local-positive-y-downhill",
+        "curveLandingInitialUphillMotion": True,
+        "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
         "idleTicks": 24,
         "fallTimeStepSeconds": 0.016,
         "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -267,6 +308,7 @@ def verify_pet_contract() -> None:
         "overlapPolicy": "autonomous-reject-explicit-drag-allow",
         "positionMapping": "full-display-inner-edge",
         "stateTransfer": "preserve-velocity-and-grab-offset",
+        "curveContactTransfer": "clear-source-local-target-and-velocity",
     }:
         fail("Pet companion window migration semantics differ")
     if payload.get("transientOnly") is not True:
@@ -751,6 +793,363 @@ def verify_pet_contract() -> None:
             ):
                 fail("Pet companion curve step override changes acceleration or loses corner budget")
 
+    curve_landing_vectors = payload.get("curveLandingVectors", [])
+    if {item.get("name") for item in curve_landing_vectors} != {
+        "vertical-fall-projects-onto-descending-tangent",
+        "zero-speed-mid-segment-starts-downhill-without-vertex-snap",
+        "uphill-fling-slows-before-reversing-downhill",
+        "vertical-fall-uses-reverse-order-downhill-on-ascending-segment",
+        "flat-segment-rest-uses-registration-direction",
+        "fling-projection-clamps-uphill-speed",
+    }:
+        fail("Pet companion curve landing vectors differ")
+    response = float(motion["curveDownhillResponsePerTick"])
+    terminal_speed = float(motion["curveDownhillTerminalSpeed"])
+    landing_limit = float(motion["curveLandingSpeedLimit"])
+    direction_epsilon = float(motion["curveDirectionEpsilon"])
+    tick_seconds = float(payload["tickMs"]) / 1000.0
+    for vector in curve_landing_vectors:
+        start, end = vector["segment"]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        if length <= 1e-12:
+            fail(f"Pet companion curve landing vector {vector['name']} has a degenerate segment")
+        tangent = (dx / length, dy / length)
+        expected_tangent = vector.get("expectedUnitTangent")
+        if expected_tangent is not None and any(
+            not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-12)
+            for actual, wanted in zip(expected_tangent, tangent)
+        ):
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong tangent")
+        incoming = [float(value) for value in vector["incomingVelocity"]]
+        projected = (incoming[0] * tangent[0] + incoming[1] * tangent[1]) * tick_seconds
+        projected = max(-landing_limit, min(landing_limit, projected))
+        if abs(projected) <= direction_epsilon:
+            projected = 0.0
+        initial = float(vector["expectedInitialCurveVelocity"])
+        if not math.isclose(initial, projected, rel_tol=1e-12, abs_tol=1e-9):
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong projected speed")
+        downhill_direction = (
+            1 if tangent[1] > direction_epsilon
+            else -1 if tangent[1] < -direction_epsilon
+            else 1
+        )
+        expected_direction = (
+            1 if initial > direction_epsilon
+            else -1 if initial < -direction_epsilon
+            else downhill_direction
+        )
+        if int(vector["expectedPathDirection"]) != expected_direction:
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong initial direction")
+        if (
+            vector["name"] == "flat-segment-rest-uses-registration-direction"
+            and int(vector.get("initialPathDirection", 1)) != -1
+        ):
+            fail("Pet companion flat curve vector does not guard against stale reverse direction")
+        terminal = downhill_direction * terminal_speed
+        next_velocity = initial + (terminal - initial) * response
+        if not math.isclose(
+            float(vector["expectedNextCurveVelocity"]),
+            next_velocity,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        ):
+            fail(f"Pet companion curve landing vector {vector['name']} has the wrong relaxed speed")
+        expected_position = vector.get("expectedNextPosition")
+        if expected_position is not None:
+            contact = [float(value) for value in vector["contactPoint"]]
+            next_position = (
+                contact[0] + tangent[0] * next_velocity,
+                contact[1] + tangent[1] * next_velocity,
+            )
+            if any(
+                not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-9)
+                for actual, wanted in zip(expected_position, next_position)
+            ):
+                fail(f"Pet companion curve landing vector {vector['name']} snaps away from its contact segment")
+        if vector.get("expectedMode") != "slide":
+            fail(f"Pet companion curve landing vector {vector['name']} must enter slide")
+        downhill_tick = vector.get("expectedDownhillByTick")
+        if downhill_tick is not None:
+            velocity = initial
+            first_positive_tick = None
+            for tick in range(1, int(downhill_tick) + 1):
+                velocity += (terminal - velocity) * response
+                if velocity > 0.0 and first_positive_tick is None:
+                    first_positive_tick = tick
+            if first_positive_tick != int(downhill_tick):
+                fail("Pet companion uphill curve landing reverses on the wrong tick")
+
+    curve_scale_vectors = payload.get("curveScaleVectors", [])
+    if {item.get("name") for item in curve_scale_vectors} != {
+        "density-two-preserves-logical-curve-motion",
+    }:
+        fail("Pet companion curve scale vectors differ")
+    for vector in curve_scale_vectors:
+        scale = float(vector["unitScale"])
+        if scale <= 1.0:
+            fail("Pet companion curve scale vector must exercise a non-unit coordinate scale")
+        start, end = vector["logicalSegment"]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        tangent = (dx / length, dy / length)
+        incoming = [float(value) for value in vector["logicalIncomingVelocity"]]
+        initial = (incoming[0] * tangent[0] + incoming[1] * tangent[1]) * tick_seconds
+        initial = max(-landing_limit, min(landing_limit, initial))
+        if abs(initial) <= direction_epsilon:
+            initial = 0.0
+        expected_initial = float(vector["expectedInitialLogicalCurveVelocity"])
+        if not math.isclose(expected_initial, initial, rel_tol=1e-12, abs_tol=1e-9):
+            fail("Pet companion scaled curve projection changes logical velocity")
+        downhill = (
+            1 if tangent[1] > direction_epsilon
+            else -1 if tangent[1] < -direction_epsilon
+            else 1
+        )
+        next_velocity = initial + (downhill * terminal_speed - initial) * response
+        if not math.isclose(
+            float(vector["expectedNextLogicalCurveVelocity"]),
+            next_velocity,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        ):
+            fail("Pet companion scaled curve relaxation changes logical velocity")
+        contact = [float(value) for value in vector["logicalContactPoint"]]
+        expected_physical = (
+            (contact[0] + tangent[0] * next_velocity) * scale,
+            (contact[1] + tangent[1] * next_velocity) * scale,
+        )
+        if any(
+            not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-8)
+            for actual, wanted in zip(vector["expectedNextPhysicalPosition"], expected_physical)
+        ) or vector.get("expectedMode") != "slide":
+            fail("Pet companion curve path budget does not restore the physical coordinate scale")
+
+    curve_endpoint_vectors = payload.get("curveEndpointVectors", [])
+    if {item.get("name") for item in curve_endpoint_vectors} != {
+        "flat-uphill-endpoint-stops-and-reverses-downhill",
+        "near-horizontal-uphill-endpoint-uses-unit-tangent",
+    }:
+        fail("Pet companion curve endpoint vectors differ")
+    for vector in curve_endpoint_vectors:
+        start, end = vector["segment"]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        tangent = (dx / length, dy / length)
+        downhill = (
+            1 if tangent[1] > direction_epsilon
+            else -1 if tangent[1] < -direction_epsilon
+            else 1
+        )
+        direction = -1 if int(vector["initialPathDirection"]) < 0 else 1
+        velocity = float(vector["initialCurveVelocity"])
+        initial_position = [float(value) for value in vector["initialPosition"]]
+        arc_position = (
+            (initial_position[0] - float(start[0])) * tangent[0]
+            + (initial_position[1] - float(start[1])) * tangent[1]
+        )
+        reached_tick = None
+        endpoint_arc = 0.0 if direction < 0 else length
+        for tick in range(1, int(vector["expectedEndpointTick"]) + 1):
+            velocity += (downhill * terminal_speed - velocity) * response
+            next_arc = arc_position + velocity
+            if (direction < 0 and next_arc <= endpoint_arc) or (
+                direction > 0 and next_arc >= endpoint_arc
+            ):
+                reached_tick = tick
+                break
+            arc_position = next_arc
+        if reached_tick != int(vector["expectedEndpointTick"]):
+            fail(f"Pet companion curve endpoint vector {vector['name']} reaches on the wrong tick")
+        endpoint_position = (
+            float(start[0]) + tangent[0] * endpoint_arc,
+            float(start[1]) + tangent[1] * endpoint_arc,
+        )
+        if any(
+            not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-8)
+            for actual, wanted in zip(vector["expectedEndpointPosition"], endpoint_position)
+        ):
+            fail(f"Pet companion curve endpoint vector {vector['name']} has the wrong endpoint")
+        if (
+            direction == downhill
+            or float(vector["expectedEndpointCurveVelocity"]) != 0.0
+            or int(vector["expectedEndpointPathDirection"]) != downhill
+            or vector.get("expectedEndpointMode") != "slide"
+        ):
+            fail(f"Pet companion curve endpoint vector {vector['name']} does not stop and reverse")
+        next_velocity = downhill * terminal_speed * response
+        next_position = (
+            endpoint_position[0] + tangent[0] * next_velocity,
+            endpoint_position[1] + tangent[1] * next_velocity,
+        )
+        if (
+            not math.isclose(float(vector["expectedNextCurveVelocity"]), next_velocity, abs_tol=1e-9)
+            or any(
+                not math.isclose(float(actual), wanted, rel_tol=1e-12, abs_tol=1e-8)
+                for actual, wanted in zip(vector["expectedNextPosition"], next_position)
+            )
+            or vector.get("expectedNextMode") != "slide"
+        ):
+            fail(f"Pet companion curve endpoint vector {vector['name']} resumes downhill incorrectly")
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    for marker in (
+        "dot(V_hit,T)*dt",
+        "u_next=u+(u_terminal-u)*0.0625",
+        "不得用“最近顶点”",
+        "物理单位比例",
+        "归一化单位切线",
+    ):
+        if marker not in contract_text:
+            fail(f"Pet companion curve landing contract is missing {marker}")
+    windows_pet_source = (ROOT / "windows" / "domain" / "pet_companion.py").read_text(encoding="utf-8")
+    android_pet_source = (
+        ROOT / "android" / "domain" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "domain" / "PetCompanion.kt"
+    ).read_text(encoding="utf-8")
+    windows_tree = ast.parse(windows_pet_source)
+    windows_functions = {
+        node.name: node
+        for node in windows_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    windows_constants: dict[str, float] = {}
+    for node in windows_tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, (int, float))
+        ):
+            windows_constants[node.targets[0].id] = float(node.value.value)
+    expected_windows_constants = {
+        "CURVE_LANDING_SPEED_LIMIT": landing_limit,
+        "CURVE_DOWNHILL_TERMINAL_SPEED": terminal_speed,
+        "CURVE_DOWNHILL_RESPONSE_PER_TICK": response,
+        "CURVE_DIRECTION_EPSILON": direction_epsilon,
+    }
+    for name, expected in expected_windows_constants.items():
+        actual = windows_constants.get(name)
+        if actual is None or not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Windows curve landing constant {name} differs from the contract")
+
+    def verify_windows_helper(name: str, constants: set[str], calls: set[str]) -> None:
+        function = windows_functions.get(name)
+        if function is None:
+            fail(f"Windows curve landing helper {name} is missing")
+        used_names = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)}
+        used_calls = {
+            node.func.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if not constants <= used_names:
+            fail(f"Windows curve landing helper {name} is not wired to its contract constants")
+        if not calls <= used_calls:
+            fail(f"Windows curve landing helper {name} does not call its direction helper")
+
+    direction_helper = windows_functions.get("_curve_downhill_direction")
+    if direction_helper is None or len(direction_helper.args.args) != 1:
+        fail("Windows curve downhill helper must derive flat direction without fallback state")
+    verify_windows_helper(
+        "_curve_downhill_direction",
+        {"CURVE_DIRECTION_EPSILON"},
+        set(),
+    )
+    endpoint_helper = windows_functions.get("_curve_endpoint_is_downhill")
+    if endpoint_helper is None or len(endpoint_helper.args.args) != 3:
+        fail("Windows curve endpoint helper must compare normalized local downhill direction")
+    verify_windows_helper(
+        "_curve_endpoint_is_downhill",
+        {"CURVE_DIRECTION_EPSILON"},
+        {"_curve_downhill_direction"},
+    )
+    verify_windows_helper(
+        "_chart_landing_state",
+        {"FALL_TIME_STEP_SECONDS", "CURVE_LANDING_SPEED_LIMIT", "CURVE_DIRECTION_EPSILON"},
+        {"_curve_downhill_direction"},
+    )
+    verify_windows_helper(
+        "_advance_landed_chart",
+        {
+            "CURVE_LANDING_SPEED_LIMIT",
+            "CURVE_DOWNHILL_TERMINAL_SPEED",
+            "CURVE_DOWNHILL_RESPONSE_PER_TICK",
+            "CURVE_DIRECTION_EPSILON",
+        },
+        {"_curve_downhill_direction", "_curve_endpoint_is_downhill"},
+    )
+    verify_windows_helper("_advance_chart", set(), {"_curve_downhill_direction"})
+
+    expected_android_constants = {
+        "PET_CURVE_LANDING_SPEED_LIMIT": landing_limit,
+        "PET_CURVE_DOWNHILL_TERMINAL_SPEED": terminal_speed,
+        "PET_CURVE_DOWNHILL_RESPONSE_PER_TICK": response,
+        "PET_CURVE_DIRECTION_EPSILON": direction_epsilon,
+    }
+    for name, expected in expected_android_constants.items():
+        match = re.search(
+            rf"(?m)^(?:private\s+)?const val {name}\s*=\s*([0-9.eE+-]+)f?\s*$",
+            android_pet_source,
+        )
+        if match is None or not math.isclose(float(match.group(1)), expected, rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Android curve landing constant {name} differs from the contract")
+
+    def android_helper_source(name: str) -> str:
+        match = re.search(
+            rf"(?ms)^private fun {name}\(.*?(?=^private (?:fun|data class)|\Z)",
+            android_pet_source,
+        )
+        if match is None:
+            fail(f"Android curve landing helper {name} is missing")
+        return match.group(0)
+
+    android_direction = android_helper_source("curveDownhillDirection")
+    if (
+        not re.search(r"curveDownhillDirection\(\s*unitTangent:\s*PetPoint\s*\)", android_direction)
+        or "PET_CURVE_DIRECTION_EPSILON" not in android_direction
+    ):
+        fail("Android curve downhill helper must derive flat direction without fallback state")
+    android_endpoint = android_helper_source("curveEndpointIsDownhill")
+    if (
+        "PET_CURVE_DIRECTION_EPSILON" not in android_endpoint
+        or not re.search(r"curveDownhillDirection\(\s*unitTangent\s*\)", android_endpoint)
+    ):
+        fail("Android curve endpoint helper must compare normalized local downhill direction")
+    android_landing = android_helper_source("chartLandingState")
+    if (
+        not {
+            "PET_FALL_TIME_STEP_SECONDS",
+            "PET_CURVE_LANDING_SPEED_LIMIT",
+            "PET_CURVE_DIRECTION_EPSILON",
+        } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_landing))
+        or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_landing)
+        or not re.search(r"PET_FALL_TIME_STEP_SECONDS\s*/\s*unitScale", android_landing)
+    ):
+        fail("Android chart landing helper is not wired to its contract constants and direction helper")
+    android_advance = android_helper_source("advanceLandedChart")
+    if (
+        not {
+            "PET_CURVE_LANDING_SPEED_LIMIT",
+            "PET_CURVE_DOWNHILL_TERMINAL_SPEED",
+            "PET_CURVE_DOWNHILL_RESPONSE_PER_TICK",
+            "PET_CURVE_DIRECTION_EPSILON",
+        } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_advance))
+        or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_advance)
+        or not re.search(r"abs\(curveVelocity\)\s*\*\s*unitScale", android_advance)
+        or not re.search(r"curveEndpointIsDownhill\(\s*path,\s*endpoint,\s*direction\s*\)", android_advance)
+    ):
+        fail("Android landed chart helper is not wired to its contract constants and direction helper")
+    if not re.search(
+        r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)",
+        android_helper_source("advanceChart"),
+    ):
+        fail("Android autonomous chart helper does not use the shared downhill direction rule")
+
     migration_vectors = payload.get("windowMigrationVectors", [])
     if {item.get("name") for item in migration_vectors} != {
         "fling-exits-right-and-enters-neighbor",
@@ -1045,6 +1444,16 @@ def verify_pet_contract() -> None:
         "idleTicks": 24,
         "curveAcceleration": 0.25,
         "curveAccelerationPolicy": "constant-independent-of-requested-step",
+        "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
+        "curveVelocityUnits": "logical-units-per-tick",
+        "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
+        "curveLandingSpeedLimit": 8.0,
+        "curveDownhillTerminalSpeed": 4.0,
+        "curveDownhillResponsePerTick": 0.0625,
+        "curveDirectionEpsilon": 0.000001,
+        "curveLandingRestDirection": "local-positive-y-downhill",
+        "curveLandingInitialUphillMotion": True,
+        "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
         "targetKinds": ["control", "surface", "chart", "edge"],
         "navigationTransition": "drop-to-nearest",
         "supportSide": "upper",
@@ -1094,6 +1503,7 @@ def verify_pet_contract() -> None:
             "overlapPolicy": "autonomous-reject-explicit-drag-allow",
             "positionMapping": "full-display-inner-edge",
             "stateTransfer": "preserve-velocity-and-grab-offset",
+            "curveContactTransfer": "clear-source-local-target-and-velocity",
         },
         "dragPlacement": "preserve-grab-offset",
         "suspendedDragRelease": "fall",
@@ -1120,6 +1530,394 @@ GROUP_RULES = [
     ("zk", {"ZK"}, {"zk"}),
     ("gk", {"GK"}, {"gk"}),
 ]
+
+
+def verify_pet_vitals_contract() -> None:
+    contract_path = CONTRACTS / "pet-vitals-v1.md"
+    golden_path = CONTRACTS / "pet-vitals-golden-v1.json"
+    if not contract_path.is_file() or "pet-vitals-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet vitals contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Pet vitals golden file is missing")
+
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "pet-vitals-v1":
+        fail("Unexpected pet vitals contract version")
+    if payload.get("defaults") != {
+        "satiety": 50.0,
+        "foodReserve": 0.0,
+        "mood": "calm",
+    }:
+        fail("Pet vitals defaults differ")
+    food_jar = payload.get("foodJar", {})
+    if food_jar != {
+        "model": "value-object",
+        "aggregateOwner": "pet-vitals",
+        "persistedField": "foodReserve",
+    }:
+        fail("Food jar must be an explicit PetVitals value object")
+    if payload.get("bounds") != {
+        "satietyMinimum": 0.0,
+        "satietyMaximum": 100.0,
+        "foodReserveMinimum": 0.0,
+        "foodReserveMaximum": 200.0,
+    }:
+        fail("Pet vitals bounds differ")
+    hunger = payload.get("hunger", {})
+    if hunger != {
+        "hungryBelow": 30.0,
+        "satedFromInclusive": 30.0,
+        "satisfiedFromInclusive": 70.0,
+        "reserveRefillTarget": 50.0,
+        "reserveTransferRatio": 1.0,
+    }:
+        fail("Pet hunger thresholds differ")
+    moods = payload.get("moods", [])
+    if [(item.get("name"), item.get("label")) for item in moods] != [
+        ("sad", "悲伤"),
+        ("worried", "担忧"),
+        ("happy", "开心"),
+        ("excited", "兴奋"),
+        ("bored", "无聊"),
+        ("calm", "平静"),
+    ]:
+        fail("Pet mood values differ")
+
+    overflow = payload.get("overflow", {})
+    if (
+        overflow.get("satietyToFoodReserveRatio") != 0.2
+        or overflow.get("directFoodReserveRatio") != 1.0
+        or overflow.get("order") != [
+            "apply-satiety-and-convert-overflow",
+            "apply-direct-food-reserve",
+            "clamp-food-reserve",
+            "auto-refill-if-hungry",
+        ]
+    ):
+        fail("Pet vitals overflow order or ratios differ")
+
+    tags = payload.get("temporaryReviewTags", {})
+    forgot = "ToBeReviewed_Forgot"
+    vague = "ToBeReviewed_Vague"
+    if tags != {
+        "forgot": forgot,
+        "vague": vague,
+        "cardinality": "zero-or-one",
+        "malformedConflictPrecedence": [forgot, vague],
+        "vocabularyTag": False,
+        "persisted": True,
+        "visible": False,
+    }:
+        fail("Temporary review tag semantics differ")
+
+    expected_rewards = {
+        ("study", None, "again"): (0.0, 0.0, forgot),
+        ("study", None, "hard"): (0.0, 0.0, vague),
+        ("study", None, "good"): (2.0, 0.0, None),
+        ("study", None, "easy"): (3.0, 0.0, None),
+        ("review", None, "again"): (0.0, 0.0, forgot),
+        ("review", None, "hard"): (0.0, 0.0, vague),
+        ("review", None, "good"): (0.2, 0.5, None),
+        ("review", None, "easy"): (0.3, 0.8, None),
+        ("review", vague, "again"): (0.0, 0.0, forgot),
+        ("review", vague, "hard"): (0.0, 0.0, vague),
+        ("review", vague, "good"): (1.0, 0.7, None),
+        ("review", vague, "easy"): (1.2, 1.0, None),
+        ("review", forgot, "again"): (0.0, 0.0, forgot),
+        ("review", forgot, "hard"): (0.0, 0.0, vague),
+        ("review", forgot, "good"): (1.5, 0.9, None),
+        ("review", forgot, "easy"): (2.0, 1.4, None),
+    }
+    actual_rewards = {}
+    for rule in payload.get("rewardRules", []):
+        key = (rule.get("phase"), rule.get("priorTag"), rule.get("rating"))
+        if key in actual_rewards:
+            fail(f"Duplicate pet rating reward rule: {key}")
+        actual_rewards[key] = (
+            float(rule.get("satietyGain", -1.0)),
+            float(rule.get("foodReserveGain", -1.0)),
+            rule.get("nextTag"),
+        )
+    if actual_rewards != expected_rewards:
+        fail("Pet rating reward matrix differs")
+
+    def hunger_state(satiety: float) -> str:
+        if satiety < float(hunger["hungryBelow"]):
+            return "hungry"
+        if satiety < float(hunger["satisfiedFromInclusive"]):
+            return "sated"
+        return "satisfied"
+
+    hunger_vectors = payload.get("hungerStateVectors", [])
+    expected_hunger_vectors = [
+        (0.0, "hungry"),
+        (29.999, "hungry"),
+        (30.0, "sated"),
+        (69.999, "sated"),
+        (70.0, "satisfied"),
+        (100.0, "satisfied"),
+    ]
+    if [
+        (float(vector.get("satiety", -1.0)), vector.get("expected"))
+        for vector in hunger_vectors
+    ] != expected_hunger_vectors:
+        fail("Pet hunger vectors are incomplete or reordered")
+    for vector in hunger_vectors:
+        if hunger_state(float(vector["satiety"])) != vector.get("expected"):
+            fail(f"Pet hunger vector differs at {vector['satiety']}")
+
+    bounds = payload["bounds"]
+    vital_vectors = payload.get("vitalChangeVectors", [])
+    expected_vital_vector_names = [
+        "satiety-overflow-converts-at-twenty-percent",
+        "direct-food-reserve-is-not-discounted",
+        "combined-gains-respect-reserve-cap",
+        "hungry-state-refills-to-fifty",
+        "insufficient-reserve-is-fully-consumed",
+        "threshold-does-not-trigger-refill",
+    ]
+    if [vector.get("name") for vector in vital_vectors] != expected_vital_vector_names:
+        fail("Pet vital-change vectors are incomplete or reordered")
+    for vector in vital_vectors:
+        raw_satiety = float(vector["satiety"]) + float(vector["satietyGain"])
+        overflow_amount = max(0.0, raw_satiety - float(bounds["satietyMaximum"]))
+        satiety = min(float(bounds["satietyMaximum"]), max(float(bounds["satietyMinimum"]), raw_satiety))
+        reserve = min(
+            float(bounds["foodReserveMaximum"]),
+            max(
+                float(bounds["foodReserveMinimum"]),
+                float(vector["foodReserve"])
+                + float(vector["foodReserveGain"])
+                + overflow_amount * float(overflow["satietyToFoodReserveRatio"]),
+            ),
+        )
+        if satiety < float(hunger["hungryBelow"]):
+            transfer = min(float(hunger["reserveRefillTarget"]) - satiety, reserve)
+            satiety += transfer
+            reserve -= transfer
+        if not math.isclose(satiety, float(vector["expectedSatiety"]), abs_tol=1e-9):
+            fail(f"Pet vital vector {vector['name']} differs at satiety")
+        if not math.isclose(reserve, float(vector["expectedFoodReserve"]), abs_tol=1e-9):
+            fail(f"Pet vital vector {vector['name']} differs at food reserve")
+
+    effect = payload.get("rewardFlight", {})
+    expected_effect = {
+        "studyColor": "#F4C542",
+        "reviewColor": "platform-primary-teal",
+        "sourceAnchor": "pointer-down-screen-position",
+        "targetTracking": "rendered-pet-center-every-frame",
+        "frameMs": 16,
+        "spiralDurationMs": 180,
+        "spiralTurns": 1.0,
+        "spiralRadiusStart": 4.0,
+        "spiralRadiusEnd": 18.0,
+        "homingInitialSpeed": 180.0,
+        "homingAcceleration": 2400.0,
+        "homingMaximumSpeed": 2800.0,
+        "orbRadius": 6.0,
+        "visual": {
+            "orbRadius": 16.0,
+            "orbGlowRadius": 34.0,
+            "orbHighlightRadius": 4.0,
+            "trailMinimumStrokeWidth": 5.0,
+            "trailMaximumStrokeWidth": 12.0,
+            "trailStrokeSpeedFactor": 0.0025,
+            "trailGlowWidthMultiplier": 2.2,
+            "burstParticleRadius": 4.0,
+            "burstParticleGlowRadius": 10.0,
+        },
+        "trailLifetimeMs": 180,
+        "trailMaximumPoints": 20,
+        "trailLengthFormula": "clamp(18,96,speed*0.04)",
+        "burstParticleCount": 18,
+        "burstDurationMs": 350,
+        "maximumLifetimeMs": 2500,
+        "missingTargetTimeoutMs": 500,
+        "minimumVerifiedConcurrentFlights": 32,
+        "contactRadius": "pet-half-size-plus-orb-radius",
+        "concurrency": "independent-no-replacement",
+        "persisted": False,
+    }
+    if effect != expected_effect:
+        fail("Pet reward-flight parameters differ")
+    if payload.get("rewardFlightVectors") != {
+        "spiralEndpoint": {
+            "elapsedMs": 180,
+            "relativeX": 18.0,
+            "relativeY": 0.0,
+        },
+        "trailClip": {
+            "speed": 1000.0,
+            "inputX": [0.0, 25.0, 50.0, 75.0],
+            "expectedStartX": 35.0,
+            "expectedEndX": 75.0,
+            "expectedLength": 40.0,
+        },
+    }:
+        fail("Pet reward-flight trajectory vectors differ")
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    for marker in (
+        "20%",
+        "single-value enum",
+        "not a vocabulary/catalog",
+        "current rendered center",
+        "`FoodJar` domain value object",
+        "cross-repository",
+    ):
+        if marker not in contract_text:
+            fail(f"Pet vitals contract is missing {marker}")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("petVitalsVersion") != "pet-vitals-v1":
+        fail("Parity manifest does not declare pet-vitals-v1")
+    expected_manifest_vitals = {
+        "satiety": {
+            "minimum": float(bounds["satietyMinimum"]),
+            "maximum": float(bounds["satietyMaximum"]),
+            "default": float(payload["defaults"]["satiety"]),
+        },
+        "foodReserve": {
+            "minimum": float(bounds["foodReserveMinimum"]),
+            "maximum": float(bounds["foodReserveMaximum"]),
+            "default": float(payload["defaults"]["foodReserve"]),
+        },
+        "foodJar": food_jar,
+        "hunger": {
+            "hungryBelow": float(hunger["hungryBelow"]),
+            "satisfiedFromInclusive": float(hunger["satisfiedFromInclusive"]),
+            "reserveRefillTarget": float(hunger["reserveRefillTarget"]),
+        },
+        "overflowToFoodReserveRatio": float(overflow["satietyToFoodReserveRatio"]),
+        "moods": [item["name"] for item in moods],
+        "defaultMood": payload["defaults"]["mood"],
+        "temporaryReviewTags": [forgot, vague],
+        "temporaryReviewTagCardinality": tags["cardinality"],
+        "persisted": True,
+        "visible": False,
+        "rewardFlight": {
+            "studyColor": effect["studyColor"],
+            "reviewColor": effect["reviewColor"],
+            "sourceAnchor": effect["sourceAnchor"],
+            "targetTracking": effect["targetTracking"],
+            "concurrency": effect["concurrency"],
+            "visual": effect["visual"],
+        },
+    }
+    if parity.get("petVitals") != expected_manifest_vitals:
+        fail("Parity petVitals projection differs from the golden contract")
+    capabilities = parity.get("capabilities", {})
+    for capability in ("petVitalsAndRatingRewards", "ratingRewardFlightEffect"):
+        if capabilities.get(capability) != "ready":
+            fail(f"Parity capability {capability} is not ready")
+
+    implementation_markers = {
+        "windows/domain/pet_vitals.py": (
+            "class FoodJar",
+            "class PetVitals",
+            "class ReviewRecoveryTag",
+            "apply_rating_reward",
+        ),
+        "windows/application/services.py": (
+            "apply_rating_reward",
+            "save_learning_outcome",
+            "save_review_outcome",
+            "restore_review_savepoint",
+        ),
+        "windows/infrastructure/repository.py": (
+            "save_review_outcome",
+            "restore_review_savepoint",
+            "review savepoint is stale",
+        ),
+        "windows/infrastructure/words_learnt_repository.py": (
+            "save_learning_outcome",
+            "petVitals",
+        ),
+        "windows/presentation/reward_effects.py": (
+            "class RewardEffectsController",
+            "clip_trail_to_length",
+            "trail_length_for_speed",
+        ),
+        "windows/tests/test_pet_vitals.py": ("FoodJar", "rewardRules"),
+        "windows/tests/test_reward_effects.py": (
+            "minimumVerifiedConcurrentFlights",
+            "pointer_source_uses_press_coordinates",
+        ),
+        "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetVitals.kt": (
+            "class FoodJar",
+            "data class PetVitals",
+            "reduceRatingReward",
+        ),
+        "android/application/src/main/kotlin/com/lexitrack/learning/application/LearningUseCases.kt": (
+            "reduceRatingReward",
+            "saveLearningOutcome",
+            "rollbackReview",
+        ),
+        "android/infrastructure/src/main/kotlin/com/lexitrack/learning/infrastructure/AndroidReviewRepository.kt": (
+            "NonCancellable",
+            "ReviewSavepoint",
+            "rollbackReview",
+            "Review savepoint is stale",
+        ),
+        "android/infrastructure/src/main/kotlin/com/lexitrack/learning/infrastructure/AndroidLearntWordsRepository.kt": (
+            "NonCancellable",
+            "saveLearningOutcome",
+            "petVitals",
+        ),
+        "android/infrastructure/src/test/kotlin/com/lexitrack/learning/infrastructure/AndroidReviewRepositoryTest.kt": (
+            "cancellationAfterCommitStillPublishesReviewState",
+            "cancellationAfterReviewCommitCannotSplitTheRatingOutcome",
+        ),
+        "android/infrastructure/src/test/kotlin/com/lexitrack/learning/infrastructure/AndroidLearntWordsRepositoryTest.kt": (
+            "cancellationAfterCommitStillPublishesLearningOutcome",
+        ),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": (
+            "class RewardEffectsEngine",
+            "resolveRatingOrigin",
+            "visibleTrail",
+            "trailLengthForSpeed",
+        ),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt": (
+            "onRate(ReviewRating.AGAIN",
+            "onRate(ReviewRating.HARD",
+            "onRate(ReviewRating.GOOD",
+            "onRate(ReviewRating.EASY",
+            "resolveRatingOrigin",
+        ),
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetVitalsGoldenContractTest.kt": (
+            "FoodJar",
+            "rewardRules",
+        ),
+        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": (
+            "minimumVerifiedConcurrentFlights",
+            "trailLengthForSpeed",
+        ),
+    }
+    for relative_path, markers in implementation_markers.items():
+        source_path = ROOT / relative_path
+        if not source_path.is_file():
+            fail(f"Pet vitals implementation is missing {relative_path}")
+        source = source_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in source:
+                fail(f"Pet vitals implementation {relative_path} is missing {marker}")
+
+    hidden_ui_markers = (
+        "饱食度",
+        "储食度",
+        "饥饿状态",
+        forgot,
+        vague,
+    )
+    presentation_sources = [
+        ROOT / "windows" / "presentation" / "app.py",
+        ROOT / "android" / "presentation" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "presentation" / "LexiTrackApp.kt",
+    ]
+    for source_path in presentation_sources:
+        source = source_path.read_text(encoding="utf-8")
+        for marker in hidden_ui_markers:
+            if marker in source:
+                fail(f"Hidden pet state leaked into UI: {source_path.relative_to(ROOT)} has {marker}")
 
 
 def normalize_group_membership(code: str) -> str:
@@ -1192,8 +1990,144 @@ def verify_vocabulary_groups_contract() -> None:
         fail("Parity manifest does not declare vocabularyGroupBrowser ready")
     if parity.get("capabilities", {}).get("dictationGroupSelection") != "ready":
         fail("Parity manifest does not declare dictationGroupSelection ready")
-    if "Dictation manual word selection" not in contract_path.read_text(encoding="utf-8"):
-        fail("Vocabulary groups contract must govern the dictation manual word selection")
+    if parity.get("capabilities", {}).get("dictationRandomGroupDrillDown") != "ready":
+        fail("Parity manifest does not declare dictationRandomGroupDrillDown ready")
+    if "Dictation word selection" not in contract_path.read_text(encoding="utf-8"):
+        fail("Vocabulary groups contract must govern dictation word selection")
+    contract_text = contract_path.read_text(encoding="utf-8")
+    if "从该词书手选" not in contract_text:
+        fail("Vocabulary groups contract must define random-group drill-down and manual handoff")
+
+    windows_source = (ROOT / "windows" / "presentation" / "app.py").read_text(encoding="utf-8")
+    android_source = (
+        ROOT / "android" / "presentation" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "presentation" / "LexiTrackApp.kt"
+    ).read_text(encoding="utf-8")
+    for marker in ("open_dictation_group", "close_dictation_group", "从该词书手选"):
+        if marker not in windows_source:
+            fail(f"Windows dictation group drill-down is missing {marker}")
+    for marker in ("openDictationGroup", "closeDictationGroup", "从该词书手选"):
+        if marker not in android_source:
+            fail(f"Android dictation group drill-down is missing {marker}")
+
+    for marker in ("dictationRandomCandidateIds", "选取到这里", "结束范围选择"):
+        if marker not in windows_source:
+            fail(f"Windows dictation selection interaction is missing {marker}")
+    for marker in ("dictationRandomCandidateIds", "选取到这里", "结束范围选择"):
+        if marker not in android_source:
+            fail(f"Android dictation selection interaction is missing {marker}")
+
+
+def verify_dictation_presentation_contract() -> None:
+    contract_path = CONTRACTS / "dictation-export-v1.md"
+    contract_text = contract_path.read_text(encoding="utf-8")
+    if "vocabulary-groups-v1" not in contract_text or "跨分组" not in contract_text:
+        fail("Dictation contract must use the shared vocabulary-group scope")
+    required_scope_markers = ("`all`", "`cet4`", "`cet6`", "`zk`", "`gk`", "`custom`")
+    if any(marker not in contract_text for marker in required_scope_markers):
+        fail("Dictation contract must name every canonical vocabulary group scope")
+    if "额外规范化 membership group key" not in contract_text:
+        fail("Dictation contract must allow additional normalized membership groups")
+    if "筛选支持多选" in contract_text or "支持值为 `CET4`、`CET6`、`CUSTOM`" in contract_text:
+        fail("Dictation contract still contains the legacy memberships multi-select scope")
+    if "进入页面的加载动画" not in contract_text or "1000..2000 ms" not in contract_text:
+        fail("Dictation contract must define the entry loading duration")
+    if "圆环 spinner" not in contract_text or "打开书本" not in contract_text:
+        fail("Dictation contract must require a visible book-turning animation")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    if parity.get("capabilities", {}).get("dictationBookLoadingAnimation") != "ready":
+        fail("Parity manifest does not declare dictationBookLoadingAnimation ready")
+    for capability in (
+        "dictationRandomSubsetSelection",
+        "dictationRangeSelection",
+        "dictationDraftPersistence",
+        "dictationDraftSyncPort",
+    ):
+        if parity.get("capabilities", {}).get(capability) != "ready":
+            fail(f"Parity manifest does not declare {capability} ready")
+
+    windows_source = (ROOT / "windows" / "presentation" / "widgets.py").read_text(encoding="utf-8")
+    android_root = (
+        ROOT / "android" / "presentation" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "presentation"
+    )
+    android_screen = (android_root / "LexiTrackApp.kt").read_text(encoding="utf-8")
+    android_geometry = (android_root / "DictationPresentation.kt").read_text(encoding="utf-8")
+    android_view_model = (android_root / "MainViewModel.kt").read_text(encoding="utf-8")
+    for marker in ("book_turning_frame", "book_turning_progress", "BOOK_TURNING_TICK_MS"):
+        if marker not in windows_source:
+            fail(f"Windows book-turning loader is missing {marker}")
+    for marker in ("dictationBookFrame", "DICTATION_BOOK_PAGE_TURN_MS"):
+        if marker not in android_geometry:
+            fail(f"Android book-turning geometry is missing {marker}")
+    if "RepeatMode.Restart" not in android_screen or "RepeatMode.Reverse" in android_screen:
+        fail("Android book-turning loader must restart each right-to-left page turn")
+    if "stopDictationLoading()" not in android_view_model or "dictationLoadingJob?.cancel()" not in android_view_model:
+        fail("Android must cancel the dictation loading job when leaving the page")
+    windows_repository = (ROOT / "windows" / "infrastructure" / "repository.py").read_text(encoding="utf-8")
+    android_repository = (
+        ROOT / "android" / "infrastructure" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "infrastructure" /
+        "AndroidDictationDraftRepository.kt"
+    ).read_text(encoding="utf-8")
+    for marker in ("save_last_synced_dictation_envelope", "add_dictation_conflict_backup"):
+        if marker not in windows_repository:
+            fail(f"Windows dictation sync persistence is missing {marker}")
+    for marker in ("saveLastSyncedEnvelope", "addConflictBackup", "MAX_CONFLICT_BACKUPS = 3"):
+        if marker not in android_repository:
+            fail(f"Android dictation sync persistence is missing {marker}")
+
+
+def verify_font_scale_popup_contract() -> None:
+    """Verify cross-platform safety rules for font settings and popup geometry."""
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    expected_font_scale = {
+        "minimum": 0.9,
+        "maximum": 1.4,
+        "default": 1.0,
+        "nonFinitePolicy": "fallback-to-default",
+        "clampPolicy": "finite-input-clamp-to-range",
+    }
+    if parity.get("fontScale") != expected_font_scale:
+        fail("Parity font-scale safety semantics differ")
+    minimum = float(expected_font_scale["minimum"])
+    maximum = float(expected_font_scale["maximum"])
+    default = float(expected_font_scale["default"])
+    if not (
+        math.isfinite(minimum)
+        and math.isfinite(maximum)
+        and math.isfinite(default)
+        and minimum <= default <= maximum
+    ):
+        fail("Parity font-scale bounds must be finite and contain the default")
+
+    def clamp_font_scale(value: float) -> float:
+        if not math.isfinite(value):
+            return default
+        return min(maximum, max(minimum, value))
+
+    # Pure contract vectors cover both invalid persisted values and ordinary
+    # finite values without importing either platform's settings code.
+    vectors = (
+        (float("nan"), default),
+        (float("-inf"), default),
+        (float("inf"), default),
+        (minimum - 1.0, minimum),
+        (minimum, minimum),
+        (default, default),
+        (maximum, maximum),
+        (maximum + 1.0, maximum),
+    )
+    for raw, expected in vectors:
+        observed = clamp_font_scale(raw)
+        if not math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-12):
+            fail(f"Font-scale contract vector differs for {raw!r}: {observed} != {expected}")
+
+    expected_popup_geometry = {
+        "initialPlacement": "measure-before-position-and-viewport-clamp",
+    }
+    if parity.get("popupGeometry") != expected_popup_geometry:
+        fail("Parity popup initial-geometry semantics differ")
 
 
 def verify_catalog() -> None:
@@ -1292,6 +2226,297 @@ def verify_branding() -> None:
             fail("Shared mirrored pet image is not reproducible from the canonical source")
 
 
+def verify_pet_appearance_contract() -> None:
+    contract_path = CONTRACTS / "pet-appearance-v1.md"
+    golden_path = CONTRACTS / "pet-appearance-golden-v1.json"
+    if not contract_path.is_file() or "pet-appearance-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet appearance contract is missing or has the wrong version")
+    if not golden_path.is_file():
+        fail("Pet appearance golden file is missing")
+
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    required_states = ["pain.png", "scared.png", "sleep.png", "hungry.png"]
+    expected_thresholds = {
+        "largeLandingSpeed": 437.5,
+        "airborneSeconds": 3.0,
+        "stationarySeconds": 30.0,
+        "doubleTapWindowMs": 300,
+        "hungrySatiety": 0.0,
+    }
+    expected_priority = ["pain", "scared", "hungry", "sleep", "happy", "normal"]
+    if payload.get("contractVersion") != "pet-appearance-v1":
+        fail("Unexpected pet appearance contract version")
+    if payload.get("sourceDirectory") != "shared/assets/branding/pet_states":
+        fail("Pet appearance source directory differs")
+    if payload.get("runtimeDirectory") != "shared/assets/pets/states":
+        fail("Pet appearance runtime directory differs")
+    if payload.get("requiredStateAssets") != required_states:
+        fail("Pet appearance required state assets differ")
+    if payload.get("happyAssetPattern") != r"^happy([1-9][0-9]*)\.png$":
+        fail("Pet appearance happy filename pattern differs")
+    if payload.get("thresholds") != expected_thresholds:
+        fail("Pet appearance thresholds differ")
+    if payload.get("priority") != expected_priority:
+        fail("Pet appearance priority differs")
+    priority_decision = payload.get("priorityDecision")
+    priority_confirmed = payload.get("priorityConfirmed")
+    if priority_decision not in {"recommended-pain-before-scared", "confirmed-pain-before-scared"}:
+        fail("Pet appearance priority decision is missing")
+    if not isinstance(priority_confirmed, bool):
+        fail("Pet appearance priority confirmation must be boolean")
+    if priority_confirmed != (priority_decision == "confirmed-pain-before-scared"):
+        fail("Pet appearance priority confirmation does not match the decision marker")
+    if payload.get("missingAssetPolicy") != "skip-missing-choice-and-fallback-to-normal":
+        fail("Pet appearance missing-asset policy differs")
+    if payload.get("featureEnabledWhen") != "all-required-state-assets-and-at-least-one-happy-asset-exist-and-priority-is-confirmed":
+        fail("Pet appearance enablement rule differs")
+
+    source_path = ROOT / payload["sourceDirectory"]
+    runtime_path = ROOT / payload["runtimeDirectory"]
+    if not source_path.is_dir() or not runtime_path.is_dir():
+        fail("Pet appearance source and runtime directories must both exist")
+
+    try:
+        discovered = pet_appearance_assets.discover(source_path)
+    except Exception as exc:
+        fail(f"Pet appearance source assets are invalid: {exc}")
+    manifest_path = runtime_path / "manifest.json"
+    if not manifest_path.is_file():
+        fail("Pet appearance runtime manifest is missing")
+    generated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    generated_projection = {
+        "contractVersion": discovered["contractVersion"],
+        "stateAssets": discovered["stateAssets"],
+        "happyAssets": discovered["happyAssets"],
+        "enabled": discovered["enabled"],
+        "disabledReason": discovered["disabledReason"],
+        "sourceDirectory": "shared/assets/branding/pet_states",
+        "runtimeDirectory": "shared/assets/pets/states",
+    }
+    if generated != generated_projection:
+        fail("Generated pet appearance manifest is stale or has unexpected fields")
+
+    def runtime_asset_path(relative_name: str) -> Path:
+        return runtime_path / relative_name
+
+    expected_runtime_pngs: set[str] = set()
+    for filename in pet_appearance_assets.STATE_FILES.values():
+        source_file = source_path / filename
+        runtime_file = runtime_asset_path(filename)
+        if source_file.is_file():
+            expected_runtime_pngs.add(filename)
+            if not runtime_file.is_file():
+                fail(f"Generated runtime asset is missing: {filename}")
+            if source_file.read_bytes() != runtime_file.read_bytes():
+                fail(f"Generated runtime asset differs from source: {filename}")
+            if runtime_file.read_bytes()[:8] != pet_appearance_assets.PNG_SIGNATURE:
+                fail(f"Generated runtime asset is not a PNG: {filename}")
+        elif runtime_file.is_file():
+            fail(f"Runtime asset exists without a source asset: {filename}")
+
+    happy_source_path = source_path / "happy"
+    happy_runtime_path = runtime_path / "happy"
+    for filename in discovered["happyAssets"]:
+        expected_runtime_pngs.add(f"happy/{filename}")
+        source_file = happy_source_path / filename
+        runtime_file = happy_runtime_path / filename
+        if not runtime_file.is_file() or source_file.read_bytes() != runtime_file.read_bytes():
+            fail(f"Generated happy runtime asset differs or is missing: {filename}")
+        if runtime_file.read_bytes()[:8] != pet_appearance_assets.PNG_SIGNATURE:
+            fail(f"Generated happy runtime asset is not a PNG: {filename}")
+
+    observed_runtime_pngs = {
+        path.relative_to(runtime_path).as_posix()
+        for path in runtime_path.rglob("*.png")
+        if path.is_file()
+    }
+    if observed_runtime_pngs != expected_runtime_pngs:
+        fail("Runtime pet appearance PNG set differs from the generated manifest")
+
+    availability = payload.get("currentAvailability")
+    expected_availability = {
+        "enabled": discovered["enabled"],
+        "stateAssets": discovered["stateAssets"],
+        "happyAssets": discovered["happyAssets"],
+        "disabledReason": discovered["disabledReason"],
+    }
+    if availability != expected_availability:
+        fail("Pet appearance golden current availability differs from generated assets")
+
+    asset_set = payload.get("assetSet", {})
+    if asset_set.get("stateAssets") != {
+        "pain": "pain.png",
+        "scared": "scared.png",
+        "sleep": "sleep.png",
+        "hungry": "hungry.png",
+    } or asset_set.get("happyAssets") != ["happy1.png", "happy2.png"]:
+        fail("Pet appearance golden asset set differs")
+
+    def at_least(value: float, threshold: float) -> bool:
+        return math.isfinite(value) and value >= threshold
+
+    def expected_decision(context: dict) -> tuple[str, str | None, str]:
+        if at_least(float(context.get("landingImpactSpeed", 0.0)), expected_thresholds["largeLandingSpeed"]):
+            return "pain", "pain.png", "large-landing"
+        if at_least(float(context.get("airborneSeconds", 0.0)), expected_thresholds["airborneSeconds"]):
+            return "scared", "scared.png", "airborne-too-long"
+        satiety = context.get("satiety")
+        if satiety is not None and math.isfinite(float(satiety)) and float(satiety) <= expected_thresholds["hungrySatiety"]:
+            return "hungry", "hungry.png", "satiety-zero"
+        if (
+            not bool(context.get("moving", False))
+            and at_least(float(context.get("stationarySeconds", 0.0)), expected_thresholds["stationarySeconds"])
+        ):
+            return "sleep", "sleep.png", "stationary-too-long"
+        if not bool(context.get("moving", False)) and bool(context.get("rapidDoubleTap", False)):
+            happy_index = int(context.get("happyAssetIndex", 0)) % 2
+            return "happy", ["happy1.png", "happy2.png"][happy_index], "stationary-double-tap"
+        return "normal", None, "normal"
+
+    vectors = payload.get("vectors", [])
+    if not vectors:
+        fail("Pet appearance golden vectors are missing")
+    for vector in vectors:
+        expected = (
+            ("normal", None, "normal")
+            if vector.get("assetSet") == "empty"
+            else expected_decision(vector.get("context", {}))
+        )
+        observed = vector.get("expected", {})
+        if (observed.get("appearance"), observed.get("asset"), observed.get("reason")) != expected:
+            fail(f"Pet appearance golden vector differs: {vector.get('name')}")
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    for marker in (
+        "`shared/assets/branding/pet_states/`",
+        "`shared/assets/pets/states/`",
+        "dragging",
+        "airborneSeconds >= 3.0",
+        "stationarySeconds >= 30.0",
+        "listdir",
+        "pain > scared > hungry > sleep > happy > normal",
+        "priorityConfirmed",
+        "disabled",
+    ):
+        if marker not in contract_text:
+            fail(f"Pet appearance contract is missing {marker}")
+
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    expected_manifest = {
+        "sourceDirectory": payload["sourceDirectory"],
+        "runtimeDirectory": payload["runtimeDirectory"],
+        "requiredStateAssets": required_states,
+        "happyAssetPattern": payload["happyAssetPattern"],
+        "thresholds": expected_thresholds,
+        "priority": expected_priority,
+        "priorityDecision": payload["priorityDecision"],
+        "missingAssetPolicy": payload["missingAssetPolicy"],
+        "featureEnabledWhen": payload["featureEnabledWhen"],
+        "enabled": discovered["enabled"] and priority_confirmed,
+        "disabledReason": discovered["disabledReason"],
+        "priorityConfirmed": priority_confirmed,
+    }
+    if parity.get("petAppearanceVersion") != "pet-appearance-v1":
+        fail("Parity manifest does not declare pet-appearance-v1")
+    if parity.get("petAppearance") != expected_manifest:
+        fail("Parity petAppearance projection differs from the golden contract or asset manifest")
+    expected_capability = "ready" if discovered["enabled"] and priority_confirmed else "disabled"
+    if parity.get("capabilities", {}).get("petAppearanceStates") != expected_capability:
+        fail("Pet appearance capability does not match asset availability")
+
+    implementation_markers = {
+        "tools/prepare_pet_appearance_assets.py": (
+            "def discover",
+            "def prepare",
+            "_validate_png",
+            "shared/assets/branding/pet_states",
+            "shared/assets/pets/states",
+        ),
+        "windows/domain/pet_appearance.py": (
+            "PET_APPEARANCE_VERSION",
+            "class PetAppearance",
+            "class PetAppearanceAssets",
+            "class PetAppearanceContext",
+            "def select_pet_appearance",
+        ),
+        "windows/tests/test_pet_appearance.py": (
+            "pet-appearance-golden-v1.json",
+            "select_pet_appearance",
+        ),
+        "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetAppearance.kt": (
+            "PET_APPEARANCE_VERSION",
+            "enum class PetAppearance",
+            "data class PetAppearanceAssets",
+            "data class PetAppearanceContext",
+            "fun selectPetAppearance",
+        ),
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetAppearanceTest.kt": (
+            "pet.appearance.golden.path",
+            "selectPetAppearance",
+        ),
+        "android/presentation/build.gradle.kts": (
+            "shared/assets/pets/states",
+            "happy/*.png",
+        ),
+        "windows/build.ps1": (
+            "shared\\assets\\pets",
+            "--add-data",
+        ),
+    }
+    for relative_path, markers in implementation_markers.items():
+        source_path = ROOT / relative_path
+        if not source_path.is_file():
+            fail(f"Pet appearance implementation is missing {relative_path}")
+        source = source_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in source:
+                fail(f"Pet appearance implementation {relative_path} is missing {marker}")
+
+    windows_domain_path = ROOT / "windows" / "domain" / "pet_appearance.py"
+    windows_domain_tree = ast.parse(windows_domain_path.read_text(encoding="utf-8"))
+    forbidden_windows_imports = {"tkinter", "pathlib", "os", "io"}
+    for node in ast.walk(windows_domain_tree):
+        if isinstance(node, ast.Import):
+            imported_modules = {alias.name.split(".", 1)[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported_modules = {(node.module or "").split(".", 1)[0]}
+        else:
+            continue
+        if forbidden_windows_imports & imported_modules:
+            fail("Windows pet appearance domain imports a platform or filesystem module")
+
+    android_domain_source = (
+        ROOT / "android" / "domain" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "domain" / "PetAppearance.kt"
+    ).read_text(encoding="utf-8")
+    if re.search(r"(?m)^import\s+(?:android|androidx|java\.io|java\.nio|kotlin\.io)\.", android_domain_source):
+        fail("Android pet appearance domain imports a platform or filesystem module")
+    if "listdir" in windows_domain_path.read_text(encoding="utf-8") or "listFiles" in android_domain_source:
+        fail("Pet appearance domain must not discover files")
+
+    presentation_sources = (
+        ROOT / "windows" / "presentation",
+        ROOT / "android" / "presentation" / "src" / "main",
+    )
+    source_directory_marker = "shared/assets/branding/pet_states"
+    for presentation_root in presentation_sources:
+        for source_path in presentation_root.rglob("*.py"):
+            if source_directory_marker in source_path.read_text(encoding="utf-8"):
+                fail(f"Presentation directly references canonical pet appearance sources: {source_path.relative_to(ROOT)}")
+        for source_path in presentation_root.rglob("*.kt"):
+            if source_directory_marker in source_path.read_text(encoding="utf-8"):
+                fail(f"Presentation directly references canonical pet appearance sources: {source_path.relative_to(ROOT)}")
+
+    if discovered["enabled"] is False:
+        for relative_path in (
+            "windows/domain/pet_appearance.py",
+            "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetAppearance.kt",
+        ):
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            if "normal" not in source:
+                fail(f"Disabled pet appearance implementation lacks normal fallback: {relative_path}")
+
+
 def verify_platform_markers() -> None:
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     for platform in parity["platforms"]:
@@ -1305,12 +2530,24 @@ def verify_platform_markers() -> None:
             "algorithmVersion",
             "wordBubbleVersion",
             "petCompanionVersion",
+            "petVitalsVersion",
+            "petAppearanceVersion",
             "vocabularyGroupsVersion",
             "contentVersion",
         ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
-        for key in ("branding", "petCompanion", "fontScale", "learningReminder", "studyOrder", "vocabularyFilters"):
+        for key in (
+            "branding",
+            "petCompanion",
+            "petVitals",
+            "petAppearance",
+            "fontScale",
+            "popupGeometry",
+            "learningReminder",
+            "studyOrder",
+            "vocabularyFilters",
+        ):
             if marker.get(key) != parity.get(key):
                 fail(f"{platform} {key} differs from shared parity manifest")
         if marker.get("capabilities") != parity.get("capabilities"):
@@ -1321,9 +2558,13 @@ def main() -> int:
     verify_scheduler()
     verify_weighted_review()
     verify_dictation_contract()
+    verify_dictation_presentation_contract()
     verify_word_bubble_contract()
     verify_pet_contract()
+    verify_pet_appearance_contract()
+    verify_pet_vitals_contract()
     verify_vocabulary_groups_contract()
+    verify_font_scale_popup_contract()
     verify_catalog()
     verify_branding()
     verify_platform_markers()

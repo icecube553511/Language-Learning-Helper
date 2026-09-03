@@ -6,6 +6,7 @@ data class LearntWord(
     val learntAtUtc: Double,
     val lastReviewedAtUtc: Double,
     val reviewCount: Int = 0,
+    val reviewRecoveryTag: ReviewRecoveryTag? = null,
 ) {
     init {
         require(wordId.isNotBlank()) { "Learnt word id cannot be blank" }
