@@ -9,9 +9,11 @@ import tempfile
 import threading
 
 from domain.models import (
+    DEFAULT_FONT_SCALE,
     DEFAULT_STUDY_ORDER,
     DEFAULT_REMINDER_INTERVAL_MINUTES,
     DEFAULT_REVIEW_BATCH_SIZE,
+    sanitize_font_scale,
     MAX_REMINDER_INTERVAL_MINUTES,
     MIN_REMINDER_INTERVAL_MINUTES,
     ReviewState,
@@ -90,6 +92,10 @@ class JsonLearningRepository:
         settings = payload.get("settings", {})
         if isinstance(settings, dict):
             self._settings.update(settings)
+        self._settings["fontScale"] = sanitize_font_scale(
+            self._settings.get("fontScale", DEFAULT_FONT_SCALE),
+            fallback=DEFAULT_FONT_SCALE,
+        )
         overrides = payload.get("tagOverrides", {})
         if isinstance(overrides, dict):
             self._tag_overrides = {
@@ -99,13 +105,18 @@ class JsonLearningRepository:
             }
 
     def _payload(self) -> dict:
+        settings = dict(self._settings)
+        settings["fontScale"] = sanitize_font_scale(
+            settings.get("fontScale", DEFAULT_FONT_SCALE),
+            fallback=DEFAULT_FONT_SCALE,
+        )
         return {
             "schemaVersion": SCHEMA_VERSION,
             "userEntries": [entry.to_dict() for entry in self._user_entries.values()],
             "reviews": {word_id: state.to_dict() for word_id, state in self._reviews.items()},
             "activity": self._activity,
             "tagOverrides": {word_id: sorted(tags) for word_id, tags in self._tag_overrides.items()},
-            "settings": self._settings,
+            "settings": settings,
         }
 
     def _save_locked(self) -> None:
@@ -267,14 +278,21 @@ class JsonLearningRepository:
 
     def get_font_scale(self) -> float:
         with self._lock:
-            try:
-                return min(1.4, max(0.9, float(self._settings.get("fontScale", 1.0))))
-            except (TypeError, ValueError):
-                return 1.0
+            value = sanitize_font_scale(
+                self._settings.get("fontScale", DEFAULT_FONT_SCALE),
+                fallback=DEFAULT_FONT_SCALE,
+            )
+            # Keep the in-memory payload canonical so a subsequent save cannot
+            # reintroduce a malformed persisted value.
+            self._settings["fontScale"] = value
+            return value
 
-    def set_font_scale(self, scale: float) -> None:
+    def set_font_scale(self, scale: object) -> None:
         with self._lock:
-            self._settings["fontScale"] = min(1.4, max(0.9, float(scale)))
+            self._settings["fontScale"] = sanitize_font_scale(
+                scale,
+                fallback=DEFAULT_FONT_SCALE,
+            )
             self._save_locked()
 
     def get_review_batch_size(self) -> int:

@@ -21,7 +21,7 @@ data class CatalogStatus(
 )
 
 data class UserSettings(
-    val fontScale: Float = 1.0f,
+    val fontScale: Float = DEFAULT_FONT_SCALE,
     val reviewBatchSize: Int = DEFAULT_REVIEW_BATCH_SIZE,
     val studyOrder: String = STUDY_ORDER_RANDOM,
     val studyLevels: Set<String> = emptySet(),
@@ -33,12 +33,22 @@ data class UserSettings(
 )
 
 const val DEFAULT_REVIEW_BATCH_SIZE = 20
+const val DEFAULT_FONT_SCALE = 1.0f
+const val MIN_FONT_SCALE = 0.9f
+const val MAX_FONT_SCALE = 1.4f
 const val STUDY_ORDER_ALPHABETICAL = "alphabetical"
 const val STUDY_ORDER_RANDOM = "random"
 val SUPPORTED_VOCABULARY_LEVELS = setOf("CET4", "CET6", "CUSTOM")
 const val DEFAULT_REMINDER_INTERVAL_MINUTES = 30.0f
 const val MIN_REMINDER_INTERVAL_MINUTES = 0.5f
 const val MAX_REMINDER_INTERVAL_MINUTES = 120.0f
+
+/**
+ * Keep persisted and transient font settings safe for Compose text layout.
+ * Float.coerceIn leaves NaN unchanged, which would produce an invalid TextUnit.
+ */
+fun sanitizeFontScale(scale: Float): Float =
+    if (scale.isFinite()) scale.coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE) else DEFAULT_FONT_SCALE
 
 interface VocabularyRepository {
     val words: StateFlow<List<VocabularyEntry>>

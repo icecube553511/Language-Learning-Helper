@@ -143,7 +143,16 @@
     "enabled": false,
     "disabledReason": "appearance PNG set is incomplete"
   },
-  "fontScale": { "minimum": 0.9, "maximum": 1.4, "default": 1.0 },
+  "fontScale": {
+    "minimum": 0.9,
+    "maximum": 1.4,
+    "default": 1.0,
+    "nonFinitePolicy": "fallback-to-default",
+    "clampPolicy": "finite-input-clamp-to-range"
+  },
+  "popupGeometry": {
+    "initialPlacement": "measure-before-position-and-viewport-clamp"
+  },
   "learningReminder": { "minimumMinutes": 0.5, "maximumMinutes": 120.0, "defaultMinutes": 30.0 },
   "studyOrder": { "default": "random", "allowed": ["random", "alphabetical"] },
   "vocabularyFilters": { "levels": ["CET4", "CET6", "CUSTOM"], "studyAndReviewIndependent": true, "reminderIndependent": true, "multiSelect": true },

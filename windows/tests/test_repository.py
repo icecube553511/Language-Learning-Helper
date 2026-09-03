@@ -116,6 +116,23 @@ class RepositoryTests(unittest.TestCase):
         repo.set_reminder_interval_minutes(999)
         self.assertEqual(repo.get_reminder_interval_minutes(), 120.0)
 
+    def test_font_scale_falls_back_for_corrupt_and_non_finite_values(self):
+        directory = Path(self.temp.name) / "font-scale"
+        directory.mkdir()
+        (directory / "learning-state.json").write_text(
+            json.dumps({"settings": {"fontScale": "not-a-number"}}),
+            encoding="utf-8",
+        )
+        repo = JsonLearningRepository(directory)
+        self.assertEqual(repo.get_font_scale(), 1.0)
+
+        repo.set_font_scale(float("nan"))
+        self.assertEqual(repo.get_font_scale(), 1.0)
+        repo.set_font_scale(float("inf"))
+        self.assertEqual(repo.get_font_scale(), 1.0)
+        repo.set_font_scale(float("-inf"))
+        self.assertEqual(repo.get_font_scale(), 1.0)
+
     def test_catalog_gracefully_handles_missing_file(self):
         loader = CatalogLoader(Path(self.temp.name) / "missing.json")
         self.assertEqual(loader.load(), [])

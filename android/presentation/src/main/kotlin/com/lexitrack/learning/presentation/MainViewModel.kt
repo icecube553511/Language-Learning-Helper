@@ -6,10 +6,12 @@ import androidx.lifecycle.viewModelScope
 import com.lexitrack.learning.application.AppUseCases
 import com.lexitrack.learning.application.CatalogStatus
 import com.lexitrack.learning.application.DashboardSnapshot
+import com.lexitrack.learning.application.DEFAULT_FONT_SCALE
 import com.lexitrack.learning.application.ForecastDay
 import com.lexitrack.learning.application.UserSettings
 import com.lexitrack.learning.application.LibraryGroup
 import com.lexitrack.learning.application.ExportedDictation
+import com.lexitrack.learning.application.sanitizeFontScale
 import com.lexitrack.learning.domain.ImportReport
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
@@ -74,7 +76,7 @@ data class MainUiState(
     val selectedVocabularyIds: Set<String> = emptySet(),
     val libraryGroup: String? = null,
     val libraryGroups: List<LibraryGroup> = emptyList(),
-    val fontScale: Float = 1.0f,
+    val fontScale: Float = DEFAULT_FONT_SCALE,
     val importInProgress: Boolean = false,
     val importReport: ImportReport? = null,
     val transientMessage: String? = null,
@@ -445,8 +447,9 @@ class MainViewModel(
     }
 
     fun setFontScale(scale: Float) {
-        _uiState.value = _uiState.value.copy(fontScale = scale.coerceIn(0.9f, 1.4f))
-        viewModelScope.launch { useCases.updateFontScale(scale) }
+        val safeScale = sanitizeFontScale(scale)
+        _uiState.value = _uiState.value.copy(fontScale = safeScale)
+        viewModelScope.launch { useCases.updateFontScale(safeScale) }
     }
 
     fun setReviewBatchSize(count: Int) {
@@ -559,7 +562,7 @@ class MainViewModel(
             libraryGroups = useCases.libraryGroups(),
             searchResults = matches.take(MAX_VISIBLE_SEARCH_RESULTS),
             totalSearchResults = matches.size,
-            fontScale = settings.fontScale,
+            fontScale = sanitizeFontScale(settings.fontScale),
             learntWordCount = learntCount,
             reviewBatchSize = settings.reviewBatchSize.coerceIn(1, maxOf(1, learntCount)),
             studyOrder = settings.studyOrder,

@@ -7,6 +7,7 @@ import random
 import time
 
 from domain.models import (
+    DEFAULT_FONT_SCALE,
     DEFAULT_STUDY_ORDER,
     MAX_REMINDER_INTERVAL_MINUTES,
     MIN_REMINDER_INTERVAL_MINUTES,
@@ -14,6 +15,7 @@ from domain.models import (
     LearntWord,
     ReviewRating,
     ReviewState,
+    sanitize_font_scale,
     VocabularyEntry,
 )
 from domain.dictation import (
@@ -651,9 +653,12 @@ class LearningService:
         ]
 
     def font_scale(self) -> float:
-        return self.repository.get_font_scale()
+        return sanitize_font_scale(
+            self.repository.get_font_scale(),
+            fallback=DEFAULT_FONT_SCALE,
+        )
 
-    def set_font_scale(self, scale: float) -> float:
-        bounded = min(1.4, max(0.9, float(scale)))
+    def set_font_scale(self, scale: object) -> float:
+        bounded = sanitize_font_scale(scale, fallback=DEFAULT_FONT_SCALE)
         self.repository.set_font_scale(bounded)
         return bounded

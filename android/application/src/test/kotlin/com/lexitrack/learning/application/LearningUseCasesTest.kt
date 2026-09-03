@@ -32,6 +32,25 @@ class LearningUseCasesTest {
     private val time = FixedTimeProvider(now)
 
     @Test
+    fun `font scale sanitization rejects non finite values and clamps bounds`() {
+        assertEquals(DEFAULT_FONT_SCALE, sanitizeFontScale(Float.NaN))
+        assertEquals(DEFAULT_FONT_SCALE, sanitizeFontScale(Float.POSITIVE_INFINITY))
+        assertEquals(DEFAULT_FONT_SCALE, sanitizeFontScale(Float.NEGATIVE_INFINITY))
+        assertEquals(MIN_FONT_SCALE, sanitizeFontScale(0f))
+        assertEquals(MAX_FONT_SCALE, sanitizeFontScale(2f))
+        assertEquals(1.2f, sanitizeFontScale(1.2f))
+    }
+
+    @Test
+    fun `font scale use case persists a safe value for non finite input`() = runTest {
+        val settings = FakeSettingsRepository()
+
+        UpdateFontScaleUseCase(settings)(Float.NaN)
+
+        assertEquals(DEFAULT_FONT_SCALE, settings.settings.value.fontScale)
+    }
+
+    @Test
     fun `dashboard separates new words from due reviews`() {
         val dashboard = BuildDashboardUseCase(vocabulary, reviews, learntWords, time)
 
