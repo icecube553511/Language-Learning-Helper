@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import tkinter as tk
 import unittest
 from unittest.mock import Mock
 
@@ -39,7 +40,15 @@ from presentation.reward_effects import (
 )
 from presentation.app import LexiTrackApp, preserve_pet_motion_for_targets
 from domain.models import ReviewRating, VocabularyEntry
-from domain.pet_companion import PetMode, PetPoint, PetRect, PetState, PetTarget, PetTargetKind
+from domain.pet_companion import (
+    advance_pet,
+    PetMode,
+    PetPoint,
+    PetRect,
+    PetState,
+    PetTarget,
+    PetTargetKind,
+)
 
 
 GOLDEN = json.loads(
@@ -96,6 +105,89 @@ class RewardEffectsTests(unittest.TestCase):
         rebound = preserve_pet_motion_for_targets(state, [])
 
         self.assertEqual(rebound, state)
+
+    def test_rating_reflow_keeps_pet_cruising(self):
+        """When a rating click replaces the card, the pet must keep moving.
+
+        The card reflow briefly drops the followed control.  The presentation
+        rebinds a stale support without clearing the live physical state, and
+        the reducer must keep advancing the companion toward the rebuilt card
+        rather than parking it in an IDLE/no-target state.
+        """
+        viewport = PetRect(0.0, 0.0, 900.0, 700.0)
+        pet_size = 24.0
+        old_target = PetTarget("study:old-rating", PetTargetKind.CONTROL, PetRect(70.0, 300.0, 80.0, 24.0))
+        new_controls = [
+            PetTarget("study:new-inner", PetTargetKind.CONTROL, PetRect(60.0, 520.0, 90.0, 24.0)),
+            PetTarget("nav:Home", PetTargetKind.CONTROL, PetRect(60.0, 20.0, 90.0, 24.0)),
+            PetTarget("edge:right", PetTargetKind.EDGE, PetRect(897.0, 0.0, 3.0, 700.0)),
+            PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0.0, 697.0, 900.0, 3.0)),
+            PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0.0, 0.0, 3.0, 700.0)),
+        ]
+        state = PetState(
+            position=PetPoint(180.0, 260.0),
+            mode=PetMode.FLY,
+            target_id=old_target.id,
+            movement_speed=37.0,
+            vertical_velocity=0.0,
+            horizontal_velocity=0.0,
+        )
+
+        start_position = state.position
+        sampled_positions: list[PetPoint] = [start_position]
+        for _ in range(30):
+            state = preserve_pet_motion_for_targets(state, new_controls)
+            state = advance_pet(state, new_controls, viewport, pet_size=pet_size)
+            if state.position not in sampled_positions:
+                sampled_positions.append(state.position)
+
+        # The companion must traverse at least a few distinct points so the
+        # card reflow never parks it at a single frozen spot, and it must not
+        # end stranded with a cleared target forever.
+        self.assertGreater(len(sampled_positions), 3)
+        self.assertTrue(
+            state.position != start_position or state.target_id is not None,
+            "pet was cleared to a target-less state without retaining motion",
+        )
+
+    def test_pet_tick_retries_transient_error_instead_of_freezing(self):
+        """A TclError while a card is rebuilding must not permanently stop the pet."""
+        app = object.__new__(LexiTrackApp)
+        app._pet_overlay = object()
+        app._dialog_pet_stack = []
+        app._pet_targets = ()
+        app._pet_tick_failures = 0
+        app._pet_tick_after_id = None
+        app._reward_effects = None
+        app.pet_companion = Mock()
+        app._pet_last_rendered_position = None
+
+        scheduled: list[tuple] = []
+
+        def fake_after(*args):
+            scheduled.append(args)
+            return f"after:{len(scheduled)}"
+
+        app.after = fake_after
+
+        def raise_tcl(*_args, **_kwargs):
+            raise tk.TclError("widget unmounted mid-tick")
+
+        app._collect_pet_targets = raise_tcl
+
+        # A single transient error must retry rather than dropping the schedule.
+        app._pet_tick()
+        self.assertEqual(app._pet_tick_failures, 1)
+        self.assertEqual(app._pet_tick_after_id, "after:1")
+        self.assertEqual(len(scheduled), 1)
+
+        # Repeated failures are bounded so a genuinely torn-down window stops
+        # cleanly instead of hammering the event loop forever.
+        for _ in range(4):
+            app._pet_tick()
+        self.assertEqual(app._pet_tick_failures, 5)
+        self.assertIsNone(app._pet_tick_after_id)
+        self.assertEqual(len(scheduled), 4)
 
     def test_effect_layer_hit_test_is_explicitly_transparent(self):
         self.assertEqual(transparent_hit_test_result(WM_NCHITTEST), HTTRANSPARENT)

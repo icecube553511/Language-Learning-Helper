@@ -454,6 +454,7 @@ class LexiTrackApp(tk.Tk):
         self._pet_targets: tuple[PetTarget, ...] = ()
         self._pet_refresh_after_id: str | None = None
         self._pet_tick_after_id: str | None = None
+        self._pet_tick_failures = 0
         self._pet_render_after_ids: list[str] = []
         self._pet_render_generation = 0
         self._pet_drag_offset = PetPoint(0.0, 0.0)
@@ -2015,6 +2016,7 @@ class LexiTrackApp(tk.Tk):
                 self._cancel_main_pet_render()
                 self._pet_last_rendered_position = None
                 overlay.withdraw()
+                self._pet_tick_failures = 0
                 self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                 return
             # Geometry can change without resizing the root (scrolling, lazy rows,
@@ -2029,17 +2031,31 @@ class LexiTrackApp(tk.Tk):
                 self._pet_targets,
             )
             if self._migrate_main_pet_if_needed():
+                self._pet_tick_failures = 0
                 self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                 return
             previous_position = self.pet_companion.state.position
             self.pet_companion.tick(self._pet_targets, self._pet_viewport())
             if self._migrate_main_pet_if_needed():
+                self._pet_tick_failures = 0
                 self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                 return
             state = self.pet_companion.state
             self._schedule_main_pet_render(state, previous_position)
+            self._pet_tick_failures = 0
             self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
         except tk.TclError:
+            # A rating card rebuild can unmount a control mid-tick, which
+            # surfaces as a transient TclError from winfo geometry.  A single
+            # failure must not permanently kill the pet loop (that is what
+            # stops Bingzi after a click), so retry a bounded number of times.
+            self._pet_tick_failures += 1
+            if self._pet_tick_failures < 5 and self._pet_overlay is not None:
+                try:
+                    self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
+                    return
+                except tk.TclError:
+                    self._pet_tick_after_id = None
             self._pet_tick_after_id = None
 
     def _pet_pointer(self, event) -> PetPoint:
