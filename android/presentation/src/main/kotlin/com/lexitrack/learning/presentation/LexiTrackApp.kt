@@ -176,6 +176,7 @@ import com.lexitrack.learning.domain.PET_CRUISE_SPEED
 import com.lexitrack.learning.domain.tokenizeEnglish
 import com.lexitrack.learning.domain.normalizeWordId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -513,30 +514,40 @@ private fun PetOverlay(
             val currentScale = latestDensityScale
             if (currentViewport.width > 0f && currentViewport.height > 0f) {
                 if (coordinator.activeWindowId != windowId) continue
-                state = coordinator.state
-                // Hand a fast fling to an adjacent host before the domain
-                // reducer applies its local wall restitution.  Without this
-                // predictive check a 16 ms tick can reflect the pet before
-                // the portal sees the outward velocity.
-                if (coordinator.migrateIfNeeded(
-                        windowId,
-                        currentHalfSize,
-                        lookaheadSeconds = PET_TICK_MS / 1_000f,
+                // A rating card rebuild can briefly replace the target set and
+                // recompute geometry.  A transient error on one frame must not
+                // cancel the ticker, otherwise Bingzi freezes for the rest of
+                // the session; only an actual coroutine cancellation stops it.
+                try {
+                    state = coordinator.state
+                    // Hand a fast fling to an adjacent host before the domain
+                    // reducer applies its local wall restitution.  Without this
+                    // predictive check a 16 ms tick can reflect the pet before
+                    // the portal sees the outward velocity.
+                    if (coordinator.migrateIfNeeded(
+                            windowId,
+                            currentHalfSize,
+                            lookaheadSeconds = PET_TICK_MS / 1_000f,
+                            fallUnitScale = currentScale,
+                        )
+                    ) {
+                        state = coordinator.state
+                        continue
+                    }
+                    state = advancePet(
+                        state = state,
+                        targets = latestActiveTargets,
+                        viewport = currentViewport,
+                        halfSize = currentHalfSize,
+                        step = PET_CRUISE_SPEED,
                         fallUnitScale = currentScale,
                     )
-                ) {
-                    state = coordinator.state
-                    continue
+                    coordinator.updateState(state)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // Skip the failed frame and keep the loop alive.
                 }
-                state = advancePet(
-                    state = state,
-                    targets = latestActiveTargets,
-                    viewport = currentViewport,
-                    halfSize = currentHalfSize,
-                    step = PET_CRUISE_SPEED,
-                    fallUnitScale = currentScale,
-                )
-                coordinator.updateState(state)
             }
         }
     }
