@@ -179,7 +179,6 @@ class JsonLearningRepository:
         stored_conflicts = [
             item for item in stored_conflicts if self._is_encrypted_draft(item)
         ][:3]
-        settings = dict(self._settings)
         settings["dictationDraft"] = stored_draft
         settings["dictationDraftSyncMetadata"] = stored_sync_metadata
         settings["dictationLastSyncedEnvelope"] = stored_last_synced
