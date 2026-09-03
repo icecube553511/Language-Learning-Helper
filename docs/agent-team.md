@@ -1,5 +1,10 @@
 # Agent Team
 
+Every role must read `../ARCHITECTURE.md` completely before inspecting or
+changing repository content, then read the contracts and any available golden
+vectors for its assigned feature. This requirement applies before delegation
+as well as before implementation.
+
 LexiTrack uses a small team of focused roles to keep every behavior change
 cross-platform and auditable. Roles work in sequence or, when the orchestrator
 can run them, in parallel; they never touch overlapping files.
@@ -50,8 +55,9 @@ in-process outcome.
 
 ## Confirmed cross-platform behaviors
 
-Recorded in `CLAUDE.md` and `CODEBASE_ONBOARDING.md`. As of now they include:
-review reminder auto-clearing from the dashboard, centered/enlarged review
+Detailed behavior is authoritative only in `shared/contracts/`, its golden
+vectors, and the parity manifests. The implemented feature set includes review
+reminder auto-clearing from the dashboard, centered/enlarged review
 start button, dictation row-click and drag-range multi-select, dictation
 preview wheel paging, the recursive word bubble fixes below, and the library
 group browser (`vocabulary-groups-v1`): entering 词库 shows the wordbook groups
