@@ -1806,7 +1806,11 @@ def verify_pet_vitals_contract() -> None:
     if parity.get("petVitals") != expected_manifest_vitals:
         fail("Parity petVitals projection differs from the golden contract")
     capabilities = parity.get("capabilities", {})
-    for capability in ("petVitalsAndRatingRewards", "ratingRewardFlightEffect"):
+    for capability in (
+        "petVitalsAndRatingRewards",
+        "ratingRewardFlightEffect",
+        "petMotionContinuityDuringReflow",
+    ):
         if capabilities.get(capability) != "ready":
             fail(f"Parity capability {capability} is not ready")
 
