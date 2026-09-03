@@ -18,6 +18,7 @@ from presentation.reward_effects import (
     DEFAULT_CONFIG,
     FlightPhase,
     RewardAnimationModel,
+    RewardEffectsController,
     RewardPoint,
     STUDY_REWARD_COLOR,
     BURST_PARTICLE_GLOW_RADIUS,
@@ -189,6 +190,165 @@ class RewardEffectsTests(unittest.TestCase):
         self.assertEqual(app._pet_tick_failures, 5)
         self.assertIsNone(app._pet_tick_after_id)
         self.assertEqual(len(scheduled), 4)
+
+    def test_pet_tick_skips_non_tcl_frame_error_instead_of_freezing(self):
+        """Any non-Tk frame error must skip the frame and keep the loop alive.
+
+        The Android ticker survives any per-frame exception; the Windows loop
+        must match so a single unexpected presentation error cannot freeze
+        Bingzi for the rest of the session.
+        """
+        app = object.__new__(LexiTrackApp)
+        app._pet_overlay = object()
+        app._dialog_pet_stack = []
+        app._pet_targets = ()
+        app._pet_tick_failures = 0
+        app._pet_tick_after_id = None
+        app._reward_effects = None
+        app.pet_companion = Mock()
+        app._pet_last_rendered_position = None
+
+        scheduled: list[tuple] = []
+
+        def fake_after(*args):
+            scheduled.append(args)
+            return f"after:{len(scheduled)}"
+
+        app.after = fake_after
+
+        def raise_value(*_args, **_kwargs):
+            raise ValueError("geometry edge case")
+
+        app._collect_pet_targets = raise_value
+
+        app._pet_tick()
+        self.assertEqual(app._pet_tick_failures, 0)
+        self.assertEqual(app._pet_tick_after_id, "after:1")
+        self.assertEqual(len(scheduled), 1)
+
+        # The loop keeps ticking past any number of skipped frames, so a
+        # persistent oddity cannot permanently strand the companion.
+        for _ in range(10):
+            app._pet_tick()
+        self.assertEqual(app._pet_tick_failures, 0)
+        self.assertEqual(app._pet_tick_after_id, "after:11")
+        self.assertEqual(len(scheduled), 11)
+
+    def test_reward_tick_skips_failed_frame_and_still_cleans_up_layer(self):
+        """A render failure must not strand the overlay or cancel animation."""
+
+        class FakeHost:
+            def __init__(self):
+                self.scheduled: list[tuple] = []
+
+            def after(self, delay, callback):
+                self.scheduled.append((delay, callback))
+                return f"after:{len(self.scheduled)}"
+
+            def wm_state(self):
+                return "normal"
+
+            def winfo_exists(self):
+                return True
+
+            def winfo_viewable(self):
+                return True
+
+        class FakeLayer:
+            def __init__(self):
+                self.failures = 1
+                self.shown = 0
+                self.hidden = 0
+
+            def show(self):
+                self.shown += 1
+
+            def hide(self):
+                self.hidden += 1
+
+            def keep_above(self, other=None):
+                pass
+
+            def render(self, model, now_ms):
+                if self.failures > 0:
+                    self.failures -= 1
+                    raise tk.TclError("target teardown while sampling")
+
+        host = FakeHost()
+        layer = FakeLayer()
+        controller = object.__new__(RewardEffectsController)
+        controller.host = host
+        controller.target_provider = lambda: RewardPoint(500.0, 300.0)
+        controller.pet_half_size = 56.0
+        controller.model = RewardAnimationModel()
+        controller.layer = layer
+        controller._after_id = None
+        controller._destroyed = False
+        controller._animation_now_ms = 1_000.0
+        controller._last_wall_ms = 1_000.0
+
+        controller.emit((0.0, 0.0), STUDY_REWARD_COLOR)
+        self.assertEqual(controller.model.active_count, 1)
+        self.assertEqual(controller._after_id, "after:1")
+        self.assertEqual(layer.shown, 1)
+
+        # The first frame's render fails; the frame is skipped and the loop is
+        # rescheduled instead of leaving the layer up forever.
+        controller._tick()
+        self.assertEqual(layer.failures, 0)
+        self.assertEqual(controller._after_id, "after:2")
+        self.assertEqual(layer.shown, 2)
+
+        # Flights keep aging; once they finish the layer hides and the loop
+        # stops rescheduling.
+        controller._animation_now_ms += 5_000.0
+        controller._last_wall_ms = int(controller._animation_now_ms)
+        controller._tick()
+        self.assertEqual(controller.model.active_count, 0)
+        self.assertIsNone(controller._after_id)
+        self.assertGreaterEqual(layer.hidden, 1)
+
+    def test_emit_survives_layer_show_failure_and_still_schedules(self):
+        """A failing layer surface must not lose the flight or skip the loop."""
+
+        class FakeHost:
+            def __init__(self):
+                self.scheduled: list[tuple] = []
+
+            def after(self, delay, callback):
+                self.scheduled.append((delay, callback))
+                return f"after:{len(self.scheduled)}"
+
+            def wm_state(self):
+                return "normal"
+
+            def winfo_exists(self):
+                return True
+
+            def winfo_viewable(self):
+                return True
+
+        class BrokenLayer:
+            def show(self):
+                raise tk.TclError("layer unavailable")
+
+        host = FakeHost()
+        controller = object.__new__(RewardEffectsController)
+        controller.host = host
+        controller.target_provider = lambda: None
+        controller.pet_half_size = 56.0
+        controller.model = RewardAnimationModel()
+        controller.layer = BrokenLayer()
+        controller._after_id = None
+        controller._destroyed = False
+        controller._animation_now_ms = 1_000.0
+        controller._last_wall_ms = 1_000.0
+
+        controller.emit((0.0, 0.0), STUDY_REWARD_COLOR)
+
+        self.assertEqual(controller.model.active_count, 1)
+        self.assertEqual(controller._after_id, "after:1")
+        self.assertEqual(len(host.scheduled), 1)
 
     def test_effect_layer_hit_test_is_explicitly_transparent(self):
         self.assertEqual(transparent_hit_test_result(WM_NCHITTEST), HTTRANSPARENT)

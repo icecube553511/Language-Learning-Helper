@@ -754,7 +754,12 @@ class RewardEffectsController:
             raise RuntimeError("Reward effects controller is destroyed")
         self._advance_clock()
         flight = self.model.emit(source, color, self._animation_now_ms)
-        self.layer.show()
+        try:
+            self.layer.show()
+        except tk.TclError:
+            # A transient layer failure must not lose the flight or skip the
+            # animation loop; the next tick retries showing the surface.
+            pass
         if self._after_id is None:
             self._after_id = self.host.after(FRAME_MS, self._tick)
         return flight
@@ -780,17 +785,24 @@ class RewardEffectsController:
         if self._destroyed:
             return
         self._advance_clock()
-        if not self._host_visible():
-            self.layer.hide()
-        else:
-            target = self.target_provider()
-            self.model.update(self._animation_now_ms, target, self.pet_half_size)
-            if self.model.active_count:
-                self.layer.show()
-                self.layer.render(self.model, self._animation_now_ms)
-                self.layer.keep_above()
-            else:
+        try:
+            if not self._host_visible():
                 self.layer.hide()
+            else:
+                target = self.target_provider()
+                self.model.update(self._animation_now_ms, target, self.pet_half_size)
+                if self.model.active_count:
+                    self.layer.show()
+                    self.layer.render(self.model, self._animation_now_ms)
+                    self.layer.keep_above()
+                else:
+                    self.layer.hide()
+        except Exception:
+            # A single failed frame (for example a transient control teardown
+            # while sampling the pet target) must not strand the overlay or
+            # freeze the animation: skip the frame and let the flights keep
+            # aging so they still clean up and hide the layer.
+            pass
         if self.model.active_count:
             self._after_id = self.host.after(FRAME_MS, self._tick)
 

@@ -1002,6 +1002,7 @@ def verify_pet_contract() -> None:
         "不得用“最近顶点”",
         "物理单位比例",
         "归一化单位切线",
+        "单个帧错误",
     ):
         if marker not in contract_text:
             fail(f"Pet companion curve landing contract is missing {marker}")
@@ -1764,6 +1765,7 @@ def verify_pet_vitals_contract() -> None:
         "current rendered center",
         "`FoodJar` domain value object",
         "cross-repository",
+        "single failed frame",
     ):
         if marker not in contract_text:
             fail(f"Pet vitals contract is missing {marker}")
@@ -1810,6 +1812,7 @@ def verify_pet_vitals_contract() -> None:
         "petVitalsAndRatingRewards",
         "ratingRewardFlightEffect",
         "petMotionContinuityDuringReflow",
+        "petAnimationFrameResilience",
     ):
         if capabilities.get(capability) != "ready":
             fail(f"Parity capability {capability} is not ready")
@@ -1840,6 +1843,10 @@ def verify_pet_vitals_contract() -> None:
             "class RewardEffectsController",
             "clip_trail_to_length",
             "trail_length_for_speed",
+            "A single failed frame",
+        ),
+        "windows/presentation/app.py": (
+            "Skip the failed frame and keep ticking",
         ),
         "windows/tests/test_pet_vitals.py": ("FoodJar", "rewardRules"),
         "windows/tests/test_reward_effects.py": (
@@ -1886,6 +1893,7 @@ def verify_pet_vitals_contract() -> None:
             "onRate(ReviewRating.GOOD",
             "onRate(ReviewRating.EASY",
             "resolveRatingOrigin",
+            "Skip the failed frame and keep the loop alive",
         ),
         "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetVitalsGoldenContractTest.kt": (
             "FoodJar",

@@ -2057,6 +2057,16 @@ class LexiTrackApp(tk.Tk):
                 except tk.TclError:
                     self._pet_tick_after_id = None
             self._pet_tick_after_id = None
+        except Exception:
+            # A non-Tk presentation error on a single frame (a geometry or
+            # reducer edge case) must not cancel the companion loop either.
+            # Skip the failed frame and keep ticking, mirroring the Android
+            # ticker.  The loop still exits when the overlay is destroyed or
+            # when scheduling itself fails during host teardown.
+            try:
+                self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
+            except tk.TclError:
+                self._pet_tick_after_id = None
 
     def _pet_pointer(self, event) -> PetPoint:
         return PetPoint(
