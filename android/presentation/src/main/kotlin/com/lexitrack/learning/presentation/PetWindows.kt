@@ -14,6 +14,10 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
 
+// Synthetic support target used by the domain reducer for a viewport-bottom
+// bounce. It is not part of the per-window target registry.
+private const val PET_VIEWPORT_BOTTOM_TARGET_ID = "__viewport-bottom__"
+
 /** Pure presentation geometry for transferring Bingzi between Compose windows. */
 data class PetWindow(
     val id: String,
@@ -477,6 +481,29 @@ class PetWindowCoordinator(initialState: PetState? = null) {
 
     fun updateTargets(windowId: String, targets: List<com.lexitrack.learning.domain.PetTarget>) {
         targetsByWindow[windowId] = targets
+        // A page can briefly unregister and re-register its controls while a
+        // rating card is replaced.  Do not treat that same-host layout churn
+        // as navigation: discard only references into the old target/path,
+        // while preserving the live physical state (position, mode, velocity
+        // and facing).  Explicit navigation still calls onNavigation and is
+        // therefore the only path that intentionally enters FALL/reset state.
+        if (activeWindowId == windowId) {
+            val activeTargetId = state.targetId
+            if (
+                activeTargetId != null &&
+                activeTargetId != PET_VIEWPORT_BOTTOM_TARGET_ID &&
+                targets.none { it.valid && it.id == activeTargetId }
+            ) {
+                state = state.copy(
+                    targetId = null,
+                    pathIndex = 0,
+                    pathDirection = 1,
+                    rollCorners = 0,
+                    avoidTargetId = null,
+                    curveVelocity = null,
+                )
+            }
+        }
     }
 
     fun targetsFor(windowId: String? = activeWindowId): List<com.lexitrack.learning.domain.PetTarget> =

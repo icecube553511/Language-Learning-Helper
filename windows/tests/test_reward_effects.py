@@ -28,14 +28,18 @@ from presentation.reward_effects import (
     VISUAL_ORB_GLOW_RADIUS,
     VISUAL_ORB_HIGHLIGHT_RADIUS,
     VISUAL_ORB_RADIUS,
+    HTTRANSPARENT,
+    WM_NCHITTEST,
+    transparent_hit_test_result,
     TrailSample,
     clip_trail_to_length,
     trail_polyline_length,
     trail_length_for_speed,
     trail_stroke_width_for_speed,
 )
-from presentation.app import LexiTrackApp
+from presentation.app import LexiTrackApp, preserve_pet_motion_for_targets
 from domain.models import ReviewRating, VocabularyEntry
+from domain.pet_companion import PetMode, PetPoint, PetRect, PetState, PetTarget, PetTargetKind
 
 
 GOLDEN = json.loads(
@@ -45,6 +49,59 @@ GOLDEN = json.loads(
 
 
 class RewardEffectsTests(unittest.TestCase):
+    def test_card_refresh_rebinds_stale_target_without_clearing_pet_motion(self):
+        state = PetState(
+            position=PetPoint(48.0, 72.0),
+            mode=PetMode.SLIDE,
+            target_id="study:old-rating",
+            idle_ticks_remaining=2,
+            movement_speed=37.0,
+            vertical_velocity=-12.0,
+            horizontal_velocity=18.0,
+            bounces_remaining=2,
+        )
+        targets = [
+            PetTarget(
+                "study:new-rating",
+                PetTargetKind.CONTROL,
+                PetRect(20.0, 100.0, 80.0, 24.0),
+            ),
+        ]
+
+        rebound = preserve_pet_motion_for_targets(state, targets)
+
+        self.assertIsNone(rebound.target_id)
+        self.assertEqual(rebound.mode, state.mode)
+        self.assertEqual(rebound.position, state.position)
+        self.assertEqual(rebound.idle_ticks_remaining, state.idle_ticks_remaining)
+        self.assertEqual(rebound.path_index, 0)
+        self.assertEqual(rebound.path_direction, 1)
+        self.assertEqual(rebound.roll_corners, 0)
+        self.assertIsNone(rebound.avoid_target_id)
+        self.assertIsNone(rebound.curve_velocity)
+        self.assertEqual(rebound.movement_speed, state.movement_speed)
+        self.assertEqual(rebound.vertical_velocity, state.vertical_velocity)
+        self.assertEqual(rebound.horizontal_velocity, state.horizontal_velocity)
+        self.assertEqual(rebound.bounces_remaining, state.bounces_remaining)
+
+    def test_card_refresh_keeps_viewport_bottom_support_id(self):
+        state = PetState(
+            position=PetPoint(48.0, 72.0),
+            mode=PetMode.BOUNCE,
+            target_id="__viewport-bottom__",
+            bounces_remaining=1,
+            vertical_velocity=-120.0,
+        )
+
+        rebound = preserve_pet_motion_for_targets(state, [])
+
+        self.assertEqual(rebound, state)
+
+    def test_effect_layer_hit_test_is_explicitly_transparent(self):
+        self.assertEqual(transparent_hit_test_result(WM_NCHITTEST), HTTRANSPARENT)
+        self.assertIsNone(transparent_hit_test_result(0x0201))
+        self.assertIsNone(transparent_hit_test_result(None))
+
     def test_tunable_configuration_matches_golden_contract(self):
         feedback = GOLDEN["rewardFlight"]
         self.assertEqual(STUDY_REWARD_COLOR, feedback["studyColor"])

@@ -135,6 +135,33 @@ class DictationGroupNavigation:
     open_group: str | None = None
 
 
+def preserve_pet_motion_for_targets(
+    state: PetState,
+    targets: list[PetTarget] | tuple[PetTarget, ...],
+) -> PetState:
+    """Drop a stale support id without resetting the companion's motion.
+
+    Rating a card briefly unmaps the old answer/rating controls while the next
+    card is laid out.  The support id is presentation-scoped, so retaining it
+    through that gap would make the domain reducer interpret a normal layout
+    refresh as a lost support and transition to FALL (clearing velocities).
+    """
+    target_id = state.target_id
+    if not target_id or target_id == "__viewport-bottom__":
+        return state
+    if any(target.valid and target.id == target_id for target in targets):
+        return state
+    return replace(
+        state,
+        target_id=None,
+        path_index=0,
+        path_direction=1,
+        roll_corners=0,
+        avoid_target_id=None,
+        curve_velocity=None,
+    )
+
+
 def open_dictation_group(
     state: DictationGroupNavigation,
     group: str,
@@ -1806,6 +1833,7 @@ class LexiTrackApp(tk.Tk):
                 if self._dialog_pet_stack and self._dialog_pet_stack[-1] is dialog:
                     viewport_now = self._pet_viewport_for(dialog)
                     targets = self._collect_dialog_pet_targets(dialog, key)
+                    companion.state = preserve_pet_motion_for_targets(companion.state, targets)
                     if self._migrate_dialog_pet_if_needed(dialog):
                         runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
                         return
@@ -1996,6 +2024,10 @@ class LexiTrackApp(tk.Tk):
             # a fling inside a host with wall restitution, so waiting until
             # after integration would reflect the outward velocity before the
             # presentation had a chance to hand it to an adjacent window.
+            self.pet_companion.state = preserve_pet_motion_for_targets(
+                self.pet_companion.state,
+                self._pet_targets,
+            )
             if self._migrate_main_pet_if_needed():
                 self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                 return

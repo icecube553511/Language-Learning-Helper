@@ -12,9 +12,15 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.zIndex
 import com.lexitrack.learning.domain.PetPoint
 import kotlinx.coroutines.isActive
@@ -315,6 +321,37 @@ internal class RewardEffectsController(
 internal val LocalRewardEffectsController = staticCompositionLocalOf { RewardEffectsController() }
 internal val StudyRewardGold = Color(0xFFF4C542)
 
+/**
+ * Keep the visual layer in the pointer hit-test path without taking ownership
+ * of the gesture.  A full-size sibling with a pointer-input modifier would
+ * otherwise become the only hit target on Compose versions that stop at the
+ * highest z-index sibling.  Sharing the hit-test result lets the underlying
+ * rating buttons and navigation controls continue to receive their events.
+ */
+private fun Modifier.pointerTransparent(): Modifier = this.then(PointerTransparentElement)
+
+private object PointerTransparentElement : ModifierNodeElement<PointerTransparentNode>() {
+    override fun create(): PointerTransparentNode = PointerTransparentNode()
+
+    override fun update(node: PointerTransparentNode) = Unit
+
+    override fun equals(other: Any?): Boolean = other === this
+
+    override fun hashCode(): Int = javaClass.hashCode()
+}
+
+private class PointerTransparentNode : Modifier.Node(), PointerInputModifierNode {
+    override fun onPointerEvent(
+        pointerEvent: PointerEvent,
+        pass: PointerEventPass,
+        bounds: IntSize,
+    ) = Unit
+
+    override fun onCancelPointerInput() = Unit
+
+    override fun sharePointerInputWithSiblings(): Boolean = true
+}
+
 @Composable
 internal fun RewardEffectsAnimator(
     controller: RewardEffectsController,
@@ -348,7 +385,14 @@ internal fun RewardEffectsCanvas(
 ) {
     val controller = LocalRewardEffectsController.current
     val snapshot = controller.snapshot
-    Canvas(modifier = modifier.zIndex(21f)) {
+    Canvas(
+        // This canvas is deliberately visual-only.  Explicitly sharing the
+        // pointer hit-test keeps it from turning the whole page into a modal
+        // animation while the reward flight is being rendered.
+        modifier = modifier
+            .pointerTransparent()
+            .zIndex(21f),
+    ) {
         snapshot.flights.forEach { flight ->
             val color = rewardColor(flight.kind)
             val trail = flight.trail
@@ -374,31 +418,74 @@ internal fun RewardEffectsCanvas(
                 )
             }
             val center = flight.position.toOffset(windowOrigin)
+            val glowRadius = RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS
             drawCircle(
-                color = color.copy(alpha = 0.16f),
-                radius = RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS,
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        color.copy(alpha = 0.34f),
+                        color.copy(alpha = 0.18f),
+                        color.copy(alpha = 0.04f),
+                        Color.Transparent,
+                    ),
+                    center = center,
+                    radius = glowRadius,
+                ),
+                radius = glowRadius,
+                center = center,
+            )
+            val auraRadius = RewardFlightTuning.VISUAL_ORB_RADIUS * 1.35f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.32f),
+                        color.copy(alpha = 0.42f),
+                        color.copy(alpha = 0.1f),
+                        Color.Transparent,
+                    ),
+                    center = center,
+                    radius = auraRadius,
+                ),
+                radius = auraRadius,
+                center = center,
+            )
+            val coreRadius = RewardFlightTuning.VISUAL_ORB_RADIUS
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.98f),
+                        color.copy(alpha = 0.98f),
+                        color.copy(alpha = 0.74f),
+                    ),
+                    center = Offset(
+                        center.x - coreRadius * 0.32f,
+                        center.y - coreRadius * 0.38f,
+                    ),
+                    radius = coreRadius * 1.55f,
+                ),
+                radius = coreRadius,
                 center = center,
             )
             drawCircle(
-                color = color.copy(alpha = 0.42f),
-                radius = RewardFlightTuning.VISUAL_ORB_RADIUS * 1.35f,
-                center = center,
-            )
-            drawCircle(
-                color = color,
-                radius = RewardFlightTuning.VISUAL_ORB_RADIUS,
-                center = center,
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.92f),
+                color = Color.White.copy(alpha = 0.9f),
                 radius = RewardFlightTuning.VISUAL_ORB_HIGHLIGHT_RADIUS,
-                center = center,
+                center = Offset(
+                    center.x - coreRadius * 0.35f,
+                    center.y - coreRadius * 0.42f,
+                ),
             )
         }
         snapshot.particles.forEach { particle ->
             val particleCenter = particle.position.toOffset(windowOrigin)
             drawCircle(
-                color = rewardColor(particle.kind).copy(alpha = particle.alpha * 0.24f),
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        rewardColor(particle.kind).copy(alpha = particle.alpha * 0.42f),
+                        rewardColor(particle.kind).copy(alpha = particle.alpha * 0.12f),
+                        Color.Transparent,
+                    ),
+                    center = particleCenter,
+                    radius = RewardFlightTuning.BURST_PARTICLE_GLOW_RADIUS,
+                ),
                 radius = RewardFlightTuning.BURST_PARTICLE_GLOW_RADIUS,
                 center = particleCenter,
             )

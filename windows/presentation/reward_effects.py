@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import ctypes
+import ctypes.wintypes as wintypes
 import math
 import sys
 import time
@@ -42,6 +43,26 @@ BURST_PARTICLE_GLOW_RADIUS = 10.0
 BURST_DURATION_MS = 350.0
 MAXIMUM_LIFETIME_MS = 2500.0
 MISSING_TARGET_TIMEOUT_MS = 500.0
+
+# Win32 hit-testing constants.  ``WS_EX_TRANSPARENT`` only affects paint
+# ordering; it does not make a top-level window ignore pointer input.  The
+# effect layer therefore subclasses its native window procedure and returns
+# ``HTTRANSPARENT`` for hit tests so the underlying Tk window receives the
+# click.
+WM_NCHITTEST = 0x0084
+WM_MOUSEACTIVATE = 0x0021
+HTTRANSPARENT = -1
+MA_NOACTIVATE = 3
+_GWL_WNDPROC = -4
+
+
+def transparent_hit_test_result(message: int) -> int | None:
+    """Return the Win32 result used to pass effect-layer hit tests through."""
+    try:
+        normalized = int(message)
+    except (TypeError, ValueError):
+        return None
+    return HTTRANSPARENT if normalized == WM_NCHITTEST else None
 
 
 @dataclass(frozen=True)
@@ -427,6 +448,13 @@ class RewardEffectLayer(tk.Toplevel):
 
     def __init__(self, parent: tk.Misc):
         super().__init__(parent)
+        # Keep every native callback and API handle alive for as long as the
+        # subclass is installed.  ctypes otherwise permits the callback
+        # trampoline to be collected while Windows can still dispatch to it.
+        self._native_hwnd: int | None = None
+        self._original_wnd_proc: int | None = None
+        self._wnd_proc_callback = None
+        self._call_window_proc = None
         self.withdraw()
         self.overrideredirect(True)
         self.configure(bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
@@ -465,17 +493,105 @@ class RewardEffectLayer(tk.Toplevel):
             return
         try:
             user32 = ctypes.windll.user32
-            hwnd = user32.GetParent(self.winfo_id()) or self.winfo_id()
-            get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
-            set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
-            extended_style = get_style(hwnd, -20)
+            get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+            set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+            # Explicit pointer signatures avoid truncating a 64-bit WNDPROC.
+            get_style.restype = ctypes.c_void_p
+            get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+            set_style.restype = ctypes.c_void_p
+            set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+            widget_hwnd = int(self.winfo_id())
+            hwnd = widget_hwnd
+            # Tk normally exposes the Toplevel HWND directly.  A few Tk builds
+            # expose an intermediate child HWND instead; only in that case use
+            # its parent, so an owned application window is never subclassed.
+            window_style = int(get_style(widget_hwnd, -16) or 0)
+            if window_style & 0x40000000:  # WS_CHILD
+                parent_hwnd = int(user32.GetParent(widget_hwnd) or 0)
+                if parent_hwnd:
+                    hwnd = parent_hwnd
+            extended_style = int(get_style(hwnd, -20) or 0)
             set_style(
                 hwnd,
                 -20,
                 extended_style | 0x00000020 | 0x00080000 | 0x08000000 | 0x00000080,
             )
-        except (AttributeError, OSError, tk.TclError):
+            self._install_hit_test_passthrough(user32, hwnd)
+        except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
             pass
+
+    def _install_hit_test_passthrough(self, user32, hwnd: int) -> None:
+        """Subclass the native layer window so hit tests reach Tk controls."""
+        if self._native_hwnd == hwnd and self._wnd_proc_callback is not None:
+            return
+        get_proc = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_proc = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        call_proc = user32.CallWindowProcW
+        pointer_type = ctypes.c_ssize_t if ctypes.sizeof(ctypes.c_void_p) > 4 else ctypes.c_long
+        wnd_proc_type = ctypes.WINFUNCTYPE(
+            pointer_type,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        )
+        get_proc.restype = ctypes.c_void_p
+        get_proc.argtypes = [wintypes.HWND, ctypes.c_int]
+        set_proc.restype = ctypes.c_void_p
+        set_proc.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        call_proc.restype = pointer_type
+        call_proc.argtypes = [
+            ctypes.c_void_p,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        original = get_proc(hwnd, _GWL_WNDPROC)
+        if not original:
+            return
+        original_pointer = int(original)
+
+        @wnd_proc_type
+        def wnd_proc(window_hwnd, message, wparam, lparam):
+            try:
+                if transparent_hit_test_result(message) == HTTRANSPARENT:
+                    return HTTRANSPARENT
+                # Do not activate the transparent layer when Windows asks
+                # which window should receive mouse activation.
+                if int(message) == WM_MOUSEACTIVATE:
+                    return MA_NOACTIVATE
+                return call_proc(original_pointer, window_hwnd, message, wparam, lparam)
+            except (OSError, RuntimeError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
+                # A teardown race can dispatch one final message after Tk has
+                # started destroying the Toplevel.  Returning zero lets the
+                # native default handling complete without raising through
+                # the ctypes callback boundary.
+                return 0
+
+        set_proc(hwnd, _GWL_WNDPROC, wnd_proc)
+        self._native_hwnd = hwnd
+        self._original_wnd_proc = original_pointer
+        self._wnd_proc_callback = wnd_proc
+        self._call_window_proc = call_proc
+
+    def _restore_hit_test_passthrough(self) -> None:
+        """Restore Tk's original WNDPROC before the native window is freed."""
+        hwnd = self._native_hwnd
+        original = self._original_wnd_proc
+        if hwnd is not None and original is not None and sys.platform == "win32":
+            try:
+                user32 = ctypes.windll.user32
+                set_proc = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+                set_proc.restype = ctypes.c_void_p
+                set_proc.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+                set_proc(hwnd, _GWL_WNDPROC, original)
+            except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
+                pass
+        self._native_hwnd = None
+        self._original_wnd_proc = None
+        self._wnd_proc_callback = None
+        self._call_window_proc = None
 
     def show(self) -> None:
         if self.state() == "withdrawn":
@@ -533,15 +649,23 @@ class RewardEffectLayer(tk.Toplevel):
                 )
             if flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
                 x, y = self._canvas_point(flight.position)
-                self.canvas.create_oval(
-                    x - VISUAL_ORB_GLOW_RADIUS,
-                    y - VISUAL_ORB_GLOW_RADIUS,
-                    x + VISUAL_ORB_GLOW_RADIUS,
-                    y + VISUAL_ORB_GLOW_RADIUS,
-                    fill=flight.color,
-                    outline="",
-                    stipple="gray50",
-                )
+                # Layered stipples approximate a radial alpha falloff on
+                # Tk's binary transparent-color surface.  The outer halo is
+                # sparse, while denser inner rings blend into the core.
+                for radius, stipple in (
+                    (VISUAL_ORB_GLOW_RADIUS, "gray25"),
+                    (VISUAL_ORB_GLOW_RADIUS * 0.78, "gray50"),
+                    (VISUAL_ORB_RADIUS * 1.55, "gray75"),
+                ):
+                    self.canvas.create_oval(
+                        x - radius,
+                        y - radius,
+                        x + radius,
+                        y + radius,
+                        fill=flight.color,
+                        outline="",
+                        stipple=stipple,
+                    )
                 radius = VISUAL_ORB_RADIUS
                 self.canvas.create_oval(
                     x - radius,
@@ -587,6 +711,10 @@ class RewardEffectLayer(tk.Toplevel):
                         fill="#FFFFFF",
                         outline="#FFFFFF",
                     )
+
+    def destroy(self) -> None:
+        self._restore_hit_test_passthrough()
+        super().destroy()
 
 
 class RewardEffectsController:
