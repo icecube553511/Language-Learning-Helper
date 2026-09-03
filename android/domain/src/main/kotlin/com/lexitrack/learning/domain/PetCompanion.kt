@@ -358,9 +358,14 @@ fun nearestPetTarget(
     val margin = max(0f, halfSize)
     val viewportCenter = viewport?.let { PetPoint(it.left + it.width / 2f, it.top + it.height / 2f) }
     val edgePenalty = viewport?.let { hypot(it.width, it.height) * PET_EDGE_PENALTY_RATIO } ?: 0f
-    return targets
-        .asSequence()
-        .filter { it.valid }
+    val valid = targets.filter { it.valid }
+    // Edge targets are presentation hints used to roam a window boundary or
+    // reach a portal.  When real content (control/surface/chart) is available,
+    // prefer it so a card rebuild can never strand the companion on a thin
+    // screen edge rolling in place.
+    val content = valid.filter { it.kind != PetTargetKind.EDGE }
+    val candidates = if (content.isNotEmpty()) content else valid
+    return candidates
         .minWithOrNull(compareBy { target ->
             if (viewport == null || viewportCenter == null) {
                 target.distanceTo(position, margin)

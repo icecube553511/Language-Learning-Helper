@@ -443,6 +443,20 @@ class PetCompanionTests(unittest.TestCase):
         ]
         self.assertEqual(nearest_pet_target(position, targets).id, "first")
 
+    def test_nearest_target_prefers_content_over_screen_edge(self):
+        """Content wins over an edge so a card rebuild cannot strand the pet."""
+        position = PetPoint(40.0, 220.0)
+        edge = PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0.0, 240.0, 100.0, 3.0))
+        control = PetTarget("study:new-card", PetTargetKind.CONTROL, PetRect(10.0, 60.0, 80.0, 24.0))
+        viewport = PetRect(0.0, 0.0, 100.0, 250.0)
+
+        selected = nearest_pet_target(position, [edge, control], viewport=viewport)
+        self.assertEqual(selected.id, "study:new-card")
+
+        # With no content available, an edge remains a valid fallback target.
+        only_edge = nearest_pet_target(position, [edge], viewport=viewport)
+        self.assertEqual(only_edge.id, "edge:bottom")
+
     def test_ordinary_rectangles_expose_only_the_expanded_upper_support(self):
         target = PetTarget("panel", PetTargetKind.SURFACE, PetRect(20, 30, 60, 40))
         start, end = target.support_segment(PetPoint(50, 70), pet_size=10)
