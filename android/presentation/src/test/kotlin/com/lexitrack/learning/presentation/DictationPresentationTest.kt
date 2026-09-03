@@ -67,6 +67,26 @@ class DictationPresentationTest {
     }
 
     @Test
+    fun `switching dictation mode keeps the active selection`() {
+        assertEquals(
+            setOf("apple", "banana"),
+            activeDictationSelectionAfterModeSwitch(
+                manual = true,
+                manualIds = setOf("stale-manual"),
+                randomIds = setOf("apple", "banana"),
+            ),
+        )
+        assertEquals(
+            setOf("canada"),
+            activeDictationSelectionAfterModeSwitch(
+                manual = false,
+                manualIds = setOf("canada"),
+                randomIds = setOf("stale-random"),
+            ),
+        )
+    }
+
+    @Test
     fun `save spec keeps each export on its matching SAF format`() {
         val docx = dictationSaveSpec(
             ExportedDictation(

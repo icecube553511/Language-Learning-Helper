@@ -12,10 +12,12 @@ from unittest import mock
 WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
-from domain.dictation import MarkMode
+from domain.dictation import DictationDraft, DictationDraftSyncMetadata, MarkMode
+from domain.dictation_sync import make_sync_envelope
 from domain.models import ExampleSentence, LearntWord, ReviewState, VocabularyEntry
 from domain.pet_vitals import Mood, PetVitals, ReviewRecoveryTag
 from infrastructure.catalog import CatalogLoader
+from infrastructure.draft_cipher import DraftCipherError
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
 
@@ -304,6 +306,224 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(loaded.get_mark_mode(), MarkMode.NEVER)
         payload = json.loads((directory / "learning-state.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["tagOverrides"]["serene"], ["evaluated", "zk"])
+
+    def test_dictation_draft_survives_restart(self):
+        directory = Path(self.temp.name)
+        repo = JsonLearningRepository(directory)
+        draft = DictationDraft(
+            mode="random", scope_group="cet4", count=3,
+            selected_ids=("apple",),
+            group_anchors={"cet4": "apple"},
+            group_endpoints={"cet4": "banana"},
+            group_scroll_positions={"cet4": 0.4},
+        )
+        repo.save_dictation_draft(draft)
+        loaded = JsonLearningRepository(directory)
+        self.assertEqual(loaded.get_dictation_draft(), draft)
+        loaded.clear_dictation_draft()
+        self.assertIsNone(JsonLearningRepository(directory).get_dictation_draft())
+
+    def test_dictation_sync_metadata_survives_restart_after_draft_clear(self):
+        directory = Path(self.temp.name)
+        metadata = DictationDraftSyncMetadata("user-1", "opaque-9", 9)
+        repo = JsonLearningRepository(directory, draft_cipher=None)
+        repo.save_dictation_sync_metadata(metadata)
+        repo.clear_dictation_draft()
+        loaded = JsonLearningRepository(directory, draft_cipher=None)
+        self.assertEqual(loaded.get_dictation_draft(), None)
+        self.assertEqual(loaded.get_dictation_sync_metadata(), metadata)
+
+    def test_synced_snapshot_and_three_conflict_backups_are_encrypted_and_bounded(self):
+        class XorCipher:
+            def encrypt(self, value):
+                return bytes(byte ^ 0x3C for byte in value)
+
+            def decrypt(self, value):
+                return bytes(byte ^ 0x3C for byte in value)
+
+        directory = Path(self.temp.name)
+        repository = JsonLearningRepository(directory, draft_cipher=XorCipher())
+        synced = make_sync_envelope(
+            "user-1",
+            DictationDraft(custom_example="last-synced-secret"),
+            revision="synced-7",
+            updated_at_utc=7,
+        )
+        repository.save_last_synced_dictation_envelope(synced)
+        for revision in range(5):
+            repository.add_dictation_conflict_backup(make_sync_envelope(
+                "user-1",
+                DictationDraft(custom_example=f"conflict-secret-{revision}"),
+                revision=str(revision),
+                updated_at_utc=revision,
+            ))
+        repository.add_dictation_conflict_backup(make_sync_envelope(
+            "user-1",
+            DictationDraft(custom_example="conflict-secret-4"),
+            revision="4",
+            updated_at_utc=4,
+        ))
+
+        restarted = JsonLearningRepository(directory, draft_cipher=XorCipher())
+        self.assertEqual(
+            restarted.get_last_synced_dictation_envelope().canonical_json(),
+            synced.canonical_json(),
+        )
+        self.assertEqual(
+            [item.revision for item in restarted.get_dictation_conflict_backups()],
+            ["4", "3", "2"],
+        )
+        raw = (directory / "learning-state.json").read_text(encoding="utf-8")
+        self.assertNotIn("last-synced-secret", raw)
+        self.assertNotIn("conflict-secret", raw)
+
+    def test_dictation_draft_uses_injected_cipher_and_never_writes_plaintext(self):
+        class XorCipher:
+            def encrypt(self, value):
+                return bytes(byte ^ 0xA5 for byte in value)
+
+            def decrypt(self, value):
+                return bytes(byte ^ 0xA5 for byte in value)
+
+        directory = Path(self.temp.name)
+        draft = DictationDraft(custom_example="unique-draft-marker-7f3a")
+        repo = JsonLearningRepository(directory, draft_cipher=XorCipher())
+        repo.save_dictation_draft(draft)
+        raw = (directory / "learning-state.json").read_text(encoding="utf-8")
+        self.assertNotIn("unique-draft-marker-7f3a", raw)
+        payload = json.loads(raw)
+        stored = payload["settings"]["dictationDraft"]
+        self.assertEqual(stored["format"], "dpapi-v1")
+        self.assertIsInstance(stored["ciphertext"], str)
+        restored = JsonLearningRepository(directory, draft_cipher=XorCipher())
+        self.assertEqual(restored.get_dictation_draft(), draft)
+
+    def test_legacy_plaintext_draft_is_migrated_on_load(self):
+        class XorCipher:
+            def encrypt(self, value):
+                return bytes(byte ^ 0x5A for byte in value)
+
+            def decrypt(self, value):
+                return bytes(byte ^ 0x5A for byte in value)
+
+        directory = Path(self.temp.name)
+        draft = DictationDraft(custom_example="legacy-marker-92c1")
+        path = directory / "learning-state.json"
+        path.write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "settings": {"dictationDraft": draft.to_dict()},
+            }),
+            encoding="utf-8",
+        )
+        repository = JsonLearningRepository(directory, draft_cipher=XorCipher())
+        self.assertEqual(repository.get_dictation_draft(), draft)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["settings"]["dictationDraft"]["format"], "dpapi-v1")
+        self.assertNotIn("legacy-marker-92c1", path.read_text(encoding="utf-8"))
+
+    def test_plaintext_migration_preserves_other_loaded_state(self):
+        class XorCipher:
+            def encrypt(self, value):
+                return bytes(byte ^ 0x5A for byte in value)
+
+            def decrypt(self, value):
+                return bytes(byte ^ 0x5A for byte in value)
+
+        directory = Path(self.temp.name)
+        draft = DictationDraft(custom_example="legacy-with-tags")
+        path = directory / "learning-state.json"
+        path.write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "tagOverrides": {"serene": ["evaluated"]},
+                "settings": {"dictationDraft": draft.to_dict()},
+            }),
+            encoding="utf-8",
+        )
+        built_in = sample_entry("serene")
+        repository = JsonLearningRepository(directory, [built_in], draft_cipher=XorCipher())
+        self.assertEqual(repository.get_dictation_draft(), draft)
+        self.assertEqual(repository.all_entries()[0].tags, ("evaluated",))
+
+    def test_corrupt_ciphertext_is_ignored_without_crashing(self):
+        class RejectingCipher:
+            def encrypt(self, value):
+                raise DraftCipherError("test")
+
+            def decrypt(self, value):
+                raise DraftCipherError("test")
+
+        directory = Path(self.temp.name)
+        path = directory / "learning-state.json"
+        path.write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "settings": {
+                    "dictationDraft": {
+                        "format": "dpapi-v1",
+                        "ciphertext": "%%%not-base64%%",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        repository = JsonLearningRepository(directory, draft_cipher=RejectingCipher())
+        self.assertIsNone(repository.get_dictation_draft())
+
+    def test_generic_cipher_failure_is_fail_closed(self):
+        class ExplodingCipher:
+            def encrypt(self, value):
+                raise RuntimeError("provider details must not escape")
+
+            def decrypt(self, value):
+                raise RuntimeError("provider details must not escape")
+
+        directory = Path(self.temp.name)
+        path = directory / "learning-state.json"
+        path.write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "settings": {
+                    "dictationDraft": {
+                        "format": "dpapi-v1",
+                        "ciphertext": "AA==",
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        repository = JsonLearningRepository(directory, draft_cipher=ExplodingCipher())
+        self.assertIsNone(repository.get_dictation_draft())
+
+    def test_failed_legacy_migration_cannot_rewrite_plaintext_on_later_save(self):
+        class UnavailableCipher:
+            def encrypt(self, value):
+                raise RuntimeError("DPAPI unavailable")
+
+            def decrypt(self, value):
+                raise RuntimeError("DPAPI unavailable")
+
+        directory = Path(self.temp.name)
+        draft = DictationDraft(
+            selected_ids=("secret-word-id",),
+            custom_example="legacy-only-marker",
+        )
+        path = directory / "learning-state.json"
+        path.write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "settings": {"dictationDraft": draft.to_dict()},
+            }),
+            encoding="utf-8",
+        )
+        repository = JsonLearningRepository(directory, draft_cipher=UnavailableCipher())
+        self.assertEqual(repository.get_dictation_draft(), draft)
+        repository.set_font_scale(1.1)
+        rewritten = path.read_text(encoding="utf-8")
+        self.assertNotIn("legacy-only-marker", rewritten)
+        self.assertNotIn("secret-word-id", rewritten)
+        self.assertIsNone(json.loads(rewritten)["settings"]["dictationDraft"])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import base64
 import json
 import os
 from pathlib import Path
@@ -19,8 +20,13 @@ from domain.models import (
     ReviewState,
     VocabularyEntry,
 )
-from domain.dictation import MarkMode
+from domain.dictation import DictationDraft, DictationDraftSyncMetadata, MarkMode
+from domain.dictation_sync import DictationDraftSyncEnvelope
 from infrastructure.catalog import entry_from_payload
+from infrastructure.draft_cipher import (
+    DraftCipher,
+    default_draft_cipher,
+)
 
 
 SCHEMA_VERSION = 1
@@ -40,12 +46,29 @@ class _ReviewSavepoint:
 
 
 class JsonLearningRepository:
-    def __init__(self, data_dir: Path, catalog_entries: list[VocabularyEntry] | None = None):
+    def __init__(
+        self,
+        data_dir: Path,
+        catalog_entries: list[VocabularyEntry] | None = None,
+        *,
+        draft_cipher: DraftCipher | None = None,
+        cipher: DraftCipher | None = None,
+    ):
+        if draft_cipher is not None and cipher is not None:
+            raise ValueError("pass either draft_cipher or cipher")
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "learning-state.json"
         self._lock = threading.RLock()
         self._savepoint_owner = object()
+        # The cipher is an infrastructure dependency.  DPAPI is the default
+        # on Windows; tests and non-Windows tooling can inject a test cipher.
+        self._draft_cipher: DraftCipher = draft_cipher or cipher or default_draft_cipher()
+        # A legacy plaintext draft may be readable during a one-time upgrade
+        # even when the current host cannot access DPAPI (for example, a
+        # non-Windows test runner).  Keep that value process-local only; the
+        # state serializer below strips it before any subsequent write.
+        self._legacy_plaintext_draft: DictationDraft | None = None
         self._catalog = {item.word_id: item for item in (catalog_entries or [])}
         self._user_entries: dict[str, VocabularyEntry] = {}
         self._reviews: dict[str, ReviewState] = {}
@@ -61,6 +84,17 @@ class JsonLearningRepository:
             "reminderEnabled": False,
             "reminderIntervalMinutes": DEFAULT_REMINDER_INTERVAL_MINUTES,
             "markMode": MarkMode.ASK.value,
+            # The draft is a complete, versioned JSON object.  Keeping it in
+            # the existing state envelope preserves atomic writes and allows
+            # older installations to ignore the new key safely.
+            "dictationDraft": None,
+            # The last remote revision survives a local/remote tombstone so a
+            # subsequent fresh draft still uses optimistic concurrency.  It
+            # is encrypted independently because a tombstone is not an editor
+            # draft and must not be restored as one.
+            "dictationDraftSyncMetadata": None,
+            "dictationLastSyncedEnvelope": None,
+            "dictationConflictBackups": [],
         }
         self._load()
 
@@ -96,6 +130,18 @@ class JsonLearningRepository:
             self._settings.get("fontScale", DEFAULT_FONT_SCALE),
             fallback=DEFAULT_FONT_SCALE,
         )
+        # Accept the standalone key used by the cross-platform draft
+        # contract as well as the nested settings form written by v1 clients.
+        if "dictationDraft" in payload and (
+            not isinstance(settings, dict) or "dictationDraft" not in settings
+        ):
+            self._settings["dictationDraft"] = payload.get("dictationDraft")
+        if "dictationDraftSyncMetadata" in payload and (
+            not isinstance(settings, dict) or "dictationDraftSyncMetadata" not in settings
+        ):
+            self._settings["dictationDraftSyncMetadata"] = payload.get(
+                "dictationDraftSyncMetadata",
+            )
         overrides = payload.get("tagOverrides", {})
         if isinstance(overrides, dict):
             self._tag_overrides = {
@@ -103,6 +149,10 @@ class JsonLearningRepository:
                 for word_id, tags in overrides.items()
                 if isinstance(tags, list)
             }
+        # Migrate only after every other state section has been loaded.  The
+        # migration rewrites the whole atomic state file; doing it earlier
+        # would accidentally serialize an as-yet-unloaded tag-overrides map.
+        self._migrate_plaintext_draft_if_possible()
 
     def _payload(self) -> dict:
         settings = dict(self._settings)
@@ -110,6 +160,30 @@ class JsonLearningRepository:
             settings.get("fontScale", DEFAULT_FONT_SCALE),
             fallback=DEFAULT_FONT_SCALE,
         )
+        # Never write a legacy/plain object back to disk.  A failed migration
+        # must not turn an unrelated settings update into a plaintext draft
+        # write.  The process-local value remains available through
+        # ``get_dictation_draft`` until the user saves or clears it.
+        stored_draft = self._settings.get("dictationDraft")
+        if stored_draft is not None and not self._is_encrypted_draft(stored_draft):
+            stored_draft = None
+        stored_sync_metadata = self._settings.get("dictationDraftSyncMetadata")
+        if stored_sync_metadata is not None and not self._is_encrypted_draft(stored_sync_metadata):
+            stored_sync_metadata = None
+        stored_last_synced = self._settings.get("dictationLastSyncedEnvelope")
+        if stored_last_synced is not None and not self._is_encrypted_draft(stored_last_synced):
+            stored_last_synced = None
+        stored_conflicts = self._settings.get("dictationConflictBackups", [])
+        if not isinstance(stored_conflicts, list):
+            stored_conflicts = []
+        stored_conflicts = [
+            item for item in stored_conflicts if self._is_encrypted_draft(item)
+        ][:3]
+        settings = dict(self._settings)
+        settings["dictationDraft"] = stored_draft
+        settings["dictationDraftSyncMetadata"] = stored_sync_metadata
+        settings["dictationLastSyncedEnvelope"] = stored_last_synced
+        settings["dictationConflictBackups"] = stored_conflicts
         return {
             "schemaVersion": SCHEMA_VERSION,
             "userEntries": [entry.to_dict() for entry in self._user_entries.values()],
@@ -117,7 +191,153 @@ class JsonLearningRepository:
             "activity": self._activity,
             "tagOverrides": {word_id: sorted(tags) for word_id, tags in self._tag_overrides.items()},
             "settings": settings,
+            "dictationDraft": stored_draft,
         }
+
+    @staticmethod
+    def _is_encrypted_draft(value: object) -> bool:
+        return (
+            isinstance(value, dict)
+            and str(value.get("format", "")).casefold() == "dpapi-v1"
+            and isinstance(value.get("ciphertext"), str)
+        )
+
+    def _encrypt_draft(self, draft: DictationDraft) -> dict:
+        plaintext = draft.canonical_json_bytes()
+        try:
+            ciphertext = self._draft_cipher.encrypt(plaintext)
+        except Exception as error:
+            raise RuntimeError("本机无法保护默写草稿") from error
+        if not isinstance(ciphertext, bytes) or not ciphertext:
+            raise RuntimeError("本机无法保护默写草稿")
+        return {
+            "format": "dpapi-v1",
+            "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        }
+
+    def _decrypt_draft(self, value: object) -> DictationDraft | None:
+        if not self._is_encrypted_draft(value):
+            # A plain object is an old v1 record.  It is accepted for one-way
+            # migration, but new writes never retain this representation.
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (TypeError, UnicodeError, json.JSONDecodeError):
+                    return None
+            return DictationDraft.from_dict(value)
+        encoded = value.get("ciphertext")
+        try:
+            ciphertext = base64.b64decode(str(encoded), validate=True)
+            if not ciphertext:
+                return None
+            plaintext = self._draft_cipher.decrypt(ciphertext)
+            if not isinstance(plaintext, bytes):
+                return None
+            payload = json.loads(plaintext.decode("utf-8"))
+            return DictationDraft.from_dict(payload)
+        except Exception:
+            return None
+
+    def _encrypt_dictation_sync_metadata(
+        self,
+        metadata: DictationDraftSyncMetadata,
+    ) -> dict:
+        plaintext = metadata.canonical_json().encode("utf-8")
+        try:
+            ciphertext = self._draft_cipher.encrypt(plaintext)
+        except Exception as error:
+            raise RuntimeError("本机无法保护默写同步元数据") from error
+        if not isinstance(ciphertext, bytes) or not ciphertext:
+            raise RuntimeError("本机无法保护默写同步元数据")
+        return {
+            "format": "dpapi-v1",
+            "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        }
+
+    def _decrypt_dictation_sync_metadata(
+        self,
+        value: object,
+    ) -> DictationDraftSyncMetadata | None:
+        if not self._is_encrypted_draft(value):
+            return None
+        encoded = value.get("ciphertext")
+        try:
+            ciphertext = base64.b64decode(str(encoded), validate=True)
+            if not ciphertext:
+                return None
+            plaintext = self._draft_cipher.decrypt(ciphertext)
+            if not isinstance(plaintext, bytes):
+                return None
+            payload = json.loads(plaintext.decode("utf-8"))
+            if not isinstance(payload, dict):
+                return None
+            return DictationDraftSyncMetadata.from_dict(payload)
+        except Exception:
+            return None
+
+    def _encrypt_dictation_sync_envelope(
+        self,
+        envelope: DictationDraftSyncEnvelope,
+    ) -> dict:
+        try:
+            ciphertext = self._draft_cipher.encrypt(envelope.canonical_json_bytes())
+        except Exception as error:
+            raise RuntimeError("本机无法保护默写同步备份") from error
+        if not isinstance(ciphertext, bytes) or not ciphertext:
+            raise RuntimeError("本机无法保护默写同步备份")
+        return {
+            "format": "dpapi-v1",
+            "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        }
+
+    def _decrypt_dictation_sync_envelope(
+        self,
+        value: object,
+    ) -> DictationDraftSyncEnvelope | None:
+        if not self._is_encrypted_draft(value):
+            return None
+        try:
+            ciphertext = base64.b64decode(str(value.get("ciphertext")), validate=True)
+            if not ciphertext:
+                return None
+            plaintext = self._draft_cipher.decrypt(ciphertext)
+            if not isinstance(plaintext, bytes):
+                return None
+            payload = json.loads(plaintext.decode("utf-8"))
+            return DictationDraftSyncEnvelope.from_dict(payload)
+        except Exception:
+            return None
+
+    def _migrate_plaintext_draft_if_possible(self) -> None:
+        value = self._settings.get("dictationDraft")
+        if value is None or self._is_encrypted_draft(value):
+            return
+        draft = self._decrypt_draft(value)
+        if draft is None:
+            # An invalid legacy object is neither recoverable nor safe to keep
+            # as ordinary JSON.  Remove it during the one-way migration.
+            self._settings["dictationDraft"] = None
+            try:
+                self._save_locked()
+            except OSError:
+                pass
+            return
+        try:
+            self._settings["dictationDraft"] = self._encrypt_draft(draft)
+            # Rewrite immediately so a process crash after loading cannot
+            # leave the legacy plaintext representation on disk.
+            self._save_locked()
+        except RuntimeError:
+            # Fail closed when the platform cipher is unavailable: retain the
+            # value only in memory for this process, but never manufacture a
+            # fake "encrypted" blob or claim migration succeeded.  `_payload`
+            # also strips the legacy object if another setting is saved later.
+            self._legacy_plaintext_draft = draft
+            self._settings["dictationDraft"] = None
+            try:
+                self._save_locked()
+            except OSError:
+                pass
 
     def _save_locked(self) -> None:
         text = json.dumps(self._payload(), ensure_ascii=False, indent=2)
@@ -406,6 +626,111 @@ class JsonLearningRepository:
         resolved = mode if isinstance(mode, MarkMode) else MarkMode(str(mode).upper())
         with self._lock:
             self._settings["markMode"] = resolved.value
+            self._save_locked()
+
+    def get_dictation_draft(self) -> DictationDraft | None:
+        """Load the last explicitly saved 默写纸 draft, if it is valid."""
+        with self._lock:
+            if self._legacy_plaintext_draft is not None:
+                return self._legacy_plaintext_draft
+            return self._decrypt_draft(self._settings.get("dictationDraft"))
+
+    def get_dictation_sync_metadata(self) -> DictationDraftSyncMetadata | None:
+        """Return the encrypted last-known server revision, if any."""
+        with self._lock:
+            return self._decrypt_dictation_sync_metadata(
+                self._settings.get("dictationDraftSyncMetadata"),
+            )
+
+    def save_dictation_sync_metadata(
+        self,
+        metadata: DictationDraftSyncMetadata,
+    ) -> None:
+        if not isinstance(metadata, DictationDraftSyncMetadata):
+            raise TypeError("metadata must be DictationDraftSyncMetadata")
+        with self._lock:
+            self._settings["dictationDraftSyncMetadata"] = (
+                self._encrypt_dictation_sync_metadata(metadata)
+            )
+            self._save_locked()
+
+    def get_last_synced_dictation_envelope(
+        self,
+    ) -> DictationDraftSyncEnvelope | None:
+        with self._lock:
+            return self._decrypt_dictation_sync_envelope(
+                self._settings.get("dictationLastSyncedEnvelope"),
+            )
+
+    def save_last_synced_dictation_envelope(
+        self,
+        envelope: DictationDraftSyncEnvelope,
+    ) -> None:
+        if not isinstance(envelope, DictationDraftSyncEnvelope):
+            raise TypeError("envelope must be DictationDraftSyncEnvelope")
+        with self._lock:
+            self._settings["dictationLastSyncedEnvelope"] = (
+                self._encrypt_dictation_sync_envelope(envelope)
+            )
+            self._save_locked()
+
+    def get_dictation_conflict_backups(
+        self,
+    ) -> tuple[DictationDraftSyncEnvelope, ...]:
+        with self._lock:
+            stored = self._settings.get("dictationConflictBackups", [])
+            if not isinstance(stored, list):
+                return ()
+            decoded = (
+                self._decrypt_dictation_sync_envelope(value)
+                for value in stored[:3]
+            )
+            return tuple(value for value in decoded if value is not None)
+
+    def add_dictation_conflict_backup(
+        self,
+        envelope: DictationDraftSyncEnvelope,
+    ) -> None:
+        if not isinstance(envelope, DictationDraftSyncEnvelope):
+            raise TypeError("envelope must be DictationDraftSyncEnvelope")
+        canonical = envelope.canonical_json()
+        with self._lock:
+            existing = [
+                value
+                for value in self.get_dictation_conflict_backups()
+                if value.canonical_json() != canonical
+            ]
+            retained = [envelope, *existing][:3]
+            self._settings["dictationConflictBackups"] = [
+                self._encrypt_dictation_sync_envelope(value) for value in retained
+            ]
+            self._save_locked()
+
+    def save_dictation_draft(self, draft: DictationDraft) -> None:
+        """Persist a complete draft atomically through the normal state file."""
+        if not isinstance(draft, DictationDraft):
+            raise TypeError("draft must be a DictationDraft")
+        with self._lock:
+            self._legacy_plaintext_draft = None
+            self._settings["dictationDraft"] = self._encrypt_draft(draft)
+            try:
+                self._settings["dictationDraftSyncMetadata"] = (
+                    self._encrypt_dictation_sync_metadata(draft.sync_metadata)
+                )
+            except RuntimeError:
+                # Draft persistence must remain available on hosts where the
+                # optional metadata cipher is unavailable (for example,
+                # non-Windows test tooling).  The draft itself has already
+                # passed the platform cipher boundary; metadata will be
+                # refreshed on the next successful sync acknowledgement.
+                pass
+            self._save_locked()
+
+    def clear_dictation_draft(self) -> None:
+        """Delete the saved draft while retaining its encrypted sync token."""
+        with self._lock:
+            self._legacy_plaintext_draft = None
+            self._settings["dictationDraft"] = None
             self._save_locked()
 
     def get_reminder_enabled(self) -> bool:

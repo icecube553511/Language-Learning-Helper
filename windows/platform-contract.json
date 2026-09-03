@@ -188,7 +188,11 @@
     "petCurveLandingPhysics": "ready",
     "petVitalsAndRatingRewards": "ready",
     "ratingRewardFlightEffect": "ready",
-    "petAppearanceStates": "disabled"
+    "petAppearanceStates": "disabled",
+    "dictationRandomSubsetSelection": "ready",
+    "dictationRangeSelection": "ready",
+    "dictationDraftPersistence": "ready",
+    "dictationDraftSyncPort": "ready"
   },
   "platforms": ["windows", "android"]
 }

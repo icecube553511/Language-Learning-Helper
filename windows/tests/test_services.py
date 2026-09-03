@@ -423,6 +423,23 @@ class LearningServiceTests(unittest.TestCase):
         self.assertEqual(len(service.dictation_pool(group="cet6")), 1)
         self.assertEqual(len(service.dictation_pool(group="all")), 3)
 
+    def test_dictation_random_candidates_honor_explicit_cross_group_subset(self):
+        examples = sample_entry("focus").examples
+        entries = [
+            VocabularyEntry.create(word, word, examples, level=level)
+            for word, level in (("apple", "CET4"), ("banana", "CET6"), ("canada", "custom"), ("dear", "CET4"), ("other", "CET4"))
+        ]
+        service = LearningService(JsonLearningRepository(Path(self.temp.name), entries))
+        selected = service.dictation_candidates(
+            3,
+            group=None,
+            candidate_ids={"apple", "banana", "canada", "dear"},
+            rng=random.Random(3),
+        )
+        self.assertEqual(len(selected), 3)
+        self.assertTrue({item.word_id for item in selected} <= {"apple", "banana", "canada", "dear"})
+        self.assertEqual(service.dictation_candidates(3, candidate_ids=set()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

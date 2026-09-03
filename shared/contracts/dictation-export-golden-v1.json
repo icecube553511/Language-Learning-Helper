@@ -188,10 +188,42 @@
   ],
   "selectionVector": {
     "selectedMemberships": ["CET4", "custom"],
+    "selectedIds": ["adapt", "re-enter"],
+    "crossGroupUnion": true,
+    "emptySelectionFallsBackToScope": true,
     "excludeEvaluated": true,
     "candidateIdsAfterFiltering": ["adapt", "re-enter"],
     "requestedCount": 2,
     "sampleWithoutReplacement": true
+  },
+  "rangeSelectionVector": {
+    "orderedIds": ["apple", "banana", "canada", "dear"],
+    "anchorId": "banana",
+    "endpointId": "dear",
+    "inclusiveIds": ["banana", "canada", "dear"],
+    "reverseInclusiveIds": ["banana", "canada", "dear"],
+    "missingAnchorIds": [],
+    "sameGroupOnly": true,
+    "markerText": "选取到这里",
+    "markerColor": "brand-teal",
+    "noAnchorHidesMarker": true,
+    "cancelNearestTieBreak": "earlier-order"
+  },
+  "draftVector": {
+    "version": 1,
+    "maxBytes": 1048576,
+    "persistedState": [
+      "mode", "scopeGroup", "openGroup", "count", "includeEvaluated",
+      "formats", "fontSizePt", "missingFields", "showInitial",
+      "includeExamples", "includeExampleChinese", "customExample",
+      "selectedIds", "groups", "anchorId", "endpointId", "scrollPosition",
+      "expanded", "syncMetadata"
+    ],
+    "leaveActions": ["save", "discard", "continue"],
+    "discardDeletesSnapshot": true,
+    "restoreAutomatically": true,
+    "syncTransport": "https-json-rest-bearer",
+    "syncWithoutConfiguration": "local-only"
   },
   "confirmation": {
     "template": "当前仅选择了{selectedCount}/{requestedCount}，是否确定选择",
