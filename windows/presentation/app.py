@@ -5524,6 +5524,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             popup.winfo_rooty() + 120,
             owner=popup,
         )
+        # Packaged builds can create the nested window before the next timed
+        # pet tick. Synchronize explicitly so this probe does not depend on
+        # process speed when it verifies the active overlay's stacking order.
+        app._sync_pet_overlay_visibility()
         for _ in range(2):
             app.update_idletasks()
             app.update()
