@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .dictation import MarkMode
+from .dictation import DictationDraft, DictationDraftSyncMetadata, MarkMode
+from .dictation_sync import DictationDraftSyncEnvelope, DictationDraftSyncResult
 from .models import LearntWord, ReviewState, VocabularyEntry
 
 
@@ -60,6 +61,37 @@ class LearningRepository(Protocol):
     def get_mark_mode(self) -> MarkMode: ...
 
     def set_mark_mode(self, mode: MarkMode) -> None: ...
+
+    def get_dictation_draft(self) -> DictationDraft | None: ...
+
+    def save_dictation_draft(self, draft: DictationDraft) -> None: ...
+
+    def clear_dictation_draft(self) -> None: ...
+
+    def get_dictation_sync_metadata(self) -> DictationDraftSyncMetadata | None: ...
+
+    def save_dictation_sync_metadata(self, metadata: DictationDraftSyncMetadata) -> None: ...
+
+    def get_last_synced_dictation_envelope(self) -> DictationDraftSyncEnvelope | None: ...
+
+    def save_last_synced_dictation_envelope(self, envelope: DictationDraftSyncEnvelope) -> None: ...
+
+    def get_dictation_conflict_backups(self) -> tuple[DictationDraftSyncEnvelope, ...]: ...
+
+    def add_dictation_conflict_backup(self, envelope: DictationDraftSyncEnvelope) -> None: ...
+
+
+class DictationDraftSyncPort(Protocol):
+    """Domain-facing sync port implemented by infrastructure adapters."""
+
+    def pull(self, account_id: str) -> DictationDraftSyncResult: ...
+
+    def push(
+        self,
+        account_id: str,
+        envelope: DictationDraftSyncEnvelope,
+        if_match_revision: str | None = None,
+    ) -> DictationDraftSyncResult: ...
 
 
 class WordsLearntRepository(Protocol):

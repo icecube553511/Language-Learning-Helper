@@ -465,4 +465,12 @@ data class AppUseCases(
     val history: StateFlow<List<ReviewEvent>>,
     val learntWords: StateFlow<Map<String, LearntWord>>,
     val settings: StateFlow<UserSettings>,
+    /** Application boundary for optional local draft storage. */
+    val dictationDraft: DictationDraftUseCase = DictationDraftUseCase(null),
+    val dictationDraftSync: DictationDraftSyncPort? = null,
+    /** Account identity is supplied by the composition root, never persisted
+     * in ordinary preferences.  A blank value keeps sync local-only. */
+    val dictationDraftSyncAccountId: String = "",
+    /** Infrastructure-owned clock used for draft metadata timestamps. */
+    val timeProvider: TimeProvider? = null,
 )

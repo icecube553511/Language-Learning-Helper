@@ -47,7 +47,7 @@ Presentation  --->  Application  --->  Domain
 
 ## 数据与隐私
 
-核心学习完全离线，无账号、广告或后台上传。Windows 数据保存在用户应用数据目录，Android 数据保存在应用私有目录。Android CSV 选择使用 Storage Access Framework，不申请广泛存储权限。
+核心学习完全离线，无广告或默认后台上传。Windows 数据保存在用户应用数据目录，Android 数据保存在应用私有目录。可选的默写草稿同步端口仅在组合根提供 HTTPS 服务地址、账号标识和安全存储凭据后启用，只传输版本化草稿、revision 和删除墓碑；词库、学习进度与导出文件始终不进入该端口。两端在本机加密保存当前草稿、最后同步信封及最多三份冲突备份。Android CSV 选择使用 Storage Access Framework，不申请广泛存储权限。
 
 ## 内容门禁
 

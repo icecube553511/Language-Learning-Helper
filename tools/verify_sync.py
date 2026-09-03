@@ -104,6 +104,35 @@ def verify_dictation_contract() -> None:
         fail("Dictation export formats differ from the shared contract")
     if payload.get("allowedTags") != ["cet4", "cet6", "gk", "zk", "evaluated"]:
         fail("Dictation program tag allowlist differs from the shared contract")
+    selection = payload.get("selectionVector", {})
+    if (
+        selection.get("selectedIds") != ["adapt", "re-enter"]
+        or selection.get("crossGroupUnion") is not True
+        or selection.get("emptySelectionFallsBackToScope") is not True
+        or selection.get("sampleWithoutReplacement") is not True
+    ):
+        fail("Dictation random subset semantics differ from the shared contract")
+    range_vector = payload.get("rangeSelectionVector", {})
+    if (
+        range_vector.get("inclusiveIds") != ["banana", "canada", "dear"]
+        or range_vector.get("reverseInclusiveIds") != ["banana", "canada", "dear"]
+        or range_vector.get("sameGroupOnly") is not True
+        or range_vector.get("markerText") != "选取到这里"
+        or range_vector.get("noAnchorHidesMarker") is not True
+    ):
+        fail("Dictation range-selection semantics differ from the shared contract")
+    draft_vector = payload.get("draftVector", {})
+    if draft_vector.get("version") != 1 or draft_vector.get("maxBytes") != 1048576:
+        fail("Dictation draft version or size limit differs from the shared contract")
+    if draft_vector.get("leaveActions") != ["save", "discard", "continue"]:
+        fail("Dictation leave actions differ from the shared contract")
+    draft_contract = CONTRACTS / "dictation-draft-v1.md"
+    draft_contract_text = draft_contract.read_text(encoding="utf-8") if draft_contract.is_file() else ""
+    if "dictation-draft-v1" not in draft_contract_text:
+        fail("Dictation draft contract is missing or has the wrong version")
+    for marker in ("last synced envelope", "three conflict", "encrypted local ring"):
+        if marker not in draft_contract_text:
+            fail(f"Dictation draft conflict-backup contract is missing {marker}")
     confirmation = payload.get("confirmation", {})
     if confirmation.get("rendered") != "当前仅选择了3/10，是否确定选择":
         fail("Dictation manual-selection confirmation text differs from the shared contract")
@@ -1197,7 +1226,7 @@ def verify_vocabulary_groups_contract() -> None:
     if "Dictation word selection" not in contract_path.read_text(encoding="utf-8"):
         fail("Vocabulary groups contract must govern dictation word selection")
     contract_text = contract_path.read_text(encoding="utf-8")
-    if "从该词书手选" not in contract_text or "read-only inspection" not in contract_text:
+    if "从该词书手选" not in contract_text:
         fail("Vocabulary groups contract must define random-group drill-down and manual handoff")
 
     windows_source = (ROOT / "windows" / "presentation" / "app.py").read_text(encoding="utf-8")
@@ -1208,16 +1237,23 @@ def verify_vocabulary_groups_contract() -> None:
     for marker in ("open_dictation_group", "close_dictation_group", "从该词书手选"):
         if marker not in windows_source:
             fail(f"Windows dictation group drill-down is missing {marker}")
-    for marker in ("openDictationGroup", "closeDictationGroup", "selectionEnabled = manual", "从该词书手选"):
+    for marker in ("openDictationGroup", "closeDictationGroup", "从该词书手选"):
         if marker not in android_source:
             fail(f"Android dictation group drill-down is missing {marker}")
+
+    for marker in ("dictationRandomCandidateIds", "选取到这里", "结束范围选择"):
+        if marker not in windows_source:
+            fail(f"Windows dictation selection interaction is missing {marker}")
+    for marker in ("dictationRandomCandidateIds", "选取到这里", "结束范围选择"):
+        if marker not in android_source:
+            fail(f"Android dictation selection interaction is missing {marker}")
 
 
 def verify_dictation_presentation_contract() -> None:
     contract_path = CONTRACTS / "dictation-export-v1.md"
     contract_text = contract_path.read_text(encoding="utf-8")
-    if "vocabulary-groups-v1" not in contract_text or "group scope" not in contract_text:
-        fail("Dictation contract must use the shared single-group scope")
+    if "vocabulary-groups-v1" not in contract_text or "跨分组" not in contract_text:
+        fail("Dictation contract must use the shared vocabulary-group scope")
     required_scope_markers = ("`all`", "`cet4`", "`cet6`", "`zk`", "`gk`", "`custom`")
     if any(marker not in contract_text for marker in required_scope_markers):
         fail("Dictation contract must name every canonical vocabulary group scope")
@@ -1232,6 +1268,14 @@ def verify_dictation_presentation_contract() -> None:
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     if parity.get("capabilities", {}).get("dictationBookLoadingAnimation") != "ready":
         fail("Parity manifest does not declare dictationBookLoadingAnimation ready")
+    for capability in (
+        "dictationRandomSubsetSelection",
+        "dictationRangeSelection",
+        "dictationDraftPersistence",
+        "dictationDraftSyncPort",
+    ):
+        if parity.get("capabilities", {}).get(capability) != "ready":
+            fail(f"Parity manifest does not declare {capability} ready")
 
     windows_source = (ROOT / "windows" / "presentation" / "widgets.py").read_text(encoding="utf-8")
     android_root = (
@@ -1251,6 +1295,18 @@ def verify_dictation_presentation_contract() -> None:
         fail("Android book-turning loader must restart each right-to-left page turn")
     if "stopDictationLoading()" not in android_view_model or "dictationLoadingJob?.cancel()" not in android_view_model:
         fail("Android must cancel the dictation loading job when leaving the page")
+    windows_repository = (ROOT / "windows" / "infrastructure" / "repository.py").read_text(encoding="utf-8")
+    android_repository = (
+        ROOT / "android" / "infrastructure" / "src" / "main" / "kotlin" /
+        "com" / "lexitrack" / "learning" / "infrastructure" /
+        "AndroidDictationDraftRepository.kt"
+    ).read_text(encoding="utf-8")
+    for marker in ("save_last_synced_dictation_envelope", "add_dictation_conflict_backup"):
+        if marker not in windows_repository:
+            fail(f"Windows dictation sync persistence is missing {marker}")
+    for marker in ("saveLastSyncedEnvelope", "addConflictBackup", "MAX_CONFLICT_BACKUPS = 3"):
+        if marker not in android_repository:
+            fail(f"Android dictation sync persistence is missing {marker}")
 
 
 def verify_catalog() -> None:

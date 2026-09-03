@@ -6,6 +6,7 @@ from pathlib import Path
 import random
 import re
 import time
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
@@ -13,7 +14,21 @@ from typing import Callable
 
 from application.services import LearningService
 from domain.models import ImportReport, ReviewRating, VocabularyEntry
-from domain.dictation import DictationField, DictationFormat, DictationOptions, MarkMode
+from domain.dictation import (
+    DictationDraft,
+    DictationDraftSyncMetadata,
+    DictationField,
+    DictationFormat,
+    DictationOptions,
+    MarkMode,
+    dictation_range_ids,
+    nearest_dictation_id,
+    normalize_word_id,
+)
+from domain.dictation_sync import (
+    DictationDraftSyncResult,
+    DictationDraftSyncStatus,
+)
 from domain.pet_companion import (
     CRUISE_SPEED,
     estimate_release_velocity,
@@ -308,6 +323,7 @@ class LexiTrackApp(tk.Tk):
         catalog_error: str = "",
         pet_asset_path: Path | None = None,
         pet_asset_left_path: Path | None = None,
+        dictation_sync_account_id: str | None = None,
     ):
         super().__init__()
         self.service = service
@@ -317,10 +333,23 @@ class LexiTrackApp(tk.Tk):
         self.catalog_error = catalog_error
         self.pet_asset_path = pet_asset_path
         self.pet_asset_left_path = pet_asset_left_path
+        # The account identifier is supplied by the composition root only;
+        # presentation never reads endpoint or token configuration.
+        self.dictation_sync_account_id = (dictation_sync_account_id or "").strip()
+        self._dictation_sync_generation = 0
+        self._dictation_sync_in_flight = False
+        self._dictation_window_active = False
+        self._smoke_testing = False
+        self._dictation_sync_conflict: DictationDraftSyncResult | None = None
+        # The editor keeps the last server token alongside its transient
+        # controls.  New immutable drafts can therefore retain optimistic
+        # concurrency metadata instead of resetting to revision ``0``.
+        self._dictation_sync_metadata = DictationDraftSyncMetadata()
         self.title("LexiTrack 词程")
         self.geometry("1220x800")
         self.minsize(960, 700)
         self.configure(bg=BG)
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
         self.font_manager = FontManager(self, self.service.font_scale())
         self._configure_styles()
         self.pages: dict[str, tk.Frame] = {}
@@ -350,6 +379,21 @@ class LexiTrackApp(tk.Tk):
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
         self.dictation_selected_ids: set[str] = set()
+        # Contract marker: this is the explicit cross-group random subset
+        # consumed by LearningService.dictation_candidates.
+        self.dictationRandomCandidateIds: set[str] = set()
+        # Selection is global so random mode can sample across books; the
+        # per-group maps retain range/scroll state when users switch books.
+        self.dictation_group_selected_ids: dict[str, set[str]] = {}
+        self.dictation_group_anchors: dict[str, str | None] = {}
+        self.dictation_group_endpoints: dict[str, str | None] = {}
+        self.dictation_group_scroll_positions: dict[str, float] = {}
+        self.dictation_expanded_groups: set[str] = set()
+        self.dictation_range_enabled = True
+        self.dictation_range_marker_text = "选取到这里"
+        self._dictation_saved_fingerprint: tuple | None = None
+        self._dictation_restored = False
+        self._dictation_ignore_dirty = False
         self._dictation_loading: DictationLoadingOverlay | None = None
         self._dictation_loading_after_id: str | None = None
         self.pet_companion = PetCompanion(
@@ -382,6 +426,10 @@ class LexiTrackApp(tk.Tk):
         self.show_page("dashboard")
         self.after(1_000, self._check_review_reminder)
         self.after(250, self._schedule_word_reminder)
+        # Optional remote restore is initiated from the presentation edge but
+        # executed off the Tk event loop.  The service/port remains the only
+        # layer that knows how to decode or persist a remote envelope.
+        self.after_idle(self._pull_dictation_draft_async)
 
     def _setup_pet_overlay(self) -> None:
         """Load the injected runtime sprite and start the transient UI companion."""
@@ -562,6 +610,66 @@ class LexiTrackApp(tk.Tk):
                 pass
             self._pet_overlay = None
         super().destroy()
+
+    def _dictation_has_unsaved_changes(self) -> bool:
+        if not hasattr(self, "dictation_status") or self._dictation_saved_fingerprint is None:
+            return False
+        return self._dictation_fingerprint() != self._dictation_saved_fingerprint
+
+    def _confirm_dictation_leave(self) -> bool:
+        """Return False when the user chooses to continue editing."""
+        if self._smoke_testing:
+            return True
+        if self.current_page != "dictation" or not self._dictation_has_unsaved_changes():
+            return True
+        dialog = tk.Toplevel(self)
+        dialog.title("保存默写选择")
+        dialog.geometry("460x190")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+        tk.Label(
+            dialog, text="默写纸有未保存的选择，是否保存？", bg=BG, fg=TEXT,
+            font="LexiBodyBold", wraplength=400,
+        ).pack(padx=20, pady=(28, 18))
+        result = {"value": None}
+        buttons = tk.Frame(dialog, bg=BG)
+        buttons.pack()
+        def finish(value):
+            result["value"] = value
+            dialog.destroy()
+        self._primary_button(buttons, "保存", lambda: finish("save"), width=9).pack(side=tk.LEFT, padx=5)
+        self._outline_button(buttons, "不保存", lambda: finish("discard"), width=9).pack(side=tk.LEFT, padx=5)
+        self._outline_button(buttons, "继续编辑", lambda: finish("cancel"), width=10).pack(side=tk.LEFT, padx=5)
+        self._attach_pet_to_dialog(dialog, "dictation-leave")
+        self.wait_window(dialog)
+        if result["value"] == "save":
+            self.save_dictation_selection()
+            return True
+        if result["value"] == "discard":
+            # Explicitly discard the current draft, including the prior saved
+            # snapshot, as requested for a leave-without-saving action.
+            try:
+                metadata = self.service.stage_dictation_tombstone(
+                    self.dictation_sync_account_id,
+                )
+            except (TypeError, ValueError) as exc:
+                messagebox.showerror("保存失败", str(exc), parent=self)
+                return False
+            self._dictation_sync_metadata = metadata
+            self._reset_dictation_editor()
+            # Set the baseline only after the reset; clear/reset callbacks are
+            # otherwise correctly treated as edits by the normal UI path.
+            self._dictation_saved_fingerprint = self._dictation_fingerprint()
+            self.dictation_status.configure(text="已放弃本次选择")
+            self._push_dictation_tombstone_async(metadata)
+            return True
+        return False
+
+    def _on_window_close(self) -> None:
+        if self._confirm_dictation_leave():
+            self._closing_after_prompt = True
+            self.destroy()
 
     @staticmethod
     def _pet_viewport_for(root: tk.Misc) -> PetRect:
@@ -2437,6 +2545,18 @@ class LexiTrackApp(tk.Tk):
             actions, "预览并下载文档", self.preview_dictation, width=16,
         )
         self.dictation_preview_download_button.pack(side=tk.LEFT)
+        self.dictation_save_button = self._outline_button(
+            actions, "保存选择", self.save_dictation_selection, width=11,
+        )
+        self.dictation_save_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.dictation_clear_button = self._outline_button(
+            actions, "清空本次选择", self.clear_dictation_selection, width=13,
+        )
+        self.dictation_clear_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.dictation_end_range_button = self._outline_button(
+            actions, "结束范围选择", self.end_dictation_range, width=13,
+        )
+        self.dictation_end_range_button.pack(side=tk.LEFT, padx=(8, 0))
         self.dictation_status = tk.Label(actions, text="", bg=SURFACE, fg=MUTED, font="LexiSmall")
         self.dictation_status.pack(side=tk.LEFT, padx=14)
 
@@ -2542,17 +2662,41 @@ class LexiTrackApp(tk.Tk):
         self._dictation_table_column_widths: list[int] = []
         self._dictation_drag_anchor_id: str | None = None
         self._dictation_drag_anchor_selected: bool | None = None
+        self.dictation_table_canvas.bind("<ButtonRelease-1>", self._on_dictation_table_release, add="+")
+        self._bind_dictation_dirty_traces()
+
+    def _bind_dictation_dirty_traces(self) -> None:
+        variables = [
+            self.dictation_mode_var,
+            self.dictation_count_var,
+            self.dictation_include_evaluated_var,
+            self.dictation_font_size_var,
+            self.dictation_initial_var,
+            self.dictation_examples_var,
+            self.dictation_example_chinese_var,
+            self.dictation_custom_example_var,
+            *self.dictation_format_vars.values(),
+            *self.dictation_field_vars.values(),
+        ]
+        for variable in variables:
+            variable.trace_add("write", lambda *_args: self._mark_dictation_dirty())
 
     def _refresh_dictation_candidates(self):
         if not hasattr(self, "dictation_table_canvas"):
             return
+        if not self._dictation_restored:
+            self._restore_dictation_draft()
+            self._dictation_restored = True
         self._apply_dictation_navigation(set_dictation_group_mode(
             self._dictation_navigation(),
             self.dictation_mode_var.get(),
         ))
         include = self.dictation_include_evaluated_var.get()
-        pool = self.service.dictation_pool(include)
-        self.dictation_selected_ids = visible_dictation_selection(self.dictation_selected_ids, pool)
+        # Keep selections for evaluated entries while that filter is off;
+        # they remain persisted and become available again when re-enabled.
+        known_pool = self.service.dictation_pool(True)
+        self.dictation_selected_ids = visible_dictation_selection(self.dictation_selected_ids, known_pool)
+        self._sync_dictation_group_selection()
         if self.dictation_group is not None:
             pool = self.service.dictation_words_in_group(self.dictation_group, include)
             self.dictation_candidates = pool[:2000]
@@ -2562,6 +2706,501 @@ class LexiTrackApp(tk.Tk):
             self._show_dictation_sel_view("groups")
             self._render_dictation_groups()
         self._update_dictation_selection_count()
+
+    def _dictation_current_group_key(self) -> str:
+        return self.dictation_group or self.dictation_scope_group or "all"
+
+    def _sync_dictation_group_selection(self) -> None:
+        """Drop stale IDs while retaining selections from other groups."""
+        known = {normalize_word_id(entry.word_id) for entry in self.service.dictation_pool(True)}
+        self.dictation_selected_ids = {
+            normalize_word_id(value) for value in self.dictation_selected_ids if normalize_word_id(value) in known
+        }
+        self.dictationRandomCandidateIds = {
+            normalize_word_id(value)
+            for value in self.dictationRandomCandidateIds
+            if normalize_word_id(value) in known
+        }
+        self.dictation_selected_ids.intersection_update(known)
+        for key, values in list(self.dictation_group_selected_ids.items()):
+            canonical_key = str(key).strip().casefold()
+            normalized_values = {
+                normalize_word_id(value) for value in values if normalize_word_id(value) in known
+            }
+            if canonical_key != key:
+                self.dictation_group_selected_ids.pop(key, None)
+                self.dictation_group_selected_ids.setdefault(canonical_key, set()).update(normalized_values)
+                values = self.dictation_group_selected_ids[canonical_key]
+            else:
+                values.clear()
+                values.update(normalized_values)
+            if not values:
+                self.dictation_group_selected_ids.pop(canonical_key, None)
+        for key in set(self.dictation_group_anchors) | set(self.dictation_group_endpoints):
+            valid_ids = {
+                normalize_word_id(entry.word_id)
+                for entry in self.service.dictation_words_in_group(key, True)
+            }
+            anchor = normalize_word_id(self.dictation_group_anchors.get(key) or "") or None
+            endpoint = normalize_word_id(self.dictation_group_endpoints.get(key) or "") or None
+            if anchor not in valid_ids:
+                self.dictation_group_anchors[key] = None
+            else:
+                self.dictation_group_anchors[key] = anchor
+            if endpoint not in valid_ids:
+                self.dictation_group_endpoints[key] = None
+            else:
+                self.dictation_group_endpoints[key] = endpoint
+            if self.dictation_group_anchors.get(key) is None:
+                self.dictation_group_endpoints[key] = None
+        # Keep the explicit random pool in sync with group maps, while not
+        # making a manual-only selection leak into random mode after a mode
+        # switch.  The current draft contract uses selectedIds as the shared
+        # portable candidate set; this assignment canonicalizes it only.
+        self.dictation_selected_ids = {
+            normalize_word_id(value) for value in self.dictation_selected_ids if normalize_word_id(value)
+        }
+
+    def _dictation_draft(self) -> DictationDraft:
+        def selected_map() -> dict[str, tuple[str, ...]]:
+            return {key: tuple(sorted(values)) for key, values in self.dictation_group_selected_ids.items() if values}
+        metadata = getattr(
+            self,
+            "_dictation_sync_metadata",
+            DictationDraftSyncMetadata(),
+        )
+        if not isinstance(metadata, DictationDraftSyncMetadata):
+            metadata = DictationDraftSyncMetadata()
+        return DictationDraft(
+            mode=self.dictation_mode_var.get(),
+            scope_group=self.dictation_scope_group,
+            open_group=self.dictation_group,
+            count=max(1, int(self.dictation_count_var.get() or 1)),
+            include_evaluated=self.dictation_include_evaluated_var.get(),
+            formats=tuple(value.value for value, variable in self.dictation_format_vars.items() if variable.get()),
+            font_size_pt=int(self.dictation_font_size_var.get() or 12),
+            missing_fields=tuple(value.value for value, variable in self.dictation_field_vars.items() if variable.get()),
+            show_initial=self.dictation_initial_var.get(),
+            include_examples=self.dictation_examples_var.get(),
+            include_example_chinese=self.dictation_example_chinese_var.get(),
+            custom_example=self.dictation_custom_example_var.get(),
+            selected_ids=tuple(sorted(self.dictation_selected_ids)),
+            group_selected_ids=selected_map(),
+            group_anchors=dict(self.dictation_group_anchors),
+            group_endpoints=dict(self.dictation_group_endpoints),
+            group_scroll_positions=dict(self.dictation_group_scroll_positions),
+            expanded_groups=tuple(sorted(self.dictation_expanded_groups)),
+            range_enabled=self.dictation_range_enabled,
+            sync_metadata=metadata,
+        )
+
+    def _dictation_fingerprint(self) -> tuple:
+        try:
+            return tuple(sorted(self._dictation_draft().to_dict().items(), key=lambda item: item[0]))
+        except (TypeError, ValueError):
+            # Spinboxes briefly expose an empty/non-numeric value while the
+            # user edits them; treat that as dirty without breaking Tk traces.
+            return ("invalid",)
+
+    def _mark_dictation_dirty(self) -> None:
+        if self._dictation_ignore_dirty or not hasattr(self, "dictation_status"):
+            return
+        if self._dictation_saved_fingerprint is None:
+            self.dictation_status.configure(text="有未保存的选择")
+        elif self._dictation_fingerprint() != self._dictation_saved_fingerprint:
+            self.dictation_status.configure(text="有未保存的选择")
+
+    def _restore_dictation_draft(self) -> None:
+        draft = self.service.dictation_draft()
+        if draft is None:
+            metadata_getter = getattr(self.service, "dictation_sync_metadata", None)
+            if callable(metadata_getter):
+                metadata = metadata_getter()
+                if isinstance(metadata, DictationDraftSyncMetadata):
+                    self._dictation_sync_metadata = metadata
+            self._dictation_saved_fingerprint = self._dictation_fingerprint()
+            return
+        self._dictation_ignore_dirty = True
+        try:
+            self.dictation_mode_var.set(draft.mode)
+            self.dictation_scope_group = draft.scope_group
+            self.dictation_group = draft.open_group
+            self.dictation_count_var.set(str(draft.count))
+            self.dictation_include_evaluated_var.set(draft.include_evaluated)
+            self.dictation_font_size_var.set(str(draft.font_size_pt))
+            self.dictation_initial_var.set(draft.show_initial)
+            self.dictation_examples_var.set(draft.include_examples)
+            self.dictation_example_chinese_var.set(draft.include_example_chinese)
+            self.dictation_custom_example_var.set(draft.custom_example)
+            for value, variable in self.dictation_format_vars.items():
+                variable.set(value.value in draft.formats)
+            for value, variable in self.dictation_field_vars.items():
+                variable.set(value.value in draft.missing_fields)
+            self.dictation_selected_ids = {
+                normalize_word_id(value) for value in draft.selected_ids if normalize_word_id(value)
+            }
+            self.dictationRandomCandidateIds = set(self.dictation_selected_ids)
+            self.dictation_group_selected_ids = {key: set(values) for key, values in (draft.group_selected_ids or {}).items()}
+            self.dictation_group_anchors = dict(draft.group_anchors or {})
+            self.dictation_group_endpoints = dict(draft.group_endpoints or {})
+            self.dictation_group_scroll_positions = dict(draft.group_scroll_positions or {})
+            self.dictation_expanded_groups = set(draft.expanded_groups)
+            self.dictation_range_enabled = draft.range_enabled
+            self._dictation_sync_metadata = draft.sync_metadata
+            self.dictation_status.configure(text="已恢复上次选择")
+        finally:
+            self._dictation_ignore_dirty = False
+        # Catalog changes may invalidate IDs; retain only currently known ones.
+        self._sync_dictation_group_selection()
+        self._dictation_saved_fingerprint = self._dictation_fingerprint()
+
+    def save_dictation_selection(self) -> None:
+        try:
+            draft = self._dictation_draft()
+            self.service.save_dictation_draft(draft)
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
+            return
+        self._dictation_saved_fingerprint = self._dictation_fingerprint()
+        self.dictation_status.configure(text="已保存（本地）")
+        self._push_dictation_draft_async(draft)
+
+    def _push_dictation_draft_async(self, draft: DictationDraft | None = None) -> None:
+        """Push a saved snapshot without blocking Tk's event loop."""
+        account_id = self.dictation_sync_account_id
+        adapter = getattr(self.service, "dictation_draft_sync", None)
+        if not account_id or adapter is None or not getattr(adapter, "enabled", False):
+            if hasattr(self, "dictation_status"):
+                self.dictation_status.configure(text="已保存（仅本地，未配置同步）")
+            return
+        snapshot = draft or self._dictation_draft()
+        self._dictation_sync_generation += 1
+        generation = self._dictation_sync_generation
+        fingerprint = self._dictation_fingerprint()
+        self._dictation_sync_in_flight = True
+        self.dictation_status.configure(text="已保存，正在同步…")
+
+        def worker() -> None:
+            try:
+                # Push the immutable snapshot captured on Tk's thread.  The
+                # service must not re-read a newer repository draft while this
+                # request is queued or waiting on the network.
+                result = self.service.push_dictation_draft(
+                    account_id,
+                    draft=snapshot,
+                    apply_response=False,
+                )
+            except Exception:
+                result = DictationDraftSyncResult(
+                    status=DictationDraftSyncStatus.INVALID,
+                    message="dictation draft sync request failed",
+                )
+            try:
+                self.after(0, lambda: self._finish_dictation_sync_push(result, generation, fingerprint, snapshot))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, name="lexitrack-dictation-sync", daemon=True).start()
+
+    def _push_dictation_tombstone_async(
+        self,
+        metadata: DictationDraftSyncMetadata,
+    ) -> None:
+        account_id = self.dictation_sync_account_id or metadata.account_id
+        adapter = getattr(self.service, "dictation_draft_sync", None)
+        if not account_id or adapter is None or not getattr(adapter, "enabled", False):
+            return
+        self._dictation_sync_generation += 1
+        generation = self._dictation_sync_generation
+        fingerprint = self._dictation_fingerprint()
+        self._dictation_sync_in_flight = True
+
+        def worker() -> None:
+            try:
+                result = self.service.push_dictation_draft(
+                    account_id,
+                    revision=metadata.revision,
+                    updated_at_utc=metadata.updated_at_utc,
+                    deleted=True,
+                    apply_response=False,
+                )
+            except Exception:
+                result = DictationDraftSyncResult(
+                    status=DictationDraftSyncStatus.INVALID,
+                    message="dictation draft sync request failed",
+                )
+            try:
+                self.after(0, lambda: self._finish_dictation_tombstone_sync(
+                    result, generation, fingerprint, account_id,
+                ))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, name="lexitrack-dictation-delete-sync", daemon=True).start()
+
+    def _finish_dictation_tombstone_sync(
+        self,
+        result: DictationDraftSyncResult,
+        generation: int,
+        fingerprint: tuple,
+        account_id: str,
+    ) -> None:
+        if generation != self._dictation_sync_generation:
+            return
+        self._dictation_sync_in_flight = False
+        if result.status is DictationDraftSyncStatus.CONFLICT:
+            self.dictation_status.configure(text="同步冲突，请选择本机或远端版本")
+            self._show_dictation_sync_conflict(result)
+            return
+        if result.status in {DictationDraftSyncStatus.SYNCED, DictationDraftSyncStatus.TOMBSTONE}:
+            if self._dictation_fingerprint() == fingerprint:
+                self.service.apply_push_dictation_result(account_id, result)
+            elif result.envelope is not None:
+                self.service.remember_dictation_sync_envelope(result.envelope)
+            if result.envelope is not None:
+                self._dictation_sync_metadata = result.envelope.metadata
+            self.dictation_status.configure(text="已同步删除")
+
+    def _finish_dictation_sync_push(
+        self,
+        result: DictationDraftSyncResult,
+        generation: int,
+        fingerprint: tuple,
+        snapshot: DictationDraft,
+    ) -> None:
+        if generation != self._dictation_sync_generation:
+            return
+        self._dictation_sync_in_flight = False
+        # A user may have edited while the request was in flight.  The worker
+        # deliberately did not apply its response, so leave the newer editor
+        # state untouched and ignore a stale acknowledgement.  Only an
+        # unchanged editor may accept the returned server metadata.
+        current_changed = self._dictation_fingerprint() != fingerprint
+        if not current_changed:
+            result = self.service.apply_push_dictation_result(
+                self.dictation_sync_account_id,
+                result,
+            )
+            if result.envelope is not None:
+                self._dictation_sync_metadata = result.envelope.metadata
+                # The server may return a fresh revision/timestamp while the
+                # editor content is unchanged.  Treat that acknowledged
+                # snapshot as the new clean baseline.
+                self._dictation_saved_fingerprint = self._dictation_fingerprint()
+        elif result.status is DictationDraftSyncStatus.CONFLICT:
+            # The conflict still belongs to the user-visible saved snapshot;
+            # keep it actionable, but never apply its remote payload here.
+            self.dictation_status.configure(text="同步冲突，请选择本机或远端版本")
+            self._show_dictation_sync_conflict(result)
+            return
+        else:
+            return
+        if result.status is DictationDraftSyncStatus.CONFLICT:
+            self.dictation_status.configure(text="同步冲突，请选择本机或远端版本")
+            self._show_dictation_sync_conflict(result)
+        elif result.status in {DictationDraftSyncStatus.SYNCED, DictationDraftSyncStatus.TOMBSTONE}:
+            self.dictation_status.configure(text="已同步")
+        elif result.status is DictationDraftSyncStatus.TOO_LARGE:
+            self.dictation_status.configure(text="已保存（草稿过大，暂未同步）")
+        else:
+            self.dictation_status.configure(text="已保存（仅本地，未配置同步）")
+
+    def _pull_dictation_draft_async(self) -> None:
+        account_id = self.dictation_sync_account_id
+        adapter = getattr(self.service, "dictation_draft_sync", None)
+        if (
+            self._dictation_sync_in_flight
+            or self._dictation_has_unsaved_changes()
+            or not account_id
+            or adapter is None
+            or not getattr(adapter, "enabled", False)
+        ):
+            return
+        generation = self._dictation_sync_generation = self._dictation_sync_generation + 1
+        self._dictation_sync_in_flight = True
+
+        def worker() -> None:
+            try:
+                # Pull transport/reconciliation without mutating the local
+                # repository.  The Tk callback performs the dirty check first
+                # and applies the snapshot only when it is still safe.
+                result = self.service.pull_dictation_draft(account_id, apply=False)
+            except Exception:
+                result = DictationDraftSyncResult(
+                    status=DictationDraftSyncStatus.INVALID,
+                    message="dictation draft sync request failed",
+                )
+            try:
+                self.after(0, lambda: self._finish_dictation_sync_pull(result, generation, account_id))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, name="lexitrack-dictation-pull", daemon=True).start()
+
+    def _finish_dictation_sync_pull(
+        self,
+        result: DictationDraftSyncResult,
+        generation: int,
+        account_id: str | None = None,
+    ) -> None:
+        if generation != self._dictation_sync_generation:
+            return
+        self._dictation_sync_in_flight = False
+        if result.status is DictationDraftSyncStatus.CONFLICT:
+            self._show_dictation_sync_conflict(result)
+            return
+        if result.status not in {DictationDraftSyncStatus.SYNCED, DictationDraftSyncStatus.TOMBSTONE}:
+            return
+        if self._dictation_has_unsaved_changes():
+            # Never replace an active editor with a background pull.  The next
+            # explicit save will reconcile revisions and surface a conflict.
+            return
+        applied = self.service.apply_pulled_dictation_draft(
+            account_id or self.dictation_sync_account_id,
+            result,
+        )
+        if applied.status is DictationDraftSyncStatus.CONFLICT:
+            self._show_dictation_sync_conflict(applied)
+            return
+        if applied.status is DictationDraftSyncStatus.INVALID:
+            return
+        if result.envelope is not None:
+            self._dictation_sync_metadata = result.envelope.metadata
+        if result.status is DictationDraftSyncStatus.TOMBSTONE:
+            # A remote delete is a complete editor reset, while the service
+            # retains the tombstone metadata for the next guarded save.
+            self._dictation_restored = True
+            self._reset_dictation_editor()
+            self._dictation_saved_fingerprint = self._dictation_fingerprint()
+        else:
+            self._dictation_restored = False
+            self._restore_dictation_draft()
+            self._dictation_restored = True
+        if self.current_page == "dictation":
+            self._refresh_dictation_candidates()
+
+    def _show_dictation_sync_conflict(self, result: DictationDraftSyncResult) -> None:
+        conflict = result.conflict
+        if conflict is None or not hasattr(self, "dictation_status"):
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("默写选择同步冲突")
+        dialog.geometry("520x230")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+        tk.Label(
+            dialog,
+            text="本机和远端均有不同的默写选择。请选择要保留的版本。",
+            bg=BG,
+            fg=TEXT,
+            font="LexiBodyBold",
+            wraplength=460,
+        ).pack(padx=20, pady=(24, 10))
+        tk.Label(
+            dialog,
+            text=f"本机修订 {conflict.local.revision} · 远端修订 {conflict.remote.revision}",
+            bg=BG,
+            fg=MUTED,
+            font="LexiSmall",
+        ).pack(pady=(0, 14))
+        buttons = tk.Frame(dialog, bg=BG)
+        buttons.pack()
+
+        def choose_local() -> None:
+            try:
+                rebased = self.service.prepare_local_dictation_conflict_retry(
+                    conflict,
+                    None if conflict.local.deleted else self._dictation_draft(),
+                )
+            except (TypeError, ValueError, RuntimeError, OSError) as exc:
+                messagebox.showerror("同步失败", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            if rebased is None:
+                self._dictation_sync_metadata = self.service.dictation_sync_metadata()
+                self._reset_dictation_editor()
+                self._dictation_saved_fingerprint = self._dictation_fingerprint()
+                self.dictation_status.configure(text="已保留本地删除，正在同步")
+                self._push_dictation_tombstone_async(self._dictation_sync_metadata)
+                return
+            self._dictation_sync_metadata = rebased.sync_metadata
+            self._dictation_saved_fingerprint = self._dictation_fingerprint()
+            self._push_dictation_draft_async(rebased)
+
+        def choose_remote() -> None:
+            remote = conflict.remote
+            try:
+                accepted = self.service.accept_remote_dictation_conflict(conflict)
+            except (TypeError, ValueError, RuntimeError, OSError) as exc:
+                messagebox.showerror("同步失败", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self._dictation_sync_metadata = remote.metadata
+            if accepted is None:
+                self._reset_dictation_editor()
+                self._dictation_saved_fingerprint = self._dictation_fingerprint()
+            else:
+                self._dictation_restored = False
+                self._restore_dictation_draft()
+                self._dictation_restored = True
+                self._refresh_dictation_candidates()
+            self.dictation_status.configure(text="已采用远端版本")
+
+        self._primary_button(buttons, "保留本机", choose_local, width=10).pack(side=tk.LEFT, padx=5)
+        self._outline_button(buttons, "采用远端", choose_remote, width=10).pack(side=tk.LEFT, padx=5)
+        self._outline_button(buttons, "稍后处理", dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
+        self._attach_pet_to_dialog(dialog, "dictation-sync-conflict")
+
+    def clear_dictation_selection(self) -> None:
+        self.dictation_selected_ids.clear()
+        self.dictationRandomCandidateIds.clear()
+        self.dictation_group_selected_ids.clear()
+        self.dictation_group_anchors.clear()
+        self.dictation_group_endpoints.clear()
+        self.dictation_range_enabled = True
+        self._render_dictation_candidates()
+        self._mark_dictation_dirty()
+
+    def _reset_dictation_editor(self) -> None:
+        """Return to a clean unsaved editor without preserving a snapshot."""
+        self._dictation_ignore_dirty = True
+        try:
+            self.dictation_selected_ids.clear()
+            self.dictationRandomCandidateIds.clear()
+            self.dictation_group_selected_ids.clear()
+            self.dictation_group_anchors.clear()
+            self.dictation_group_endpoints.clear()
+            self.dictation_group_scroll_positions.clear()
+            self.dictation_expanded_groups.clear()
+            self.dictation_range_enabled = True
+            self.dictation_scope_group = "all"
+            self.dictation_group = None
+            self.dictation_mode_var.set("random")
+            self.dictation_count_var.set("10")
+            self.dictation_include_evaluated_var.set(False)
+            self.dictation_font_size_var.set("12")
+            self.dictation_initial_var.set(False)
+            self.dictation_examples_var.set(False)
+            self.dictation_example_chinese_var.set(False)
+            self.dictation_custom_example_var.set("")
+            for output_format, variable in self.dictation_format_vars.items():
+                variable.set(output_format in {DictationFormat.DOCX, DictationFormat.PDF})
+            for field, variable in self.dictation_field_vars.items():
+                variable.set(field is DictationField.WORD)
+            self.dictation_document = None
+            self.dictation_document_word_ids.clear()
+            self._refresh_dictation_candidates()
+        finally:
+            self._dictation_ignore_dirty = False
+
+    def end_dictation_range(self) -> None:
+        key = self._dictation_current_group_key()
+        self.dictation_group_anchors[key] = None
+        self.dictation_group_endpoints[key] = None
+        self.dictation_range_enabled = False
+        self._render_dictation_candidates()
+        self._mark_dictation_dirty()
 
     def _show_dictation_sel_view(self, view: str):
         if view == "groups":
@@ -2611,13 +3250,29 @@ class LexiTrackApp(tk.Tk):
             card.pack(fill=tk.X, pady=(0, 8))
             label = tk.Label(card, text=group.label, bg=row_color, fg=TEXT, font="LexiBody", anchor="w")
             label.pack(side=tk.LEFT, padx=16, pady=14)
-            suffix = " · 已选" if is_selected_scope else ""
+            selected_count = len(self.dictation_group_selected_ids.get(group.key, set()))
+            if not include:
+                group_ids = {entry.word_id for entry in self.service.dictation_words_in_group(group.key, True)}
+                unavailable_count = len(self.dictation_group_selected_ids.get(group.key, set()) & group_ids) - len({entry.word_id for entry in self.service.dictation_words_in_group(group.key, False)} & self.dictation_group_selected_ids.get(group.key, set()))
+            else:
+                unavailable_count = 0
+            anchor_state = self.dictation_group_anchors.get(group.key)
+            badges = []
+            if selected_count:
+                badges.append(f"已选 {selected_count}")
+            if unavailable_count:
+                badges.append(f"暂不可用 {unavailable_count}")
+            if anchor_state:
+                badges.append("范围中")
+            suffix = (" · " + " · ".join(badges)) if badges else (" · 当前" if is_selected_scope else "")
             count = tk.Label(card, text=f"{group.count:,} 词{suffix}", bg=row_color, fg=MUTED, font="LexiSmall")
             count.pack(side=tk.RIGHT, padx=16, pady=14)
             for widget in (card, label, count):
                 widget.bind("<Button-1>", lambda _e, key=group.key: self._click_dictation_group(key))
 
     def _click_dictation_group(self, key: str):
+        self._remember_dictation_scroll_position()
+        self.dictation_expanded_groups.add(key)
         self._apply_dictation_navigation(open_dictation_group(
             self._dictation_navigation(),
             key,
@@ -2625,6 +3280,7 @@ class LexiTrackApp(tk.Tk):
         self._refresh_dictation_candidates()
 
     def _back_to_dictation_groups(self):
+        self._remember_dictation_scroll_position()
         self._apply_dictation_navigation(close_dictation_group(self._dictation_navigation()))
         self._refresh_dictation_candidates()
 
@@ -2710,7 +3366,8 @@ class LexiTrackApp(tk.Tk):
         self.dictation_table_header.configure(scrollregion=(0, 0, total_width, 40))
         self.dictation_table_canvas.configure(scrollregion=(0, 0, total_width, body_height))
         self._scroll_dictation_horizontally("moveto", 0)
-        self.dictation_table_canvas.yview_moveto(0)
+        position = self.dictation_group_scroll_positions.get(self.dictation_group or "", 0.0)
+        self.dictation_table_canvas.yview_moveto(max(0.0, min(1.0, float(position))))
         self._refresh_dictation_rows()
 
     def _apply_dictation_columns(self, word_content: int, tags_content: int, heading_font: tkfont.Font) -> int:
@@ -2817,7 +3474,7 @@ class LexiTrackApp(tk.Tk):
             top = row_tops[index]
             row_height = row_heights[index]
             background = "#F8FAFB" if index % 2 else SURFACE
-            if manual and entry.word_id in self.dictation_selected_ids:
+            if entry.word_id in self.dictation_selected_ids:
                 background = "#E2F1EC"
             rectangle = canvas.create_rectangle(
                 0, top, total_width, top + row_height,
@@ -2841,6 +3498,29 @@ class LexiTrackApp(tk.Tk):
                 )
         self._dictation_draw_start = render_start
         self._dictation_draw_end = render_end
+        # A visible cyan guide marks the current range endpoint.  It is drawn
+        # only when an anchor exists, and remains actionable after scrolling
+        # because the virtualized row is rebuilt from the stable word ID.
+        canvas.delete("dictation_range_marker")
+        anchor_id = self.dictation_group_anchors.get(self._dictation_current_group_key())
+        if anchor_id and self.dictation_range_enabled:
+            for index in range(render_start, render_end + 1):
+                entry = self.dictation_candidates[index]
+                marker_tag = f"dictation-range-{entry.word_id}"
+                top = row_tops[index]
+                row_height = row_heights[index]
+                marker = canvas.create_line(
+                    0, top + row_height - 2, total_width, top + row_height - 2,
+                    fill="#18B7C9", width=2, arrow=tk.LAST,
+                    tags=(marker_tag, "dictation_range_marker"),
+                )
+                canvas.create_text(
+                    max(8, total_width - 112), top + 10,
+                    text=self.dictation_range_marker_text, anchor="e",
+                    fill="#18B7C9", font="LexiSmall",
+                    tags=(marker_tag, "dictation_range_marker"),
+                )
+                canvas.tag_bind(marker_tag, "<Button-1>", lambda _event, word_id=entry.word_id: self._select_dictation_range_to_here(word_id))
         # Column separator lines only within the drawn band.
         canvas.delete("dictation_separator")
         for left in column_lefts[1:]:
@@ -2854,7 +3534,16 @@ class LexiTrackApp(tk.Tk):
 
     def _scroll_dictation_vertically(self, *args):
         self.dictation_table_canvas.yview(*args)
+        self._remember_dictation_scroll_position()
         self._schedule_dictation_rows()
+
+    def _remember_dictation_scroll_position(self) -> None:
+        if not hasattr(self, "dictation_table_canvas") or self.dictation_group is None:
+            return
+        try:
+            self.dictation_group_scroll_positions[self.dictation_group] = float(self.dictation_table_canvas.yview()[0])
+        except (tk.TclError, ValueError):
+            pass
 
     def _schedule_visible_dictation_checkboxes(self):
         if self._dictation_checkbox_refresh_id is not None:
@@ -2905,6 +3594,7 @@ class LexiTrackApp(tk.Tk):
         viewport_height = max(1, self.dictation_table_canvas.winfo_height())
         viewport_bottom = viewport_top + viewport_height
         manual = self.dictation_mode_var.get() == "manual"
+        interactive = self.dictation_group is not None
         selection_center = (
             self._dictation_table_column_lefts[4]
             + self._dictation_table_column_widths[4] / 2
@@ -2914,7 +3604,7 @@ class LexiTrackApp(tk.Tk):
             if row_top + row_height < viewport_top - row_height or row_top > viewport_bottom + row_height:
                 continue
             entry = self.dictation_candidates[index]
-            selected = manual and entry.word_id in self.dictation_selected_ids
+            selected = interactive and entry.word_id in self.dictation_selected_ids
             background = "#E2F1EC" if selected else ("#F8FAFB" if index % 2 else SURFACE)
             variable = tk.BooleanVar(value=selected)
             checkbox = tk.Checkbutton(
@@ -2924,7 +3614,7 @@ class LexiTrackApp(tk.Tk):
                 bg=background,
                 activebackground=background,
                 selectcolor=SURFACE,
-                state=tk.NORMAL if manual else tk.DISABLED,
+                state=tk.NORMAL if interactive else tk.DISABLED,
                 font=DICTATION_CHECKBOX_FONT,
                 padx=0,
                 pady=DICTATION_CHECKBOX_PAD_Y,
@@ -2973,8 +3663,15 @@ class LexiTrackApp(tk.Tk):
         return self.dictation_candidates[index]
 
     def _on_dictation_table_click(self, event):
-        if self.dictation_mode_var.get() != "manual":
+        if self.dictation_group is None:
             return "break"
+        # Marker clicks are range actions, not checkbox toggles.
+        for item_id in self.dictation_table_canvas.find_withtag("current"):
+            tags = self.dictation_table_canvas.gettags(item_id)
+            marker = next((tag for tag in tags if tag.startswith("dictation-range-")), None)
+            if marker:
+                self._select_dictation_range_to_here(marker.removeprefix("dictation-range-"))
+                return "break"
         canvas_y = self.dictation_table_canvas.canvasy(event.y)
         entry = self._dictation_entry_at(canvas_y)
         if entry is None:
@@ -2987,7 +3684,7 @@ class LexiTrackApp(tk.Tk):
         return "break"
 
     def _on_dictation_table_drag(self, event):
-        if self.dictation_mode_var.get() != "manual":
+        if self.dictation_group is None:
             return "break"
         canvas_y = self.dictation_table_canvas.canvasy(event.y)
         entry = self._dictation_entry_at(canvas_y)
@@ -3005,14 +3702,44 @@ class LexiTrackApp(tk.Tk):
         low, high = sorted((start, end))
         for index in range(low, high + 1):
             target = self.dictation_candidates[index]
-            self._set_dictation_selected(target.word_id, anchor_selected)
+            self._set_dictation_selected(target.word_id, anchor_selected, update_anchor=False)
+        if anchor_selected and entry.word_id:
+            self._set_dictation_anchor(entry.word_id)
         return "break"
 
-    def _set_dictation_selected(self, word_id: str, selected: bool):
+    def _set_dictation_anchor(self, word_id: str) -> None:
+        key = self._dictation_current_group_key()
+        # A fresh ordinary selection starts a new range; the previous endpoint
+        # is retained only for cancellation fallback until this point.
+        self.dictation_group_endpoints[key] = None
+        self.dictation_group_anchors[key] = word_id
+        self.dictation_range_enabled = True
+
+    def _set_dictation_selected(self, word_id: str, selected: bool, *, update_anchor: bool = True):
+        word_id = normalize_word_id(word_id)
+        if not word_id:
+            return
+        key = self._dictation_current_group_key()
         if selected:
             self.dictation_selected_ids.add(word_id)
+            self.dictationRandomCandidateIds.add(word_id)
+            self.dictation_group_selected_ids.setdefault(key, set()).add(word_id)
+            if update_anchor:
+                self._set_dictation_anchor(word_id)
         else:
-            self.dictation_selected_ids.discard(word_id)
+            self.dictation_group_selected_ids.setdefault(key, set()).discard(word_id)
+            if not any(word_id in values for values in self.dictation_group_selected_ids.values()):
+                self.dictation_selected_ids.discard(word_id)
+                self.dictationRandomCandidateIds.discard(word_id)
+            if update_anchor:
+                reference = self.dictation_group_endpoints.get(key) or word_id
+                remaining_ids = self.dictation_group_selected_ids.get(key, set())
+                self.dictation_group_anchors[key] = nearest_dictation_id(
+                    self.dictation_candidates, reference, remaining_ids,
+                )
+                if not remaining_ids:
+                    self.dictation_group_anchors[key] = None
+                    self.dictation_group_endpoints[key] = None
         background = "#E2F1EC" if selected else (
             "#F8FAFB" if next(
                 (index for index, entry in enumerate(self.dictation_candidates) if entry.word_id == word_id),
@@ -3029,12 +3756,44 @@ class LexiTrackApp(tk.Tk):
             if variable is not None:
                 variable.set(selected)
         self._update_dictation_selection_count()
+        self._mark_dictation_dirty()
+
+    def _select_dictation_range_to_here(self, word_id: str) -> None:
+        word_id = normalize_word_id(word_id)
+        if not word_id:
+            return
+        key = self._dictation_current_group_key()
+        anchor = self.dictation_group_anchors.get(key)
+        if not anchor or not self.dictation_range_enabled:
+            return
+        # ``dictation_candidates`` is a virtualized, display-capped slice
+        # (currently 2,000 rows).  Range semantics are defined over the full
+        # filtered group sequence so an endpoint remains valid after
+        # scrolling, virtualization, or a large catalog.
+        full_group = self.service.dictation_words_in_group(
+            key,
+            self.dictation_include_evaluated_var.get(),
+        )
+        ids = dictation_range_ids(full_group, anchor, word_id)
+        if not ids:
+            return
+        for candidate_id in ids:
+            self.dictation_selected_ids.add(candidate_id)
+            self.dictation_group_selected_ids.setdefault(key, set()).add(candidate_id)
+        self.dictation_group_endpoints[key] = word_id
+        self.dictation_group_anchors[key] = word_id
+        self._render_dictation_candidates()
+        self._mark_dictation_dirty()
+
+    def _on_dictation_table_release(self, _event):
+        self._dictation_drag_anchor_id = None
+        self._dictation_drag_anchor_selected = None
 
     def _update_dictation_selection_count(self):
         if self.dictation_mode_var.get() == "manual":
             self.dictation_selection_count.configure(text=f"已选择 {len(self.dictation_selected_ids)} 个词条")
         else:
-            suffix = " · 当前词条表为只读" if self.dictation_group is not None else ""
+            suffix = f" · 已勾选 {len(self.dictation_selected_ids)} 个" if self.dictation_selected_ids else ""
             self.dictation_selection_count.configure(
                 text=f"随机范围：{self._dictation_scope_label()}{suffix}",
             )
@@ -3064,7 +3823,12 @@ class LexiTrackApp(tk.Tk):
             if manual:
                 if not self.dictation_selected_ids:
                     raise ValueError("请先选择至少一个词条")
-                if len(self.dictation_selected_ids) < count and not self._confirm_manual_dictation(len(self.dictation_selected_ids), count):
+                available_ids = {
+                    entry.word_id
+                    for entry in self.service.dictation_pool(self.dictation_include_evaluated_var.get())
+                }
+                available_selected_count = len(self.dictation_selected_ids & available_ids)
+                if available_selected_count < count and not self._confirm_manual_dictation(available_selected_count, count):
                     return
                 selected_entries = self.service.selected_dictation_candidates(
                     self.dictation_selected_ids,
@@ -3074,8 +3838,15 @@ class LexiTrackApp(tk.Tk):
                     options, entries=selected_entries,
                 )
             else:
+                # Any explicit row selections form a cross-group random pool;
+                # with no selections we preserve the existing whole-scope
+                # behavior for the active book.
+                candidate_ids = set(self.dictation_selected_ids) or None
                 selected_entries = self.service.dictation_candidates(
-                    count, self.dictation_include_evaluated_var.get(), group=self.dictation_scope_group,
+                    count,
+                    self.dictation_include_evaluated_var.get(),
+                    group=None if candidate_ids is not None else self.dictation_scope_group,
+                    candidate_ids=candidate_ids,
                 )
                 document = self.service.build_dictation_document(
                     options, entries=selected_entries,
@@ -3677,15 +4448,44 @@ class LexiTrackApp(tk.Tk):
 
     def _bind_shortcuts(self):
         self.bind("<Control-k>", lambda _event: self._focus_search())
+        self.bind("<Control-s>", self._on_control_s, add="+")
+        self.bind("<FocusIn>", self._on_app_focus_in, add="+")
+        self.bind("<FocusOut>", self._on_app_focus_out, add="+")
         self.bind("<space>", lambda _event: self._reveal_current_answer())
         for key, rating in (("1", ReviewRating.AGAIN), ("2", ReviewRating.HARD), ("3", ReviewRating.GOOD), ("4", ReviewRating.EASY)):
             self.bind(key, lambda _event, value=rating: self._rate_visible_card(value))
+
+    def _on_control_s(self, _event):
+        if self.current_page == "dictation":
+            self.save_dictation_selection()
+            return "break"
+        return None
+
+    def _on_app_focus_in(self, _event) -> None:
+        if self._dictation_window_active:
+            return
+        self._dictation_window_active = True
+        self._pull_dictation_draft_async()
+
+    def _on_app_focus_out(self, _event) -> None:
+        # FocusOut also fires while focus moves between child controls.  Wait
+        # for Tk to settle before deciding that the application lost focus.
+        self.after_idle(self._refresh_dictation_window_active)
+
+    def _refresh_dictation_window_active(self) -> None:
+        try:
+            self._dictation_window_active = self.focus_displayof() is not None
+        except tk.TclError:
+            self._dictation_window_active = False
 
     def _focus_search(self):
         self.show_page("library")
         self.after_idle(self.search_entry.focus_set)
 
     def show_page(self, key: str):
+        if self.current_page == "dictation" and key != "dictation":
+            if not self._confirm_dictation_leave():
+                return
         self.word_bubbles.clear()
         if self.current_page and self.current_page != key:
             self.pet_companion.navigate()
@@ -3706,6 +4506,7 @@ class LexiTrackApp(tk.Tk):
             self.refresh_review_page()
         elif key == "dictation":
             self._begin_dictation_loading()
+            self._pull_dictation_draft_async()
         elif key == "library":
             self.refresh_library()
         elif key == "analytics":
@@ -3899,7 +4700,9 @@ class LexiTrackApp(tk.Tk):
 
     def _check_review_reminder(self):
         due_count = self.service.due_review_count()
-        if due_count > 0 and due_count != self._last_reminded_due_count:
+        if self._smoke_testing:
+            self._last_reminded_due_count = due_count
+        elif due_count > 0 and due_count != self._last_reminded_due_count:
             self._last_reminded_due_count = due_count
             messagebox.showinfo("复习提醒", f"有 {due_count} 个单词已按记忆曲线到期。", parent=self)
         elif due_count == 0:
@@ -4292,6 +5095,11 @@ def _descendant_labels(widget: tk.Misc) -> list[tk.Label]:
 
 
 def run_gui_smoke(app: LexiTrackApp) -> dict:
+    # Smoke probes deliberately mutate controls and may reuse a data directory
+    # containing due reviews.  Product confirmation dialogs require a human
+    # decision and must not become part of this unattended readiness check.
+    app._smoke_testing = True
+
     def visible_pet_count() -> int:
         overlays = [app._pet_overlay] + [
             runtime.overlay for runtime in app._dialog_pet_runtimes.values()
@@ -4625,6 +5433,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
                 callable(getattr(app, "download_dictation", None))
                 and app.dictation_preview_download_button.cget("text") == "预览并下载文档"
             )
+            # The smoke probe intentionally mutates editor controls. Treat
+            # that synthetic state as its baseline so navigating to the next
+            # page does not block forever in the real unsaved-changes dialog.
+            app._dictation_saved_fingerprint = app._dictation_fingerprint()
         if page == "reminder":
             reminder_filters_ready = (
                 set(app.reminder_filter_vars) == {"CET4", "CET6", "CUSTOM"}

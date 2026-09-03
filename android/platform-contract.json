@@ -111,7 +111,11 @@
     "vocabularyGroupBrowser": "ready",
     "dictationGroupSelection": "ready",
     "dictationRandomGroupDrillDown": "ready",
-    "dictationBookLoadingAnimation": "ready"
+    "dictationBookLoadingAnimation": "ready",
+    "dictationRandomSubsetSelection": "ready",
+    "dictationRangeSelection": "ready",
+    "dictationDraftPersistence": "ready",
+    "dictationDraftSyncPort": "ready"
   },
   "platforms": ["windows", "android"]
 }
