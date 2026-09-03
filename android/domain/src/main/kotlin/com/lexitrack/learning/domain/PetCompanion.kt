@@ -33,6 +33,10 @@ const val PET_CRUISE_SPEED = 4f
 /** Chart motion intentionally accelerates more gently than ordinary movement. */
 const val PET_CURVE_ACCELERATION = 0.25f
 const val PET_CURVE_MOTION_ACCELERATION = PET_CURVE_ACCELERATION
+const val PET_CURVE_LANDING_SPEED_LIMIT = 8f
+const val PET_CURVE_DOWNHILL_TERMINAL_SPEED = 4f
+const val PET_CURVE_DOWNHILL_RESPONSE_PER_TICK = 0.0625f
+const val PET_CURVE_DIRECTION_EPSILON = 0.000001f
 const val PET_FALL_TIME_STEP_SECONDS = 0.016f
 const val PET_FALL_GRAVITY = 2148.4375f
 const val PET_FLING_GRAVITY = PET_FALL_GRAVITY
@@ -190,6 +194,8 @@ data class PetState(
     val dragOffset: PetPoint? = null,
     /** Non-zero only while a user fling is being simulated. */
     val horizontalVelocity: Float = 0f,
+    /** Signed arc speed in canonical chart-path order, or null for autonomous motion. */
+    val curveVelocity: Float? = null,
 ) {
     /** Aliases used by platform adapters and cross-platform tests. */
     val velocityX: Float get() = horizontalVelocity
@@ -381,6 +387,7 @@ fun onNavigation(state: PetState): PetState = state.copy(
     bouncesRemaining = 0,
     dragOffset = null,
     horizontalVelocity = 0f,
+    curveVelocity = null,
 )
 
 fun beginDrag(state: PetState, pointer: PetPoint): PetState =
@@ -397,6 +404,7 @@ fun beginDrag(state: PetState, pointer: PetPoint): PetState =
         bouncesRemaining = 0,
         dragOffset = PetPoint(pointer.x - state.position.x, pointer.y - state.position.y),
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
 
 fun moveDrag(
@@ -440,10 +448,26 @@ fun releaseDrag(
             bouncesRemaining = 0,
             dragOffset = null,
             horizontalVelocity = flingVelocity.x,
+            curveVelocity = null,
         )
     }
     val support = targets.firstOrNull { target ->
         target.valid && isOnSupport(target, state.position, max(0f, halfSize), viewport)
+    }
+    if (
+        support?.kind == PetTargetKind.CHART &&
+        support.path.isNotEmpty() &&
+        viewport != null
+    ) {
+        return chartLandingState(
+            state = state,
+            target = support,
+            contact = state.position,
+            incomingVelocity = PetPoint(0f, 0f),
+            viewport = viewport,
+            halfSize = max(0f, halfSize),
+            unitScale = 1f,
+        )
     }
     return state.copy(
         mode = if (support == null) PetMode.FALL else PetMode.IDLE,
@@ -458,6 +482,7 @@ fun releaseDrag(
         bouncesRemaining = 0,
         dragOffset = null,
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
 }
 
@@ -471,7 +496,12 @@ fun advancePet(
 ): PetState {
     val margin = max(0f, halfSize)
     val unitScale = fallUnitScale.coerceAtLeast(PET_EPSILON)
-    if (state.mode == PetMode.DRAGGING) return state.copy(position = viewport.clamp(state.position, margin))
+    if (state.mode == PetMode.DRAGGING) {
+        return state.copy(
+            position = viewport.clamp(state.position, margin),
+            curveVelocity = null,
+        )
+    }
     val validTargets = targets.filter(PetTarget::valid)
     val retainedTarget = state.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
     val currentState = if (
@@ -486,6 +516,7 @@ fun advancePet(
             movementSpeed = 0f,
             verticalVelocity = state.verticalVelocity.coerceAtLeast(0f),
             bouncesRemaining = 0,
+            curveVelocity = null,
         )
     } else {
         state
@@ -495,6 +526,7 @@ fun advancePet(
             idleTicksRemaining = currentState.idleTicksRemaining - 1,
             movementSpeed = (currentState.movementSpeed - PET_MOTION_ACCELERATION).coerceAtLeast(0f),
             horizontalVelocity = 0f,
+            curveVelocity = null,
         )
     }
     // Fling is a self-contained projectile state. It must be advanced before
@@ -517,6 +549,7 @@ fun advancePet(
             verticalVelocity = 0f,
             horizontalVelocity = 0f,
             bouncesRemaining = 0,
+            curveVelocity = null,
         )
     }
     val candidates = if (currentState.avoidTargetId != null) {
@@ -542,6 +575,7 @@ fun advancePet(
                 targetId = null,
                 horizontalVelocity = 0f,
                 verticalVelocity = 0f,
+                curveVelocity = null,
             )
         }
 
@@ -553,7 +587,7 @@ fun advancePet(
     }
 
     if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
-        return advanceChart(currentState, target, viewport, margin, step)
+        return advanceChart(currentState, target, viewport, margin, step, unitScale)
     }
 
     return advanceSupport(currentState, target, viewport, margin, step)
@@ -598,6 +632,7 @@ private fun advanceSupport(
                     movementSpeed = 0f,
                     horizontalVelocity = 0f,
                     verticalVelocity = 0f,
+                    curveVelocity = null,
                     facing = facing,
                 )
             }
@@ -610,6 +645,7 @@ private fun advanceSupport(
                 movementSpeed = 0f,
                 horizontalVelocity = 0f,
                 verticalVelocity = 0f,
+                curveVelocity = null,
                 facing = facing,
             )
         }
@@ -621,6 +657,7 @@ private fun advanceSupport(
             movementSpeed = movement.speed,
             horizontalVelocity = 0f,
             verticalVelocity = 0f,
+            curveVelocity = null,
             facing = facing,
         )
     }
@@ -640,6 +677,7 @@ private fun advanceSupport(
             movementSpeed = 0f,
             verticalVelocity = 0f,
             horizontalVelocity = 0f,
+            curveVelocity = null,
             facing = facing,
         )
     } else {
@@ -651,6 +689,7 @@ private fun advanceSupport(
             movementSpeed = movement.speed,
             verticalVelocity = 0f,
             horizontalVelocity = 0f,
+            curveVelocity = null,
             facing = facing,
         )
     }
@@ -843,20 +882,22 @@ private fun advanceFlingSubstep(
             }
             FlingContactKind.TARGET -> {
                 val hit = contact.hit ?: return@repeat
-                val impact = abs(hit.verticalVelocity)
-                val landed = landedState(
-                    state.copy(
+                val target = targets.firstOrNull { it.id == hit.targetId } ?: return@repeat
+                val landed = landOnTarget(
+                    state = state.copy(
                         position = PetPoint(hit.x, hit.y),
                         horizontalVelocity = vx,
                         verticalVelocity = hit.verticalVelocity,
                     ),
-                    hit.targetId,
-                    PetPoint(hit.x, hit.y),
-                    impact,
-                    fallUnitScale,
+                    target = target,
+                    position = PetPoint(hit.x, hit.y),
+                    incomingVelocity = PetPoint(vx, hit.verticalVelocity),
+                    viewport = viewport,
+                    halfSize = halfSize,
+                    fallUnitScale = fallUnitScale,
                 )
                 position = landed.position
-                return landed.copy(horizontalVelocity = 0f)
+                return landed
             }
             FlingContactKind.BOTTOM -> {
                 val impact = vy.coerceAtLeast(0f)
@@ -866,7 +907,7 @@ private fun advanceFlingSubstep(
                     impact,
                     fallUnitScale,
                 )
-                return landed.copy(horizontalVelocity = 0f)
+                return landed
             }
             FlingContactKind.TOP -> {
                 position = PetPoint(position.x, minY)
@@ -887,6 +928,7 @@ private fun advanceFlingSubstep(
         horizontalVelocity = vx,
         verticalVelocity = vy,
         bouncesRemaining = 0,
+        curveVelocity = null,
         // Use the post-collision horizontal velocity when available.  A
         // high-speed fling can hit a wall and reverse within one tick, making
         // the net displacement point in the opposite direction of its
@@ -1060,6 +1102,257 @@ private fun Float.signSafe(): Float = when {
     else -> 0f
 }
 
+private data class PetPathSegmentContact(
+    val index: Int,
+    val projection: PetPoint,
+    val unitTangent: PetPoint,
+)
+
+private fun closestPathSegment(position: PetPoint, path: List<PetPoint>): PetPathSegmentContact {
+    var closest: PetPathSegmentContact? = null
+    var closestDistance = Float.POSITIVE_INFINITY
+    path.zipWithNext().forEachIndexed { index, (start, end) ->
+        val dx = end.x - start.x
+        val dy = end.y - start.y
+        val length = hypot(dx, dy)
+        if (length <= PET_EPSILON) return@forEachIndexed
+        val projection = closestPointOnSegment(position, start, end)
+        val distance = distanceSquared(position, projection)
+        if (distance < closestDistance) {
+            closestDistance = distance
+            closest = PetPathSegmentContact(
+                index = index,
+                projection = projection,
+                unitTangent = PetPoint(dx / length, dy / length),
+            )
+        }
+    }
+    return closest ?: PetPathSegmentContact(
+        index = 0,
+        projection = path.firstOrNull() ?: position,
+        unitTangent = PetPoint(1f, 0f),
+    )
+}
+
+private fun curveDownhillDirection(unitTangent: PetPoint): Int = when {
+    unitTangent.y > PET_CURVE_DIRECTION_EPSILON -> 1
+    unitTangent.y < -PET_CURVE_DIRECTION_EPSILON -> -1
+    else -> 1
+}
+
+private fun curveEndpointIsDownhill(
+    path: List<PetPoint>,
+    endpoint: Int,
+    direction: Int,
+): Boolean {
+    val segment = if (endpoint <= 0) 0 else path.lastIndex - 1
+    val start = path[segment]
+    val end = path[segment + 1]
+    val dx = end.x - start.x
+    val dy = end.y - start.y
+    val length = hypot(dx, dy)
+    val unitTangent = if (length > PET_CURVE_DIRECTION_EPSILON) {
+        PetPoint(dx / length, dy / length)
+    } else {
+        PetPoint(1f, 0f)
+    }
+    val canonicalDirection = if (direction < 0) -1 else 1
+    return canonicalDirection == curveDownhillDirection(unitTangent)
+}
+
+private fun chartLandingState(
+    state: PetState,
+    target: PetTarget,
+    contact: PetPoint,
+    incomingVelocity: PetPoint,
+    viewport: PetRect,
+    halfSize: Float,
+    unitScale: Float,
+): PetState {
+    val path = target.path.map { viewport.clamp(PetPoint(it.x, it.y - halfSize), halfSize) }
+    if (path.size < 2) {
+        return state.copy(
+            position = viewport.clamp(contact, halfSize),
+            mode = PetMode.IDLE,
+            targetId = target.id,
+            idleTicksRemaining = PET_IDLE_TICKS,
+            movementSpeed = 0f,
+            verticalVelocity = 0f,
+            horizontalVelocity = 0f,
+            curveVelocity = null,
+        )
+    }
+
+    val segment = closestPathSegment(contact, path)
+    val rawProjectedVelocity = (
+        incomingVelocity.x * segment.unitTangent.x +
+            incomingVelocity.y * segment.unitTangent.y
+        ) * PET_FALL_TIME_STEP_SECONDS / unitScale
+    val projectedVelocity = rawProjectedVelocity.takeIf(Float::isFinite) ?: 0f
+    val clampedCurveVelocity = projectedVelocity.coerceIn(
+        -PET_CURVE_LANDING_SPEED_LIMIT,
+        PET_CURVE_LANDING_SPEED_LIMIT,
+    )
+    val curveVelocity = clampedCurveVelocity.takeUnless {
+        abs(it) <= PET_CURVE_DIRECTION_EPSILON
+    } ?: 0f
+    val direction = when {
+        curveVelocity > PET_CURVE_DIRECTION_EPSILON -> 1
+        curveVelocity < -PET_CURVE_DIRECTION_EPSILON -> -1
+        else -> curveDownhillDirection(segment.unitTangent)
+    }
+    return state.copy(
+        position = viewport.clamp(segment.projection, halfSize),
+        mode = PetMode.SLIDE,
+        targetId = target.id,
+        idleTicksRemaining = 0,
+        pathIndex = if (direction > 0) segment.index + 1 else segment.index,
+        pathDirection = direction,
+        rollCorners = 0,
+        avoidTargetId = null,
+        movementSpeed = abs(curveVelocity) * unitScale,
+        verticalVelocity = 0f,
+        bouncesRemaining = 0,
+        horizontalVelocity = 0f,
+        curveVelocity = curveVelocity,
+        dragOffset = null,
+    )
+}
+
+private data class PetPathMotion(
+    val position: PetPoint,
+    val index: Int,
+    val reachedEndpoint: Boolean,
+    val remainingBudget: Float,
+)
+
+private fun moveAlongPath(
+    start: PetPoint,
+    path: List<PetPoint>,
+    index: Int,
+    direction: Int,
+    distance: Float,
+): PetPathMotion {
+    val canonicalDirection = if (direction < 0) -1 else 1
+    val endpoint = if (canonicalDirection > 0) path.lastIndex else 0
+    var cursor = index.coerceIn(0, path.lastIndex)
+    var position = start
+    var remaining = distance.coerceAtLeast(0f)
+    while (true) {
+        val goal = path[cursor]
+        val segmentDistance = hypot(goal.x - position.x, goal.y - position.y)
+        if (segmentDistance > remaining + PET_EPSILON) {
+            val ratio = remaining / segmentDistance
+            return PetPathMotion(
+                position = PetPoint(
+                    position.x + (goal.x - position.x) * ratio,
+                    position.y + (goal.y - position.y) * ratio,
+                ),
+                index = cursor,
+                reachedEndpoint = false,
+                remainingBudget = 0f,
+            )
+        }
+        position = goal
+        remaining = (remaining - segmentDistance).coerceAtLeast(0f)
+        if (cursor == endpoint) {
+            return PetPathMotion(position, cursor, true, remaining)
+        }
+        cursor += canonicalDirection
+        if (remaining <= PET_EPSILON) {
+            return PetPathMotion(position, cursor, false, 0f)
+        }
+    }
+}
+
+private fun advanceLandedChart(
+    state: PetState,
+    target: PetTarget,
+    path: List<PetPoint>,
+    viewport: PetRect,
+    halfSize: Float,
+    unitScale: Float,
+): PetState {
+    val segment = closestPathSegment(state.position, path)
+    val downhill = curveDownhillDirection(segment.unitTangent)
+    val terminalVelocity = downhill * PET_CURVE_DOWNHILL_TERMINAL_SPEED
+    val rawVelocity = (state.curveVelocity ?: 0f).takeIf(Float::isFinite) ?: 0f
+    val currentVelocity = rawVelocity.coerceIn(
+        -PET_CURVE_LANDING_SPEED_LIMIT,
+        PET_CURVE_LANDING_SPEED_LIMIT,
+    )
+    val curveVelocity = currentVelocity +
+        (terminalVelocity - currentVelocity) * PET_CURVE_DOWNHILL_RESPONSE_PER_TICK
+    val direction = when {
+        curveVelocity > PET_CURVE_DIRECTION_EPSILON -> 1
+        curveVelocity < -PET_CURVE_DIRECTION_EPSILON -> -1
+        else -> downhill
+    }
+    val waypoint = if (direction > 0) segment.index + 1 else segment.index
+    val start = if (distanceSquared(state.position, segment.projection) <= PET_EPSILON * PET_EPSILON) {
+        segment.projection
+    } else {
+        state.position
+    }
+    val motion = moveAlongPath(
+        start,
+        path,
+        waypoint,
+        direction,
+        abs(curveVelocity) * unitScale,
+    )
+    val position = viewport.clamp(motion.position, halfSize)
+    val facing = facingAfter(state.facing, position.x - state.position.x)
+    if (motion.reachedEndpoint) {
+        val endpoint = if (direction > 0) path.lastIndex else 0
+        if (curveEndpointIsDownhill(path, endpoint, direction)) {
+            return state.copy(
+                position = position,
+                mode = PetMode.IDLE,
+                targetId = null,
+                idleTicksRemaining = PET_IDLE_TICKS,
+                pathIndex = 0,
+                pathDirection = 1,
+                rollCorners = 0,
+                avoidTargetId = target.id,
+                movementSpeed = 0f,
+                verticalVelocity = 0f,
+                horizontalVelocity = 0f,
+                curveVelocity = null,
+                facing = facing,
+            )
+        }
+        val reverse = -direction
+        return state.copy(
+            position = position,
+            mode = PetMode.SLIDE,
+            targetId = target.id,
+            idleTicksRemaining = 0,
+            pathIndex = endpoint + reverse,
+            pathDirection = reverse,
+            rollCorners = 0,
+            movementSpeed = 0f,
+            verticalVelocity = 0f,
+            horizontalVelocity = 0f,
+            curveVelocity = 0f,
+            facing = facing,
+        )
+    }
+    return state.copy(
+        position = position,
+        mode = PetMode.SLIDE,
+        targetId = target.id,
+        idleTicksRemaining = 0,
+        pathIndex = motion.index,
+        pathDirection = direction,
+        movementSpeed = abs(curveVelocity) * unitScale,
+        verticalVelocity = 0f,
+        horizontalVelocity = 0f,
+        curveVelocity = curveVelocity,
+        facing = facing,
+    )
+}
+
 private fun advanceFall(
     state: PetState,
     target: PetTarget,
@@ -1075,12 +1368,15 @@ private fun advanceFall(
     }
     if (close(state.position.y, goal.y)) {
         if (close(state.position.x, goal.x)) {
-            return landedState(
-                state,
-                target.id,
-                viewport.clamp(goal, halfSize),
-                state.verticalVelocity,
-                fallUnitScale,
+            val impactVelocity = abs(state.verticalVelocity)
+            return landOnTarget(
+                state = state,
+                target = target,
+                position = viewport.clamp(goal, halfSize),
+                incomingVelocity = PetPoint(0f, impactVelocity),
+                viewport = viewport,
+                halfSize = halfSize,
+                fallUnitScale = fallUnitScale,
             )
         }
         return advanceFreeFall(state.copy(targetId = null), viewport, halfSize, fallUnitScale)
@@ -1102,7 +1398,15 @@ private fun advanceFall(
             goal.y - state.position.y,
             fallUnitScale,
         )
-        return landedState(state, target.id, position, impactVelocity, fallUnitScale)
+        return landOnTarget(
+            state = state,
+            target = target,
+            position = position,
+            incomingVelocity = PetPoint(0f, impactVelocity),
+            viewport = viewport,
+            halfSize = halfSize,
+            fallUnitScale = fallUnitScale,
+        )
     }
     return state.copy(
         position = position,
@@ -1110,6 +1414,7 @@ private fun advanceFall(
         targetId = target.id,
         movementSpeed = 0f,
         verticalVelocity = fall.velocity,
+        curveVelocity = null,
     )
 }
 
@@ -1176,6 +1481,7 @@ private fun advanceFreeFall(
         movementSpeed = 0f,
         verticalVelocity = fall.velocity,
         bouncesRemaining = 0,
+        curveVelocity = null,
     )
 }
 
@@ -1216,6 +1522,7 @@ private fun landAtViewportBottom(
         verticalVelocity = -PET_FIRST_BOUNCE_SPEED * fallUnitScale,
         bouncesRemaining = PET_BOUNCE_COUNT,
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
 } else {
     state.copy(
@@ -1227,7 +1534,35 @@ private fun landAtViewportBottom(
         verticalVelocity = 0f,
         bouncesRemaining = 0,
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
+}
+
+private fun landOnTarget(
+    state: PetState,
+    target: PetTarget,
+    position: PetPoint,
+    incomingVelocity: PetPoint,
+    viewport: PetRect,
+    halfSize: Float,
+    fallUnitScale: Float,
+): PetState {
+    val impactVelocity = abs(incomingVelocity.y)
+    if (impactVelocity >= PET_HARD_LANDING_SPEED * fallUnitScale) {
+        return landedState(state, target.id, position, impactVelocity, fallUnitScale)
+    }
+    if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
+        return chartLandingState(
+            state = state,
+            target = target,
+            contact = position,
+            incomingVelocity = incomingVelocity,
+            viewport = viewport,
+            halfSize = halfSize,
+            unitScale = fallUnitScale,
+        )
+    }
+    return landedState(state, target.id, position, impactVelocity, fallUnitScale)
 }
 
 private fun landedState(
@@ -1246,6 +1581,7 @@ private fun landedState(
         verticalVelocity = -PET_FIRST_BOUNCE_SPEED * fallUnitScale,
         bouncesRemaining = PET_BOUNCE_COUNT,
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
 } else {
     state.copy(
@@ -1257,6 +1593,7 @@ private fun landedState(
         verticalVelocity = 0f,
         bouncesRemaining = 0,
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
 }
 
@@ -1324,6 +1661,7 @@ private fun advanceBounceAt(
                 verticalVelocity = 0f,
                 bouncesRemaining = 0,
                 horizontalVelocity = 0f,
+                curveVelocity = null,
             )
         }
         val completedBounce = PET_BOUNCE_COUNT - state.bouncesRemaining + 1
@@ -1336,6 +1674,7 @@ private fun advanceBounceAt(
             verticalVelocity = -reboundSpeed,
             bouncesRemaining = state.bouncesRemaining - 1,
             horizontalVelocity = 0f,
+            curveVelocity = null,
         )
     }
     return state.copy(
@@ -1345,6 +1684,7 @@ private fun advanceBounceAt(
         movementSpeed = 0f,
         verticalVelocity = velocity,
         horizontalVelocity = 0f,
+        curveVelocity = null,
     )
 }
 
@@ -1354,9 +1694,13 @@ private fun advanceChart(
     viewport: PetRect,
     halfSize: Float,
     maxSpeed: Float,
+    unitScale: Float,
 ): PetState {
     val curveAcceleration = PET_CURVE_ACCELERATION
     val path = target.path.map { viewport.clamp(PetPoint(it.x, it.y - halfSize), halfSize) }
+    if (state.curveVelocity != null && path.size > 1) {
+        return advanceLandedChart(state, target, path, viewport, halfSize, unitScale)
+    }
     if (path.size == 1) {
         val movement = moveSmoothly(
             state.position,
@@ -1375,21 +1719,30 @@ private fun advanceChart(
             movementSpeed = if (movement.arrived) 0f else movement.speed,
             horizontalVelocity = 0f,
             verticalVelocity = 0f,
+            curveVelocity = null,
             facing = facingAfter(state.facing, position.x - state.position.x),
         )
     }
 
-    var direction = if (state.targetId == target.id && state.pathDirection < 0) -1 else 1
-    var waypoint = if (state.targetId == target.id) {
+    val sameTarget = state.targetId == target.id && state.mode == PetMode.SLIDE
+    var direction = if (sameTarget && state.pathDirection < 0) -1 else 1
+    var waypoint = if (sameTarget) {
         state.pathIndex.coerceIn(0, path.lastIndex)
     } else {
-        nearestPathIndex(state.position, path)
+        val segment = closestPathSegment(state.position, path)
+        if (distanceSquared(state.position, segment.projection) <= PET_EPSILON * PET_EPSILON) {
+            direction = curveDownhillDirection(segment.unitTangent)
+            if (direction > 0) segment.index + 1 else segment.index
+        } else {
+            nearestPathIndex(state.position, path)
+        }
     }
-    if (state.targetId != target.id && closePoint(state.position, path[waypoint])) {
+    if (!sameTarget && closePoint(state.position, path[waypoint])) {
         if (waypoint == path.lastIndex) {
             direction = -1
             waypoint -= 1
-        } else {
+        } else if (waypoint == 0) {
+            direction = 1
             waypoint += 1
         }
     }
@@ -1446,6 +1799,7 @@ private fun advanceChart(
             movementSpeed = 0f,
             horizontalVelocity = 0f,
             verticalVelocity = 0f,
+            curveVelocity = null,
             facing = facing,
         )
     } else {
@@ -1458,6 +1812,7 @@ private fun advanceChart(
             movementSpeed = speed,
             verticalVelocity = 0f,
             horizontalVelocity = 0f,
+            curveVelocity = null,
             facing = facing,
         )
     }

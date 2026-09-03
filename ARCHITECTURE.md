@@ -22,7 +22,20 @@ Presentation  --->  Application  --->  Domain
 冰子陪伴宠物遵循同一边界：`shared/contracts/pet-companion-v1.md` 定义目标
 区域、状态转换和拖放语义；两端 domain 只实现几何/状态纯函数，presentation
 采集当前页面的控件、面板、图表曲线和窗口边界并负责动画、手势与资源渲染。
-宠物位置是瞬态状态，切页由 presentation 触发 `drop-to-nearest`，不得持久化。
+宠物位置、速度、目标与特效实例是瞬态状态，切页由 presentation 触发
+`drop-to-nearest`，不得持久化。`pet-vitals-v1` 另行定义持久化的饱食度、
+`FoodJar` 储食罐值对象、心情和单词恢复标记；这些规则位于 domain，经
+application 端口保存，不能混入
+运动 `PetState`，也不能复用会进入搜索、分组和默写的 `VocabularyEntry.tags`。
+储食罐在平台存储中继续使用 `foodReserve` 标量 wire shape。评分排期与已学词
+存储仍是两个物理边界；application 在第二次写入失败时用 review savepoint
+补偿本次排期/活动写入，但不得将其描述为跨文件的 crash-atomic 事务。
+
+`pet-appearance-v1` 与运动、成长契约分离：domain 只接收落地冲击速度、滞空/静止
+时长、运动状态、可选饱食度和已判定的双击事件，返回形象 key；资源工具在
+`shared/assets/branding/pet_states/` 发现并校验源 PNG，生成到
+`shared/assets/pets/states/`。当前资源集为空，presentation 继续渲染 normal 冰子；
+未来启用必须先确认 `pain > scared`，并同时更新两端资源映射、测试和 capability。
 
 ## 一致性边界
 
@@ -36,12 +49,16 @@ Presentation  --->  Application  --->  Domain
 - 学习、复习与弹窗提醒分别持久化互不影响的多选词汇组筛选。
 - 字体缩放范围 `0.9..1.4`、每日新词/复习上限及版本字段。
 - `dictation-export-v1` 的 A4 portrait worksheet、字段挖空、词性 extraction、例句替换、候选选择、evaluated tag override 和 DOCX/PDF 输出语义。
-- `word-bubble-v1` 的英文 token、词性/中文解析、九层递归栈、双语例句展示、弹窗尺寸与关闭语义。
-- `vocabulary-groups-v1` 的词书分组推导（词书 code 归一化、标签/词书判组、自定义来源）、既定顺序（全部、CET-4、CET-6、中考/zk、高考/gk、自定义）、显示标签与词库分组浏览器；进入词库先展示分组，点击分组后查看该组单词并保留现有词库全部功能。默写纸不再使用顶部“四级/六级/自定义”勾选行，分组浏览器成为随机与手选两种模式的统一范围选择器：随机模式点击分组（或“全部”）设置取样范围，手选模式点击分组后在该组内勾选且已勾选跨分组保留。
+- `word-bubble-v1` 的英文 token、词性/中文解析、20 层递归栈、双语例句展示、弹窗尺寸与关闭语义。
+- `pet-vitals-v1` 的数值边界、派生饥饿状态、恢复标记互斥、评分奖励矩阵、溢出/自动补食顺序和瞬态追踪光球语义。
+- `pet-appearance-v1` 的状态阈值、资源命名、happy 数字排序、缺失资源回退、推荐优先级和 disabled 门槛。
+- `vocabulary-groups-v1` 的词书分组推导（词书 code 归一化、标签/词书判组、自定义来源）、既定顺序（全部、CET-4、CET-6、中考/zk、高考/gk、自定义）、显示标签与词库分组浏览器；进入词库先展示分组，点击分组后查看该组单词并保留现有词库全部功能。默写纸不再使用顶部“四级/六级/自定义”勾选行，分组浏览器成为随机与手选两种模式的统一范围选择器：随机模式点击分组（或“全部”）设置取样范围并进入只读词条表，可从当前词书切换为手选；手选模式在该组内勾选且已勾选跨分组保留。
 
 默写导出必须先生成平台无关的 `Document` 模型；preview 与 DOCX/PDF 输出共享该模型，不能由各 writer 重复实现业务规则。内置 catalog 只读，evaluated 只能写入本地 tag override。
 
-例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约：已知词必须同时展示中文释义与至少三组双语例句，例句必须是“英文+简体中文”双语搭配，缺少简体中文时以“（暂无中文释义）”占位补全；弹窗尺寸必须恰好足以完整展示单词信息（不得过大或裁剪）；九层上限、显式关闭（当前气泡及其子级）与外部点击关闭规则不得由单端自行变更。
+进入默写纸的短暂加载层属于 presentation 瞬态状态。两端都必须绘制可观察的翻书页动画，离开页面时取消计时与帧回调，不得写入任何持久化状态。
+
+例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约：已知词必须同时展示中文释义与至少三组双语例句，例句必须是“英文+简体中文”双语搭配，缺少简体中文时以“（暂无中文释义）”占位补全；弹窗尺寸必须恰好足以完整展示单词信息（不得过大或裁剪）；20 层上限、显式关闭（当前气泡及其子级）与外部点击关闭规则不得由单端自行变更。
 
 ## 数据与隐私
 
@@ -52,3 +69,6 @@ Presentation  --->  Application  --->  Domain
 内置词库发布前必须验证：稳定 ID 唯一、中文释义非空、CET membership 合法、至少三条不同的英文例句且每条中文翻译非空、来源和内容版本存在。导入词条使用同一套最小内容规则。
 
 默写契约见 `shared/contracts/dictation-export-v1.md`，golden vectors 见 `shared/contracts/dictation-export-golden-v1.json`。该功能的 Windows/Android 实现和测试必须在同一提交中完成，并通过 CI，在 GitHub PR 中留下可追踪记录。
+
+冰子形象状态的完整自问自答、锁定范围和唯一开放优先级问题见
+`docs/grill-qna-pet-appearance.md`；开发者添加素材前必须阅读该清单。

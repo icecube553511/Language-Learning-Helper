@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
@@ -23,12 +24,26 @@ from infrastructure.catalog import entry_from_payload
 SCHEMA_VERSION = 1
 
 
+@dataclass(frozen=True)
+class _ReviewSavepoint:
+    """Repository-private token; application code must treat it as opaque."""
+
+    owner: object
+    word_id: str
+    had_review_state: bool
+    review_state: ReviewState | None
+    activity: tuple[tuple[str, tuple[str, ...]], ...]
+    saved_review_state: ReviewState
+    saved_activity: tuple[tuple[str, tuple[str, ...]], ...]
+
+
 class JsonLearningRepository:
     def __init__(self, data_dir: Path, catalog_entries: list[VocabularyEntry] | None = None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "learning-state.json"
         self._lock = threading.RLock()
+        self._savepoint_owner = object()
         self._catalog = {item.word_id: item for item in (catalog_entries or [])}
         self._user_entries: dict[str, VocabularyEntry] = {}
         self._reviews: dict[str, ReviewState] = {}
@@ -158,6 +173,93 @@ class JsonLearningRepository:
             for old_day in sorted(self._activity)[:-120]:
                 del self._activity[old_day]
             self._save_locked()
+
+    def _activity_snapshot(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return tuple((day, tuple(words)) for day, words in self._activity.items())
+
+    def _restore_activity_snapshot(
+        self,
+        snapshot: tuple[tuple[str, tuple[str, ...]], ...],
+    ) -> None:
+        self._activity = {day: list(words) for day, words in snapshot}
+
+    def save_review_outcome(
+        self,
+        state: ReviewState,
+        reviewed_at_utc: float,
+    ) -> object:
+        """Atomically save scheduler state and activity in learning-state.json.
+
+        The returned token only supports an in-process compensating rollback.
+        It does not make this file and Words_Learnt.json one crash-atomic unit.
+        """
+        local_day = datetime.fromtimestamp(reviewed_at_utc).strftime("%Y-%m-%d")
+        with self._lock:
+            had_review_state = state.word_id in self._reviews
+            review_state = self._reviews.get(state.word_id)
+            activity = self._activity_snapshot()
+            self._reviews[state.word_id] = state
+            words = self._activity.setdefault(local_day, [])
+            if state.word_id not in words:
+                words.append(state.word_id)
+            for old_day in sorted(self._activity)[:-120]:
+                del self._activity[old_day]
+            savepoint = _ReviewSavepoint(
+                owner=self._savepoint_owner,
+                word_id=state.word_id,
+                had_review_state=had_review_state,
+                review_state=review_state,
+                activity=activity,
+                saved_review_state=state,
+                saved_activity=self._activity_snapshot(),
+            )
+            try:
+                # Review state and activity share one payload and os.replace.
+                self._save_locked()
+            except BaseException:
+                if had_review_state:
+                    self._reviews[state.word_id] = review_state
+                else:
+                    self._reviews.pop(state.word_id, None)
+                self._restore_activity_snapshot(activity)
+                raise
+            return savepoint
+
+    def restore_review_savepoint(self, savepoint: object) -> None:
+        """Persist the state captured before save_review_outcome.
+
+        This compensation runs only when the subsequent learnt-word write
+        raises while the process is alive. A process crash between the two
+        repository replacements remains the documented cross-file boundary.
+        """
+        if (
+            not isinstance(savepoint, _ReviewSavepoint)
+            or savepoint.owner is not self._savepoint_owner
+        ):
+            raise ValueError("review savepoint does not belong to this repository")
+        with self._lock:
+            if (
+                self._reviews.get(savepoint.word_id) != savepoint.saved_review_state
+                or self._activity_snapshot() != savepoint.saved_activity
+            ):
+                raise RuntimeError("review savepoint is stale")
+            applied_review = self._reviews.get(savepoint.word_id)
+            applied_had_review = savepoint.word_id in self._reviews
+            applied_activity = self._activity_snapshot()
+            if savepoint.had_review_state:
+                self._reviews[savepoint.word_id] = savepoint.review_state
+            else:
+                self._reviews.pop(savepoint.word_id, None)
+            self._restore_activity_snapshot(savepoint.activity)
+            try:
+                self._save_locked()
+            except BaseException:
+                if applied_had_review:
+                    self._reviews[savepoint.word_id] = applied_review
+                else:
+                    self._reviews.pop(savepoint.word_id, None)
+                self._restore_activity_snapshot(applied_activity)
+                raise
 
     def reviewed_count_for_local_day(self, local_day: str) -> int:
         with self._lock:

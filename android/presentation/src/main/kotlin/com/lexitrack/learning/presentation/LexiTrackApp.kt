@@ -737,6 +737,10 @@ private fun PetAlertDialog(
                     onPointerActiveChange = {},
                     preferredActive = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
+                RewardEffectsCanvas(
+                    windowOrigin = viewportOrigin,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }
@@ -762,6 +766,11 @@ fun LexiTrackApp(
     val hostView = LocalView.current
     val petWindowCoordinator = remember {
         PetWindowCoordinator()
+    }
+    val rewardEffectsController = remember { RewardEffectsController() }
+    val petHalfSizePx = with(LocalDensity.current) { PET_DISPLAY_SIZE_DP.dp.toPx() / 2f }
+    LaunchedEffect(viewModel, rewardEffectsController) {
+        viewModel.rewardEffects.collect(rewardEffectsController::emit)
     }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
@@ -795,6 +804,7 @@ fun LexiTrackApp(
             LocalRegisterPetWindow provides registerPetWindow,
             LocalPetWindowStack provides petWindows,
             LocalPetWindowCoordinator provides petWindowCoordinator,
+            LocalRewardEffectsController provides rewardEffectsController,
             LocalPetNavigationKey provides state.section,
         ) {
             Box(
@@ -842,7 +852,7 @@ fun LexiTrackApp(
                         card = state.currentCard,
                         revealed = state.answerRevealed,
                         onReveal = viewModel::revealAnswer,
-                        onRate = viewModel::rateCurrent,
+                        onRate = { rating, origin -> viewModel.rateCurrent(rating, origin) },
                         title = "学习卡",
                         emptyTitle = "新词学习已完成",
                         emptyMessage = "导入更多词条或前往复习巩固已学内容",
@@ -855,7 +865,7 @@ fun LexiTrackApp(
                         state = state,
                         onStart = viewModel::startReviewSession,
                         onReveal = viewModel::revealReviewAnswer,
-                        onRate = viewModel::rateReviewCurrent,
+                        onRate = { rating, origin -> viewModel.rateReviewCurrent(rating, origin) },
                         onLevelsChange = viewModel::setReviewLevels,
                     )
                     MainSection.DICTATION -> {
@@ -927,6 +937,15 @@ fun LexiTrackApp(
             navigationKey = state.section,
             onPointerActiveChange = { petPointerActive = it },
             preferredActive = isMainPetWindowVisible(petWindows),
+        )
+        RewardEffectsCanvas(
+            windowOrigin = petViewportOrigin,
+            modifier = Modifier.fillMaxSize(),
+        )
+        RewardEffectsAnimator(
+            controller = rewardEffectsController,
+            coordinator = petWindowCoordinator,
+            petHalfSizePx = petHalfSizePx,
         )
 
         state.importReport?.let { report ->
@@ -1455,7 +1474,7 @@ private fun StudyScreen(
     card: VocabularyEntry?,
     revealed: Boolean,
     onReveal: () -> Unit,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
     title: String,
     emptyTitle: String,
     emptyMessage: String,
@@ -1531,7 +1550,7 @@ private fun ReviewScreen(
     state: MainUiState,
     onStart: () -> Unit,
     onReveal: () -> Unit,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
     onLevelsChange: (Set<String>) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
@@ -1655,7 +1674,7 @@ private fun LevelFilterRow(
 @Composable
 private fun RevealedCardContent(
     card: VocabularyEntry,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -1722,21 +1741,50 @@ private fun RevealedCardContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN) }
-            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD) }
-            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD) }
-            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY) }
+            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN, it) }
+            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD, it) }
+            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD, it) }
+            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY, it) }
         }
     }
 }
 
 @Composable
-private fun RatingButton(label: String, color: Color, modifier: Modifier, onClick: () -> Unit) {
+private fun RatingButton(
+    label: String,
+    color: Color,
+    modifier: Modifier,
+    onClick: (RewardEffectOrigin) -> Unit,
+) {
     val registerPetTarget = LocalRegisterPetTarget.current
+    val hostView = LocalView.current
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    var pointerDown by remember { mutableStateOf<RatingPointerDown?>(null) }
     Button(
-        onClick = onClick,
+        onClick = {
+            val now = SystemClock.uptimeMillis()
+            val origin = resolveRatingOrigin(pointerDown, bounds, now)
+            pointerDown = null
+            onClick(origin)
+        },
         modifier = modifier
             .heightIn(min = 58.dp)
+            .onGloballyPositioned { coordinates -> bounds = coordinates.boundsOnScreen(hostView) }
+            .pointerInput(bounds) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(
+                        requireUnconsumed = false,
+                        pass = PointerEventPass.Initial,
+                    )
+                    pointerDown = RatingPointerDown(
+                        origin = RewardEffectOrigin(
+                            x = bounds.left + down.position.x,
+                            y = bounds.top + down.position.y,
+                        ),
+                        capturedAtUptimeMs = SystemClock.uptimeMillis(),
+                    )
+                }
+            }
             .petTarget(registerPetTarget, "rating-${label.hashCode()}", PetTargetKind.CONTROL),
         colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.White),
         shape = RoundedCornerShape(8.dp),
@@ -1785,91 +1833,92 @@ private fun DictationLoadingOverlay() {
 @Composable
 private fun BookTurningAnimation() {
     val transition = rememberInfiniteTransition(label = "dictationLoading")
-    // 0 -> 180 -> 0 with a calm hold at each landing.
-    val angle by transition.animateFloat(
+    val progress by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
+            animation = tween(durationMillis = DICTATION_BOOK_PAGE_TURN_MS, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
         ),
-        label = "angle",
+        label = "pageTurnProgress",
     )
     Box(
         modifier = Modifier.size(96.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val pageColor = Color.White
-            val edge = Color(0xFFDCE7E3)
-            val ink = Color(0xFFE7EEF0)
-            val spine = size.width / 2f
-            val half = spine
-            val h = size.height
-            // Base left page.
+            val frame = dictationBookFrame(progress)
+            val inset = size.minDimension * 0.06f
+            val left = inset
+            val right = size.width - inset
+            val top = inset
+            val bottom = size.height - inset
+            val height = bottom - top
+            val spine = (left + right) / 2f
+            val half = (right - left) / 2f
+            val edgeX = spine + half * frame.edgeOffset
+            val lift = height * frame.liftFraction
+            val pageColor = Color(0xFFFCFEFD)
+            val pageBack = Color(0xFFEAF5F1)
+            val edgeColor = Color(0xFF7FA69B)
+            val inkColor = Color(0xFFB3CBC4)
+            val shadowColor = Color(0x3345635B)
+            val padding = size.minDimension * 0.12f
+
             drawRect(
                 color = pageColor,
-                topLeft = Offset(1f, 1f),
-                size = androidx.compose.ui.geometry.Size(spine - 1f, h - 2f),
+                topLeft = Offset(left, top),
+                size = androidx.compose.ui.geometry.Size(spine - left, height),
             )
-            // Base right page.
             drawRect(
                 color = pageColor,
-                topLeft = Offset(spine, 1f),
-                size = androidx.compose.ui.geometry.Size(spine - 1f, h - 2f),
+                topLeft = Offset(spine, top),
+                size = androidx.compose.ui.geometry.Size(right - spine, height),
             )
-            // Simple text lines on both pages.
             repeat(4) { i ->
-                val y = h * (0.22f + i * 0.18f)
-                drawLine(color = ink, start = Offset(12f, y), end = Offset(spine - 12f, y), strokeWidth = 2f)
-                drawLine(color = ink, start = Offset(spine + 12f, y), end = Offset(size.width - 12f, y), strokeWidth = 2f)
+                val y = top + height * (0.22f + i * 0.18f)
+                drawLine(color = inkColor, start = Offset(left + padding, y), end = Offset(spine - padding, y), strokeWidth = 2f)
+                drawLine(color = inkColor, start = Offset(spine + padding, y), end = Offset(right - padding, y), strokeWidth = 2f)
             }
-            // Turning page hinged at the spine.
-            val rad = angle * 3.14159265f
-            val cosRad = kotlin.math.cos(rad)
-            val sinRad = kotlin.math.sin(rad)
-            val edgeX = spine + half * cosRad
-            val lift = 8f * kotlin.math.abs(sinRad)
+
             val path = Path().apply {
-                moveTo(spine, 0f)
-                lineTo(edgeX, lift)
-                lineTo(edgeX, h - lift)
-                lineTo(spine, h)
+                moveTo(spine, top)
+                lineTo(edgeX, top + lift)
+                lineTo(edgeX, bottom - lift)
+                lineTo(spine, bottom)
                 close()
             }
-            // Soft shadow under the turning page.
-            if (kotlin.math.abs(cosRad) < 0.999f) {
+            if (kotlin.math.abs(edgeX - spine) > 0.5f) {
+                val shadowOffset = if (edgeX >= spine) 3f else -3f
                 val shadow = Path().apply {
-                    moveTo(spine, 2f)
-                    lineTo(edgeX, 4f + lift)
-                    lineTo(edgeX, h - 4f + lift)
-                    lineTo(spine, h - 2f)
+                    moveTo(spine, top + 2f)
+                    lineTo(edgeX + shadowOffset, top + lift + 4f)
+                    lineTo(edgeX + shadowOffset, bottom - lift + 4f)
+                    lineTo(spine, bottom - 2f)
                     close()
                 }
-                drawPath(path = shadow, color = Color(0xFFEAF0F1))
+                drawPath(path = shadow, color = shadowColor)
             }
-            drawPath(path = path, color = pageColor)
-            // Edge outline + text lines on the turning page.
-            val edgePath = Path().apply {
-                moveTo(spine, 0f)
-                lineTo(edgeX, lift)
-                lineTo(edgeX, h - lift)
-                lineTo(spine, h)
+            drawPath(path = path, color = if (frame.edgeOffset >= 0f) pageColor else pageBack)
+            drawPath(path = path, color = edgeColor, style = Stroke(width = 1.8f))
+
+            val direction = if (edgeX >= spine) 1f else -1f
+            val visibleWidth = kotlin.math.abs(edgeX - spine)
+            if (visibleWidth > padding * 1.5f) {
+                val lineStart = spine + direction * padding
+                val lineEnd = edgeX - direction * padding
+                repeat(3) { i ->
+                    val ratio = 0.30f + i * 0.20f
+                    val y = top + height * ratio
+                    drawLine(
+                        color = inkColor,
+                        start = Offset(lineStart, y),
+                        end = Offset(lineEnd, y + lift * (ratio - 0.5f)),
+                        strokeWidth = 2f,
+                    )
+                }
             }
-            drawPath(path = edgePath, color = edge, style = Stroke(width = 1.5f))
-            repeat(4) { i ->
-                val y = h * (0.22f + i * 0.18f)
-                val lineStart = spine + 12f
-                val lineEnd = edgeX + 12f
-                drawLine(
-                    color = ink,
-                    start = Offset(lineStart, y),
-                    end = Offset(lineEnd, y + lift / h * (lineEnd - spine)),
-                    strokeWidth = 2f,
-                )
-            }
-            // Spine crease.
-            drawLine(color = edge, start = Offset(spine, 0f), end = Offset(spine, h), strokeWidth = 2f)
+            drawLine(color = BrandTeal, start = Offset(spine, top), end = Offset(spine, bottom), strokeWidth = 2.4f)
         }
     }
 }
@@ -1891,12 +1940,13 @@ private fun DictationScreen(
     var customExample by remember { mutableStateOf("") }
     var includeEvaluated by remember { mutableStateOf(false) }
     var countText by remember { mutableStateOf("10") }
-    var manual by remember { mutableStateOf(false) }
-    var dictationScope by remember { mutableStateOf("all") }
-    var dictationGroup by remember { mutableStateOf<String?>(null) }
+    var groupNavigation by remember { mutableStateOf(DictationGroupNavigation()) }
     var countError by remember { mutableStateOf(false) }
     var confirmationRequested by remember { mutableStateOf<Int?>(null) }
 
+    val manual = groupNavigation.manual
+    val dictationScope = groupNavigation.scopeGroup
+    val dictationGroup = groupNavigation.openGroup
     val candidateEntries = state.dictationEntries.filter { entry ->
         includeEvaluated || entry.tags.none { it.equals("evaluated", ignoreCase = true) }
     }
@@ -1962,7 +2012,7 @@ private fun DictationScreen(
                 onCountChange = { countText = it.filter(Char::isDigit); countError = false },
                 countError = countError,
                 manual = manual,
-                onManualChange = { manual = it; if (!it) dictationGroup = null },
+                onManualChange = { groupNavigation = setDictationGroupMode(groupNavigation, it) },
                 preparing = state.dictationPreparing,
                 onSubmit = ::submit,
             )
@@ -1978,7 +2028,12 @@ private fun DictationScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("手选词条", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
+                        Text(
+                            if (manual) "手选词条" else "随机词书范围",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Ink,
+                        )
                         Text(
                             if (manual) "$selectedCount / ${countText.toIntOrNull() ?: 0}" else "随机范围：$scopeGroupLabel",
                             style = MaterialTheme.typography.labelLarge,
@@ -1986,26 +2041,52 @@ private fun DictationScreen(
                         )
                     }
                     Text(
-                        if (manual) "仅使用勾选的词条；数量不足时会再次确认。" else "点击词书分组设置随机范围；取样时无重复。",
+                        if (manual) {
+                            "仅使用勾选的词条；数量不足时会再次确认。"
+                        } else {
+                            "点击词书分组打开内容并设置随机范围；取样时无重复。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MutedInk,
                     )
                     val groups = remember(candidateEntries) { dictationGroupSummaries(candidateEntries) }
                     val activeGroup = dictationGroup
-                    if (manual && activeGroup != null) {
+                    if (activeGroup != null) {
                         val activeLabel = remember(candidateEntries, activeGroup) {
                             dictationGroupSummaries(candidateEntries)
                                 .firstOrNull { it.key == activeGroup }?.label ?: activeGroup
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(onClick = { dictationGroup = null }) { Text("← 返回词书") }
+                            TextButton(
+                                onClick = { groupNavigation = closeDictationGroup(groupNavigation) },
+                            ) { Text("← 返回词书") }
                             Spacer(Modifier.width(8.dp))
-                            Text(activeLabel, style = MaterialTheme.typography.labelLarge, color = Ink)
+                            Text(
+                                activeLabel,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Ink,
+                            )
+                            if (!manual) {
+                                Button(
+                                    onClick = {
+                                        groupNavigation = setDictationGroupMode(groupNavigation, manual = true)
+                                    },
+                                ) { Text("从该词书手选") }
+                            }
+                        }
+                        if (!manual) {
+                            Text(
+                                "当前为随机范围预览，词条表只读。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MutedInk,
+                            )
                         }
                         Spacer(Modifier.height(4.dp))
                         DictationSelectionTable(
                             entries = dictationEntriesInGroup(candidateEntries, activeGroup),
-                            selectedIds = state.dictationSelectedIds,
+                            selectedIds = if (manual) state.dictationSelectedIds else emptySet(),
+                            selectionEnabled = manual,
                             onToggleSelection = onToggleSelection,
                             onSetSelection = onSetSelection,
                         )
@@ -2016,7 +2097,7 @@ private fun DictationScreen(
                                     group = group,
                                     selected = !manual && group.key == dictationScope,
                                     onClick = {
-                                        if (manual) dictationGroup = group.key else dictationScope = group.key
+                                        groupNavigation = openDictationGroup(groupNavigation, group.key)
                                     },
                                 )
                             }
@@ -2069,6 +2150,7 @@ private fun DictationScreen(
 private fun DictationSelectionTable(
     entries: List<VocabularyEntry>,
     selectedIds: Set<String>,
+    selectionEnabled: Boolean = true,
     onToggleSelection: (String) -> Unit,
     onSetSelection: (Collection<String>, Boolean) -> Unit,
 ) {
@@ -2080,9 +2162,10 @@ private fun DictationSelectionTable(
         modifier = Modifier
             .fillMaxWidth()
             .onGloballyPositioned { containerTop.value = it.boundsInWindow().top }
-            .pointerInput(rows, selectedIds) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
+            .pointerInput(rows, selectedIds, selectionEnabled) {
+                if (!selectionEnabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
                     // Do NOT consume the down so a simple tap still reaches the
                     // row's toggleable; only a drag past the slop takes over.
                     val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
@@ -2129,6 +2212,7 @@ private fun DictationSelectionTable(
                         DictationSelectionTableRow(
                             row = row,
                             selected = row.id in selectedIds,
+                            selectionEnabled = selectionEnabled,
                             onToggleSelection = { onToggleSelection(row.id) },
                             onBounds = { id, rect ->
                                 rowBounds.value = rowBounds.value + (id to rect)
@@ -2163,6 +2247,7 @@ private fun DictationSelectionTableHeader() {
 private fun DictationSelectionTableRow(
     row: DictationSelectionRow,
     selected: Boolean,
+    selectionEnabled: Boolean,
     onToggleSelection: () -> Unit,
     onBounds: (String, Rect) -> Unit,
 ) {
@@ -2172,6 +2257,7 @@ private fun DictationSelectionTableRow(
             .width(DictationTableWidth)
             .toggleable(
                 value = selected,
+                enabled = selectionEnabled,
                 role = Role.Checkbox,
                 onValueChange = { onToggleSelection() },
             )
@@ -2192,6 +2278,7 @@ private fun DictationSelectionTableRow(
             Checkbox(
                 checked = selected,
                 onCheckedChange = null,
+                enabled = selectionEnabled,
                 modifier = Modifier
                     .size(48.dp)
                     .scale(1.25f)

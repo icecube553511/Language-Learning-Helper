@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import tkinter as tk
 import tkinter.font as tkfont
 from typing import Callable
@@ -902,8 +903,65 @@ class MemoryChart(tk.Canvas):
         self.create_text(right, 9, text="蓝线：平均保持率", anchor="e", fill="#3973C6", font="LexiChart")
 
 
+@dataclass(frozen=True)
+class BookTurningFrame:
+    """Platform-neutral geometry for one frame of the loading book."""
+
+    progress: float
+    left: float
+    right: float
+    top: float
+    bottom: float
+    spine_x: float
+    edge_x: float
+    lift: float
+
+
+def book_turning_frame(progress: float, size: int) -> BookTurningFrame:
+    """Return bounded page geometry for a right-to-left turn.
+
+    Keeping this calculation outside Tk makes the animation contract testable
+    on headless Windows CI. ``progress`` is clamped to the inclusive ``0..1``
+    interval: zero rests on the right page, one rests on the left page.
+    """
+
+    extent = max(1.0, float(size))
+    bounded_progress = min(1.0, max(0.0, float(progress)))
+    inset = min(max(1.0, extent * 0.07), extent * 0.2)
+    left = inset
+    right = extent - inset
+    top = inset
+    bottom = extent - inset
+    spine_x = (left + right) / 2.0
+    half_width = max(0.0, (right - left) / 2.0)
+    radians = bounded_progress * math.pi
+    edge_x = spine_x + half_width * math.cos(radians)
+    lift = min((bottom - top) * 0.12, extent * 0.1 * abs(math.sin(radians)))
+    return BookTurningFrame(
+        progress=bounded_progress,
+        left=left,
+        right=right,
+        top=top,
+        bottom=bottom,
+        spine_x=spine_x,
+        edge_x=edge_x,
+        lift=lift,
+    )
+
+
+BOOK_TURNING_TICK_MS = 80
+BOOK_TURNING_FRAMES_PER_PAGE = 8
+
+
+def book_turning_progress(frame_index: int) -> float:
+    """Map a cyclic frame index to one complete right-to-left page turn."""
+
+    page_frame = int(frame_index) % BOOK_TURNING_FRAMES_PER_PAGE
+    return page_frame / float(BOOK_TURNING_FRAMES_PER_PAGE - 1)
+
+
 class DictationLoadingOverlay(tk.Frame):
-    """Full-page overlay with an animated arc spinner for the dictation entry.
+    """Full-page overlay with an animated turning book for dictation entry.
 
     Transient presentation state only: created on entering the dictation page and
     destroyed once the loading animation concludes. Default colours mirror the
@@ -920,7 +978,7 @@ class DictationLoadingOverlay(tk.Frame):
         text: str = "#1B2733",
         muted: str = "#65727E",
         border: str = "#DDE3E8",
-        size: int = 56,
+        size: int = 88,
     ):
         super().__init__(parent, bg=background)
         self._size = size
@@ -930,7 +988,7 @@ class DictationLoadingOverlay(tk.Frame):
         self._muted = muted
         self._border = border
         self._after_id: str | None = None
-        self._angle = 0
+        self._page_frame = 0
 
         card = tk.Frame(self, bg=surface, highlightbackground=border, highlightthickness=1)
         card.place(relx=0.5, rely=0.5, anchor="center")
@@ -957,7 +1015,7 @@ class DictationLoadingOverlay(tk.Frame):
 
     def start(self) -> None:
         if self._after_id is None:
-            self._after_id = self.after(80, self._tick)
+            self._after_id = self.after(BOOK_TURNING_TICK_MS, self._tick)
 
     def stop(self) -> None:
         if self._after_id is not None:
@@ -969,29 +1027,114 @@ class DictationLoadingOverlay(tk.Frame):
 
     def _tick(self) -> None:
         self._after_id = None
-        self._angle = (self._angle + 24) % 360
-        self._draw(self._angle)
-        self._after_id = self.after(80, self._tick)
+        self._page_frame = (self._page_frame + 1) % BOOK_TURNING_FRAMES_PER_PAGE
+        self._draw(self._page_frame)
+        self._after_id = self.after(BOOK_TURNING_TICK_MS, self._tick)
 
-    def _draw(self, angle: int) -> None:
+    def _draw(self, frame_index: int) -> None:
         self._spinner.delete("all")
         size = self._size
-        bbox = (2, 2, size - 2, size - 2)
-        self._spinner.create_arc(
-            *bbox,
-            start=0,
-            extent=359.9,
-            style=tk.ARC,
+        progress = book_turning_progress(frame_index)
+        frame = book_turning_frame(progress, size)
+        page_fill = self._surface
+        page_back = "#F5FAF8"
+        ink = "#B9CEC7"
+        shadow = "#E8EFED"
+
+        # The two resting pages stay visible while the animated sheet crosses
+        # the spine. Their outlines keep the book legible on a white surface.
+        self._spinner.create_rectangle(
+            frame.left,
+            frame.top,
+            frame.spine_x,
+            frame.bottom,
+            fill=page_fill,
             outline=self._border,
-            width=5,
+            width=1,
         )
-        self._spinner.create_arc(
-            *bbox,
-            start=angle,
-            extent=120,
-            style=tk.ARC,
-            outline=self._accent,
-            width=5,
+        self._spinner.create_rectangle(
+            frame.spine_x,
+            frame.top,
+            frame.right,
+            frame.bottom,
+            fill=page_fill,
+            outline=self._border,
+            width=1,
+        )
+        page_padding = max(2.0, size * 0.11)
+        for ratio in (0.24, 0.42, 0.60, 0.78):
+            y = frame.top + (frame.bottom - frame.top) * ratio
+            self._spinner.create_line(
+                frame.left + page_padding,
+                y,
+                frame.spine_x - page_padding,
+                y,
+                fill=ink,
+                width=1,
+            )
+            self._spinner.create_line(
+                frame.spine_x + page_padding,
+                y,
+                frame.right - page_padding,
+                y,
+                fill=ink,
+                width=1,
+            )
+
+        page_points = (
+            frame.spine_x,
+            frame.top,
+            frame.edge_x,
+            frame.top + frame.lift,
+            frame.edge_x,
+            frame.bottom - frame.lift,
+            frame.spine_x,
+            frame.bottom,
+        )
+        if abs(frame.edge_x - frame.spine_x) > 0.5:
+            shadow_offset = 2.0 if frame.edge_x >= frame.spine_x else -2.0
+            self._spinner.create_polygon(
+                frame.spine_x,
+                frame.top + 1,
+                frame.edge_x + shadow_offset,
+                frame.top + frame.lift + 2,
+                frame.edge_x + shadow_offset,
+                frame.bottom - frame.lift + 2,
+                frame.spine_x,
+                frame.bottom,
+                fill=shadow,
+                outline="",
+            )
+        self._spinner.create_polygon(
+            *page_points,
+            fill=page_fill if frame.progress < 0.5 else page_back,
+            outline=self._border,
+            width=1,
+        )
+
+        direction = 1.0 if frame.edge_x >= frame.spine_x else -1.0
+        visible_width = abs(frame.edge_x - frame.spine_x)
+        if visible_width > page_padding * 1.5:
+            line_start_x = frame.spine_x + direction * page_padding
+            line_end_x = frame.edge_x - direction * page_padding
+            for ratio in (0.30, 0.50, 0.70):
+                y = frame.top + (frame.bottom - frame.top) * ratio
+                self._spinner.create_line(
+                    line_start_x,
+                    y,
+                    line_end_x,
+                    y + frame.lift * (ratio - 0.5),
+                    fill=ink,
+                    width=1,
+                )
+
+        self._spinner.create_line(
+            frame.spine_x,
+            frame.top,
+            frame.spine_x,
+            frame.bottom,
+            fill=self._accent,
+            width=2,
         )
 
     def destroy(self) -> None:

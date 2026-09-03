@@ -34,6 +34,7 @@ from domain.groups import (
 from application.ports import DictationExporter, ExportedDictation
 from domain.ports import LearningRepository, WordsLearntRepository
 from domain.scheduler import SECONDS_PER_DAY, retention_at, schedule_review
+from domain.pet_vitals import PetVitals, RatingPhase, apply_rating_reward
 
 
 @dataclass(frozen=True)
@@ -318,6 +319,40 @@ class LearningService:
             return 0
         return updater(word_ids, level, tags)
 
+    def _save_rating_outcome(
+        self,
+        review_state: ReviewState,
+        reviewed_at_utc: float,
+        learnt_word: LearntWord | None = None,
+        pet_vitals: PetVitals | None = None,
+    ) -> None:
+        """Save one rating with an in-process cross-repository compensation.
+
+        Scheduler state and activity are one learning-state replacement. The
+        learnt word and vitals are a separate replacement. If the latter
+        raises, the opaque savepoint restores the former; a process crash
+        between replacements remains an explicit, unavoidable boundary.
+        """
+        savepoint = self.repository.save_review_outcome(
+            review_state,
+            reviewed_at_utc,
+        )
+        if learnt_word is None or pet_vitals is None:
+            return
+        if self.words_learnt_repository is None:
+            raise RuntimeError("Words_Learnt repository is not configured")
+        try:
+            self.words_learnt_repository.save_learning_outcome(
+                learnt_word,
+                pet_vitals,
+            )
+        except BaseException as failure:
+            try:
+                self.repository.restore_review_savepoint(savepoint)
+            except BaseException as rollback_failure:
+                raise failure from rollback_failure
+            raise
+
     def rate_card(
         self,
         word_id: str,
@@ -325,16 +360,31 @@ class LearningService:
         reviewed_at_utc: float | None = None,
     ) -> ReviewState:
         at_utc = time.time() if reviewed_at_utc is None else reviewed_at_utc
-        updated = schedule_review(self.repository.review_state(word_id), rating, at_utc)
-        self.repository.save_review_state(updated)
-        self.repository.record_activity(word_id, at_utc)
-        if (
-            self.words_learnt_repository is not None
-            and self.words_learnt_repository.learnt_word(word_id) is None
-        ):
-            self.words_learnt_repository.save_learnt_word(
-                LearntWord.create(word_id, rating, at_utc)
+        resolved_rating = rating if isinstance(rating, ReviewRating) else ReviewRating(rating)
+        learnt = (
+            self.words_learnt_repository.learnt_word(word_id)
+            if self.words_learnt_repository is not None
+            else None
+        )
+        outcome = None
+        if self.words_learnt_repository is not None:
+            outcome = apply_rating_reward(
+                self.words_learnt_repository.pet_vitals(),
+                RatingPhase.STUDY,
+                resolved_rating,
+                learnt.review_marker if learnt is not None else None,
             )
+        updated = schedule_review(self.repository.review_state(word_id), rating, at_utc)
+        if self.words_learnt_repository is not None and outcome is not None:
+            learnt = learnt or LearntWord.create(word_id, resolved_rating, at_utc)
+            self._save_rating_outcome(
+                updated,
+                at_utc,
+                learnt.with_review_marker(outcome.next_marker),
+                outcome.vitals,
+            )
+        else:
+            self._save_rating_outcome(updated, at_utc)
         return updated
 
     def start_review_session(
@@ -391,11 +441,24 @@ class LearningService:
         if learnt is None:
             raise ValueError("Only learnt words can be reviewed")
         at_utc = time.time() if reviewed_at_utc is None else reviewed_at_utc
+        resolved_rating = rating if isinstance(rating, ReviewRating) else ReviewRating(rating)
+        outcome = apply_rating_reward(
+            self.words_learnt_repository.pet_vitals(),
+            RatingPhase.REVIEW,
+            resolved_rating,
+            learnt.review_marker,
+        )
         updated = schedule_review(self.repository.review_state(word_id), rating, at_utc)
-        self.repository.save_review_state(updated)
-        self.repository.record_activity(word_id, at_utc)
-        self.words_learnt_repository.save_learnt_word(learnt.reviewed(rating, at_utc))
+        reviewed = learnt.reviewed(resolved_rating, at_utc).with_review_marker(
+            outcome.next_marker
+        )
+        self._save_rating_outcome(updated, at_utc, reviewed, outcome.vitals)
         return updated
+
+    def pet_vitals(self) -> PetVitals:
+        if self.words_learnt_repository is None:
+            return PetVitals()
+        return self.words_learnt_repository.pet_vitals()
 
     def learnt_word_count(self) -> int:
         entry_ids = {entry.word_id for entry in self.repository.all_entries()}

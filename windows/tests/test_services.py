@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 import random
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 WINDOWS_DIR = Path(__file__).resolve().parents[1]
@@ -22,8 +24,10 @@ from domain.models import (
     initial_review_weight,
     updated_review_weight,
 )
+from domain.pet_vitals import Mood, PetVitals, ReviewRecoveryTag
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
+from domain.scheduler import schedule_review
 
 
 def sample_entry(word: str) -> VocabularyEntry:
@@ -124,6 +128,79 @@ class LearningServiceTests(unittest.TestCase):
         self.service.rate_review_card("focus", "easy", reviewed_at_utc=5000)
         self.assertEqual(self.learnt_repo.learnt_word("focus").weight, 0.05)
         self.assertEqual(self.learnt_repo.learnt_word("focus").review_count, 4)
+
+    def test_rating_rewards_use_prior_marker_then_replace_or_clear_it(self):
+        self.service.rate_card("focus", "again", reviewed_at_utc=1000)
+        learnt = self.learnt_repo.learnt_word("focus")
+        self.assertEqual(learnt.review_marker, ReviewRecoveryTag.FORGOT)
+        self.assertEqual(self.learnt_repo.pet_vitals(), PetVitals())
+
+        self.service.rate_review_card("focus", "good", reviewed_at_utc=2000)
+        self.assertIsNone(self.learnt_repo.learnt_word("focus").review_marker)
+        self.assertEqual(self.learnt_repo.pet_vitals(), PetVitals(51.5, 0.9))
+
+        self.service.rate_review_card("focus", "hard", reviewed_at_utc=3000)
+        self.assertEqual(
+            self.learnt_repo.learnt_word("focus").review_marker,
+            ReviewRecoveryTag.VAGUE,
+        )
+        self.service.rate_review_card("focus", "easy", reviewed_at_utc=4000)
+        self.assertIsNone(self.learnt_repo.learnt_word("focus").review_marker)
+        self.assertEqual(self.learnt_repo.pet_vitals(), PetVitals(52.7, 1.9))
+        self.assertEqual(self.repo.all_entries()[0].tags, ())
+
+    def test_study_success_updates_vitals_without_changing_mood(self):
+        self.learnt_repo.save_pet_vitals(PetVitals(99.0, 10.0, Mood.BORED))
+
+        self.service.rate_card("focus", "easy", reviewed_at_utc=1000)
+
+        self.assertEqual(
+            self.learnt_repo.pet_vitals(),
+            PetVitals(100.0, 10.4, Mood.BORED),
+        )
+        self.assertIsNone(self.learnt_repo.learnt_word("focus").review_marker)
+
+    def test_learning_outcome_failure_compensates_review_and_activity_before_retry(self):
+        self.service.rate_card("focus", "again", reviewed_at_utc=1_000.0)
+        prior_review = self.repo.review_state("focus")
+        prior_learnt = self.learnt_repo.learnt_word("focus")
+        prior_vitals = self.learnt_repo.pet_vitals()
+        retry_at = 200_000.0
+        retry_day = datetime.fromtimestamp(retry_at).strftime("%Y-%m-%d")
+
+        with mock.patch.object(
+            self.learnt_repo,
+            "_save_locked",
+            side_effect=OSError("injected learnt-word failure"),
+        ):
+            with self.assertRaises(OSError):
+                self.service.rate_review_card(
+                    "focus",
+                    "good",
+                    reviewed_at_utc=retry_at,
+                )
+
+        self.assertEqual(self.repo.review_state("focus"), prior_review)
+        self.assertEqual(self.repo.reviewed_count_for_local_day(retry_day), 0)
+        self.assertEqual(self.learnt_repo.learnt_word("focus"), prior_learnt)
+        self.assertEqual(self.learnt_repo.pet_vitals(), prior_vitals)
+
+        reloaded = JsonLearningRepository(
+            Path(self.temp.name),
+            [sample_entry("focus")],
+        )
+        self.assertEqual(reloaded.review_state("focus"), prior_review)
+        self.assertEqual(reloaded.reviewed_count_for_local_day(retry_day), 0)
+
+        retried = self.service.rate_review_card(
+            "focus",
+            "good",
+            reviewed_at_utc=retry_at,
+        )
+        self.assertEqual(retried, schedule_review(prior_review, "good", retry_at))
+        self.assertEqual(self.learnt_repo.learnt_word("focus").review_count, 1)
+        self.assertEqual(self.learnt_repo.pet_vitals(), PetVitals(51.5, 0.9))
+        self.assertEqual(self.repo.reviewed_count_for_local_day(retry_day), 1)
 
     def test_weights_match_shared_golden_contract(self):
         golden = json.loads(

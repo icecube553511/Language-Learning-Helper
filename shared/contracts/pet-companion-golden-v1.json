@@ -33,13 +33,24 @@
     "rayMissPolicy": "reject",
     "overlapPolicy": "autonomous-reject-explicit-drag-allow",
     "positionMapping": "full-display-inner-edge",
-    "stateTransfer": "preserve-velocity-and-grab-offset"
+    "stateTransfer": "preserve-velocity-and-grab-offset",
+    "curveContactTransfer": "clear-source-local-target-and-velocity"
   },
   "motion": {
     "acceleration": 0.5,
     "cruiseSpeed": 4.0,
     "curveAcceleration": 0.25,
     "curveAccelerationPolicy": "constant-independent-of-requested-step",
+    "curveLandingVelocityProjection": "world-velocity-dot-local-unit-tangent",
+    "curveVelocityUnits": "logical-units-per-tick",
+    "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
+    "curveLandingSpeedLimit": 8.0,
+    "curveDownhillTerminalSpeed": 4.0,
+    "curveDownhillResponsePerTick": 0.0625,
+    "curveDirectionEpsilon": 0.000001,
+    "curveLandingRestDirection": "local-positive-y-downhill",
+    "curveLandingInitialUphillMotion": true,
+    "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
     "idleTicks": 24,
     "fallTimeStepSeconds": 0.016,
     "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -438,6 +449,121 @@
       "expectedSpeedAfterCorner": 4.0,
       "expectedBudgetAfterCorner": 3.8,
       "expectedMode": "slide"
+    }
+  ],
+  "curveLandingVectors": [
+    {
+      "name": "vertical-fall-projects-onto-descending-tangent",
+      "segment": [[0.0, 100.0], [100.0, 120.0]],
+      "contactPoint": [50.0, 110.0],
+      "incomingVelocity": [0.0, 125.0],
+      "expectedUnitTangent": [0.9805806756909201, 0.19611613513818404],
+      "expectedInitialCurveVelocity": 0.3922322702763681,
+      "expectedPathDirection": 1,
+      "expectedNextCurveVelocity": 0.6177177533840951,
+      "expectedNextPosition": [50.60572209199965, 110.12114441839994],
+      "expectedMode": "slide"
+    },
+    {
+      "name": "zero-speed-mid-segment-starts-downhill-without-vertex-snap",
+      "segment": [[0.0, 100.0], [100.0, 120.0]],
+      "contactPoint": [50.0, 110.0],
+      "incomingVelocity": [0.0, 0.0],
+      "expectedInitialCurveVelocity": 0.0,
+      "expectedPathDirection": 1,
+      "expectedNextCurveVelocity": 0.25,
+      "expectedNextPosition": [50.24514516892273, 110.04902903378455],
+      "expectedMode": "slide"
+    },
+    {
+      "name": "uphill-fling-slows-before-reversing-downhill",
+      "segment": [[0.0, 100.0], [100.0, 120.0]],
+      "contactPoint": [50.0, 110.0],
+      "incomingVelocity": [-250.0, 200.0],
+      "expectedInitialCurveVelocity": -3.294751070321491,
+      "expectedPathDirection": -1,
+      "expectedNextCurveVelocity": -2.838829128426398,
+      "expectedNextPosition": [47.21629901507658, 109.44325980301531],
+      "expectedDownhillByTick": 10,
+      "expectedMode": "slide"
+    },
+    {
+      "name": "vertical-fall-uses-reverse-order-downhill-on-ascending-segment",
+      "segment": [[0.0, 120.0], [100.0, 100.0]],
+      "contactPoint": [50.0, 110.0],
+      "incomingVelocity": [0.0, 125.0],
+      "expectedInitialCurveVelocity": -0.3922322702763681,
+      "expectedPathDirection": -1,
+      "expectedNextCurveVelocity": -0.6177177533840951,
+      "expectedMode": "slide"
+    },
+    {
+      "name": "flat-segment-rest-uses-registration-direction",
+      "segment": [[0.0, 100.0], [100.0, 100.0]],
+      "contactPoint": [50.0, 100.0],
+      "incomingVelocity": [0.0, 0.0],
+      "initialPathDirection": -1,
+      "expectedInitialCurveVelocity": 0.0,
+      "expectedPathDirection": 1,
+      "expectedNextCurveVelocity": 0.25,
+      "expectedNextPosition": [50.25, 100.0],
+      "expectedMode": "slide"
+    },
+    {
+      "name": "fling-projection-clamps-uphill-speed",
+      "segment": [[0.0, 100.0], [100.0, 120.0]],
+      "contactPoint": [50.0, 110.0],
+      "incomingVelocity": [-1000.0, 200.0],
+      "expectedInitialCurveVelocity": -8.0,
+      "expectedPathDirection": -1,
+      "expectedNextCurveVelocity": -7.25,
+      "expectedNextPosition": [42.89079010124083, 108.57815802024817],
+      "expectedMode": "slide"
+    }
+  ],
+  "curveScaleVectors": [
+    {
+      "name": "density-two-preserves-logical-curve-motion",
+      "unitScale": 2.0,
+      "logicalSegment": [[0.0, 100.0], [100.0, 120.0]],
+      "logicalContactPoint": [50.0, 110.0],
+      "logicalIncomingVelocity": [0.0, 125.0],
+      "expectedInitialLogicalCurveVelocity": 0.3922322702763681,
+      "expectedNextLogicalCurveVelocity": 0.6177177533840951,
+      "expectedNextPhysicalPosition": [101.2114441839993, 220.24228883679987],
+      "expectedMode": "slide"
+    }
+  ],
+  "curveEndpointVectors": [
+    {
+      "name": "flat-uphill-endpoint-stops-and-reverses-downhill",
+      "segment": [[0.0, 100.0], [100.0, 100.0]],
+      "initialPosition": [20.0, 100.0],
+      "initialCurveVelocity": -8.0,
+      "initialPathDirection": -1,
+      "expectedEndpointTick": 4,
+      "expectedEndpointPosition": [0.0, 100.0],
+      "expectedEndpointCurveVelocity": 0.0,
+      "expectedEndpointPathDirection": 1,
+      "expectedEndpointMode": "slide",
+      "expectedNextCurveVelocity": 0.25,
+      "expectedNextPosition": [0.25, 100.0],
+      "expectedNextMode": "slide"
+    },
+    {
+      "name": "near-horizontal-uphill-endpoint-uses-unit-tangent",
+      "segment": [[0.0, 100.0], [1000.0, 99.9995]],
+      "initialPosition": [20.0, 99.99999],
+      "initialCurveVelocity": -8.0,
+      "initialPathDirection": -1,
+      "expectedEndpointTick": 4,
+      "expectedEndpointPosition": [0.0, 100.0],
+      "expectedEndpointCurveVelocity": 0.0,
+      "expectedEndpointPathDirection": 1,
+      "expectedEndpointMode": "slide",
+      "expectedNextCurveVelocity": 0.25,
+      "expectedNextPosition": [0.24999999999996875, 99.999999875],
+      "expectedNextMode": "slide"
     }
   ],
   "windowMigrationVectors": [

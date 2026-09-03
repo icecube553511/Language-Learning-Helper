@@ -21,9 +21,13 @@ import com.lexitrack.learning.domain.VocabularyEntry
 import com.lexitrack.learning.domain.BubbleDefinition
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -100,6 +104,7 @@ class MainViewModel(
 ) : ViewModel() {
     private var lastRemindedDueCount = 0
     private var studyRatingInProgress = false
+    private var reviewRatingInProgress = false
     private var wordReminderJob: Job? = null
     private var wordReminderIsPreview = false
     private var previousReminderWordId = ""
@@ -108,6 +113,8 @@ class MainViewModel(
     private var dictationLoadingJob: Job? = null
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+    private val _rewardEffects = MutableSharedFlow<RewardEffectRequest>(extraBufferCapacity = 64)
+    val rewardEffects: SharedFlow<RewardEffectRequest> = _rewardEffects.asSharedFlow()
 
     fun lookupWordBubble(token: String, contextExample: String = ""): BubbleDefinition =
         useCases.lookupWord(token, contextExample)
@@ -142,6 +149,7 @@ class MainViewModel(
     }
 
     fun selectSection(section: MainSection) {
+        if (section != MainSection.DICTATION) stopDictationLoading()
         _uiState.value = _uiState.value.copy(section = section)
         if (section == MainSection.STUDY) ensureCurrentCard()
         if (section == MainSection.DICTATION) startDictationLoading()
@@ -153,6 +161,15 @@ class MainViewModel(
         dictationLoadingJob = viewModelScope.launch {
             delay(dictationLoadingDelayMs())
             _uiState.value = _uiState.value.copy(dictationLoading = false)
+            dictationLoadingJob = null
+        }
+    }
+
+    private fun stopDictationLoading() {
+        dictationLoadingJob?.cancel()
+        dictationLoadingJob = null
+        if (_uiState.value.dictationLoading) {
+            _uiState.value = _uiState.value.copy(dictationLoading = false)
         }
     }
 
@@ -160,22 +177,35 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(answerRevealed = true)
     }
 
-    fun rateCurrent(rating: ReviewRating) {
+    fun rateCurrent(rating: ReviewRating, origin: RewardEffectOrigin? = null): Boolean {
         val state = _uiState.value
-        val card = state.currentCard ?: return
-        if (!state.answerRevealed || studyRatingInProgress) return
+        val card = state.currentCard ?: return false
+        if (!state.answerRevealed || studyRatingInProgress) return false
         studyRatingInProgress = true
-        _uiState.value = state.copy(currentCard = null, answerRevealed = false)
         viewModelScope.launch {
+            var succeeded = false
             try {
                 useCases.rateWord(card.id, rating)
+                origin?.let {
+                    _rewardEffects.emit(RewardEffectRequest(RewardEffectKind.STUDY, it))
+                }
+                succeeded = true
+                _uiState.value = _uiState.value.copy(currentCard = null, answerRevealed = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    currentCard = card,
+                    answerRevealed = true,
+                    transientMessage = error.message ?: "无法保存学习结果。",
+                )
             } finally {
                 studyRatingInProgress = false
-                _uiState.value = _uiState.value.copy(currentCard = null, answerRevealed = false)
                 refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
-                ensureCurrentCard()
+                if (succeeded && _uiState.value.section == MainSection.STUDY) ensureCurrentCard()
             }
         }
+        return true
     }
 
     fun startReviewSession() {
@@ -271,20 +301,42 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(reviewAnswerRevealed = true)
     }
 
-    fun rateReviewCurrent(rating: ReviewRating) {
+    fun rateReviewCurrent(rating: ReviewRating, origin: RewardEffectOrigin? = null): Boolean {
         val state = _uiState.value
-        val card = state.reviewCard ?: return
-        if (!state.reviewAnswerRevealed) return
-        val remaining = state.reviewQueue.drop(1)
-        _uiState.value = state.copy(
-            reviewQueue = remaining,
-            reviewCard = remaining.firstOrNull(),
-            reviewAnswerRevealed = false,
-        )
+        val card = state.reviewCard ?: return false
+        if (!state.reviewAnswerRevealed || reviewRatingInProgress) return false
+        reviewRatingInProgress = true
         viewModelScope.launch {
-            useCases.rateReviewWord(card.id, rating)
-            refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
+            try {
+                useCases.rateReviewWord(card.id, rating)
+                origin?.let {
+                    _rewardEffects.emit(RewardEffectRequest(RewardEffectKind.REVIEW, it))
+                }
+                val current = _uiState.value
+                val remaining = if (current.reviewQueue.firstOrNull()?.id == card.id) {
+                    current.reviewQueue.drop(1)
+                } else {
+                    current.reviewQueue
+                }
+                _uiState.value = current.copy(
+                    reviewQueue = remaining,
+                    reviewCard = remaining.firstOrNull(),
+                    reviewAnswerRevealed = false,
+                )
+                refreshDerived(useCases.catalogStatus.value, useCases.settings.value)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    reviewCard = card,
+                    reviewAnswerRevealed = true,
+                    transientMessage = error.message ?: "无法保存复习结果。",
+                )
+            } finally {
+                reviewRatingInProgress = false
+            }
         }
+        return true
     }
 
     private fun resolveLibraryMatches(query: String): List<VocabularyEntry> {

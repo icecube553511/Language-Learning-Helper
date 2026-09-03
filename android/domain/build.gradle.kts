@@ -34,6 +34,14 @@ tasks.test {
         rootProject.file("../shared/contracts/pet-companion-golden-v1.json").absolutePath,
     )
     systemProperty(
+        "pet.vitals.golden.path",
+        rootProject.file("../shared/contracts/pet-vitals-golden-v1.json").absolutePath,
+    )
+    systemProperty(
+        "pet.appearance.golden.path",
+        rootProject.file("../shared/contracts/pet-appearance-golden-v1.json").absolutePath,
+    )
+    systemProperty(
         "vocabulary.groups.golden.path",
         rootProject.file("../shared/contracts/vocabulary-groups-golden-v1.json").absolutePath,
     )

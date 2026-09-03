@@ -14,6 +14,59 @@ import org.junit.Test
 
 class DictationPresentationTest {
     @Test
+    fun `book loading frame turns right to left within the minimum overlay time`() {
+        val right = dictationBookFrame(0f)
+        val edgeOn = dictationBookFrame(0.5f)
+        val left = dictationBookFrame(1f)
+
+        assertTrue(right.edgeOffset > 0f)
+        assertEquals(0f, edgeOn.edgeOffset, 0.0001f)
+        assertTrue(edgeOn.liftFraction > right.liftFraction)
+        assertTrue(left.edgeOffset < 0f)
+        assertTrue(DICTATION_BOOK_PAGE_TURN_MS <= 1000)
+    }
+
+    @Test
+    fun `book loading frame clamps invalid and out of range progress`() {
+        assertEquals(0f, dictationBookFrame(Float.NaN).progress, 0f)
+        assertEquals(0f, dictationBookFrame(-1f).progress, 0f)
+        assertEquals(1f, dictationBookFrame(2f).progress, 0f)
+    }
+
+    @Test
+    fun `random group opens its read-only scope and can switch to manual in place`() {
+        val opened = openDictationGroup(DictationGroupNavigation(), "cet4")
+
+        assertFalse(opened.manual)
+        assertEquals("cet4", opened.scopeGroup)
+        assertEquals("cet4", opened.openGroup)
+
+        val manual = setDictationGroupMode(opened, manual = true)
+        assertTrue(manual.manual)
+        assertEquals("cet4", manual.scopeGroup)
+        assertEquals("cet4", manual.openGroup)
+
+        val browser = closeDictationGroup(manual)
+        assertEquals(null, browser.openGroup)
+        assertEquals("cet4", browser.scopeGroup)
+    }
+
+    @Test
+    fun `switching an open manual group to random makes it the random scope`() {
+        val manual = DictationGroupNavigation(
+            manual = true,
+            scopeGroup = "all",
+            openGroup = "custom",
+        )
+
+        val random = setDictationGroupMode(manual, manual = false)
+
+        assertFalse(random.manual)
+        assertEquals("custom", random.scopeGroup)
+        assertEquals("custom", random.openGroup)
+    }
+
+    @Test
     fun `save spec keeps each export on its matching SAF format`() {
         val docx = dictationSaveSpec(
             ExportedDictation(

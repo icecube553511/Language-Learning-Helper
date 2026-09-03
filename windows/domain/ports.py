@@ -4,6 +4,7 @@ from typing import Protocol
 
 from .dictation import MarkMode
 from .models import LearntWord, ReviewState, VocabularyEntry
+from .pet_vitals import PetVitals
 
 
 class LearningRepository(Protocol):
@@ -18,6 +19,14 @@ class LearningRepository(Protocol):
     def save_review_state(self, state: ReviewState) -> None: ...
 
     def record_activity(self, word_id: str, reviewed_at_utc: float) -> None: ...
+
+    def save_review_outcome(
+        self,
+        state: ReviewState,
+        reviewed_at_utc: float,
+    ) -> object: ...
+
+    def restore_review_savepoint(self, savepoint: object) -> None: ...
 
     def reviewed_count_for_local_day(self, local_day: str) -> int: ...
 
@@ -70,3 +79,7 @@ class WordsLearntRepository(Protocol):
     def save_learnt_word(self, word: LearntWord) -> None: ...
 
     def save_learnt_words(self, words: list[LearntWord]) -> int: ...
+
+    def pet_vitals(self) -> PetVitals: ...
+
+    def save_learning_outcome(self, word: LearntWord, vitals: PetVitals) -> None: ...

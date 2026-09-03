@@ -334,6 +334,7 @@ class PetPresentationTest {
                 idleTicksRemaining = 17,
                 avoidTargetId = "source-only-avoid",
                 horizontalVelocity = 420f,
+                curveVelocity = 1.5f,
             ),
         )
         coordinator.registerWindow(PetWindow("main", PetRect(0f, 0f, 400f, 300f)), active = true, petHalfSize = 56f)
@@ -345,6 +346,7 @@ class PetPresentationTest {
         assertNull(coordinator.state.targetId)
         assertEquals(0, coordinator.state.idleTicksRemaining)
         assertNull(coordinator.state.avoidTargetId)
+        assertNull(coordinator.state.curveVelocity)
     }
 
     @Test
@@ -487,6 +489,7 @@ class PetPresentationTest {
             active = true,
             petHalfSize = 56f,
         )
+        coordinator.updateState(coordinator.state.copy(curveVelocity = -1.25f))
 
         coordinator.unregisterWindow("dialog", petHalfSize = 56f)
 
@@ -496,6 +499,32 @@ class PetPresentationTest {
         assertNull(coordinator.state.targetId)
         assertEquals(0, coordinator.state.idleTicksRemaining)
         assertNull(coordinator.state.avoidTargetId)
+        assertNull(coordinator.state.curveVelocity)
+    }
+
+    @Test
+    fun `activating a nonadjacent window clears source curve velocity`() {
+        val coordinator = PetWindowCoordinator(
+            com.lexitrack.learning.domain.PetState(
+                position = PetPoint(120f, 80f),
+                mode = PetMode.SLIDE,
+                targetId = "main:chart",
+                curveVelocity = 2.5f,
+            ),
+        )
+        coordinator.registerWindow(
+            PetWindow("main", PetRect(0f, 0f, 400f, 300f)),
+            active = true,
+            petHalfSize = 56f,
+        )
+        coordinator.registerWindow(PetWindow("dialog", PetRect(900f, 700f, 400f, 300f)))
+
+        assertTrue(coordinator.activate("dialog", petHalfSize = 56f))
+
+        assertEquals("dialog", coordinator.activeWindowId)
+        assertEquals(PetPoint(56f, 56f), coordinator.state.position)
+        assertNull(coordinator.state.targetId)
+        assertNull(coordinator.state.curveVelocity)
     }
 
     @Test

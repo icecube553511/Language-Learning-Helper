@@ -49,6 +49,7 @@ class PetCompanionTest {
             movementSpeed = 3f,
             verticalVelocity = -4f,
             bouncesRemaining = 1,
+            curveVelocity = 2f,
         )
 
         assertEquals(PetState(PetPoint(100f, 120f), PetMode.FALL, null), onNavigation(state))
@@ -744,9 +745,503 @@ class PetCompanionTest {
             PetRect(0f, 0f, 200f, 160f),
             halfSize = 10f,
         )
-        assertEquals(PetMode.IDLE, released.mode)
+        assertEquals(PetMode.SLIDE, released.mode)
         assertEquals("curve", released.targetId)
         assertEquals(PetPoint(60f, 110f), released.position)
+        assertEquals(0f, released.curveVelocity)
+        assertEquals(1, released.pathDirection)
+
+        val advanced = advancePet(
+            released,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 160f),
+            halfSize = 10f,
+        )
+        assertEquals(0.25f, advanced.curveVelocity!!, 1e-6f)
+        assertTrue(advanced.position.x > released.position.x)
+        assertTrue(advanced.position.y > released.position.y)
+    }
+
+    @Test
+    fun `vertical fall projects world velocity onto descending curve tangent`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "vertical-fall-projects-onto-descending-tangent",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val incoming = sharedPoint(vector.getValue("incomingVelocity"))
+        val landed = advancePet(
+            PetState(
+                position = sharedPoint(vector.getValue("contactPoint")),
+                mode = PetMode.FALL,
+                targetId = chart.id,
+                verticalVelocity = incoming.y,
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, landed.mode.name.lowercase())
+        assertEquals(
+            vector.getValue("expectedInitialCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(vector.getValue("expectedPathDirection").jsonPrimitive.float.toInt(), landed.pathDirection)
+
+        val advanced = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        val expectedPosition = sharedPoint(vector.getValue("expectedNextPosition"))
+        assertEquals(
+            vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+            advanced.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(expectedPosition.x, advanced.position.x, 1e-4f)
+        assertEquals(expectedPosition.y, advanced.position.y, 1e-4f)
+    }
+
+    @Test
+    fun `zero speed release starts downhill from exact curve contact`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "zero-speed-mid-segment-starts-downhill-without-vertex-snap",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val contact = sharedPoint(vector.getValue("contactPoint"))
+        val landed = releaseDrag(
+            PetState(contact, PetMode.DRAGGING),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        assertEquals(contact, landed.position)
+        assertEquals(
+            vector.getValue("expectedInitialCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-6f,
+        )
+        assertEquals(vector.getValue("expectedPathDirection").jsonPrimitive.float.toInt(), landed.pathDirection)
+
+        val advanced = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        val expectedPosition = sharedPoint(vector.getValue("expectedNextPosition"))
+        assertEquals(
+            vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+            advanced.curveVelocity!!,
+            1e-6f,
+        )
+        assertEquals(expectedPosition.x, advanced.position.x, 1e-4f)
+        assertEquals(expectedPosition.y, advanced.position.y, 1e-4f)
+    }
+
+    @Test
+    fun `flat curve release ignores stale direction`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "flat-segment-rest-uses-registration-direction",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val contact = sharedPoint(vector.getValue("contactPoint"))
+        val landed = releaseDrag(
+            PetState(
+                position = contact,
+                mode = PetMode.DRAGGING,
+                pathDirection = vector.getValue("initialPathDirection").jsonPrimitive.float.toInt(),
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, landed.mode.name.lowercase())
+        assertEquals(
+            vector.getValue("expectedInitialCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-6f,
+        )
+        assertEquals(vector.getValue("expectedPathDirection").jsonPrimitive.float.toInt(), landed.pathDirection)
+
+        val advanced = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        val expectedPosition = sharedPoint(vector.getValue("expectedNextPosition"))
+        assertEquals(
+            vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+            advanced.curveVelocity!!,
+            1e-6f,
+        )
+        assertEquals(expectedPosition.x, advanced.position.x, 1e-4f)
+        assertEquals(expectedPosition.y, advanced.position.y, 1e-4f)
+    }
+
+    @Test
+    fun `curve uphill endpoint stops and reverses downhill`() {
+        val vectors = sharedGolden.getValue("curveEndpointVectors").jsonArray.map { it.jsonObject }
+        vectors.forEach { vector ->
+            val segment = vector.getValue("segment").jsonArray.map(::sharedPoint)
+            val width = segment.maxOf(PetPoint::x) + 100f
+            val viewport = PetRect(0f, 0f, width, 200f)
+            val chart = PetTarget("curve", PetTargetKind.CHART, viewport, segment)
+            var state = PetState(
+                position = sharedPoint(vector.getValue("initialPosition")),
+                mode = PetMode.SLIDE,
+                targetId = chart.id,
+                pathIndex = 0,
+                pathDirection = vector.getValue("initialPathDirection").jsonPrimitive.float.toInt(),
+                curveVelocity = vector.getValue("initialCurveVelocity").jsonPrimitive.float,
+            )
+
+            repeat(vector.getValue("expectedEndpointTick").jsonPrimitive.float.toInt()) {
+                state = advancePet(state, listOf(chart), viewport, halfSize = 0f)
+            }
+
+            val expectedEndpoint = sharedPoint(vector.getValue("expectedEndpointPosition"))
+            assertEquals(
+                vector.getValue("expectedEndpointMode").jsonPrimitive.content,
+                state.mode.name.lowercase(),
+                vector.getValue("name").jsonPrimitive.content,
+            )
+            assertEquals(expectedEndpoint.x, state.position.x, 1e-4f)
+            assertEquals(expectedEndpoint.y, state.position.y, 1e-4f)
+            assertEquals(
+                vector.getValue("expectedEndpointCurveVelocity").jsonPrimitive.float,
+                state.curveVelocity!!,
+                1e-6f,
+            )
+            assertEquals(
+                vector.getValue("expectedEndpointPathDirection").jsonPrimitive.float.toInt(),
+                state.pathDirection,
+            )
+
+            state = advancePet(state, listOf(chart), viewport, halfSize = 0f)
+
+            val expectedNext = sharedPoint(vector.getValue("expectedNextPosition"))
+            assertEquals(vector.getValue("expectedNextMode").jsonPrimitive.content, state.mode.name.lowercase())
+            assertEquals(
+                vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+                state.curveVelocity!!,
+                1e-6f,
+            )
+            assertEquals(expectedNext.x, state.position.x, 1e-4f)
+            assertEquals(expectedNext.y, state.position.y, 1e-4f)
+        }
+    }
+
+    @Test
+    fun `density scale preserves logical curve velocity and scales path budget`() {
+        val vector = sharedGolden.getValue("curveScaleVectors").jsonArray.single().jsonObject
+        val scale = vector.getValue("unitScale").jsonPrimitive.float
+        fun scaled(point: PetPoint) = PetPoint(point.x * scale, point.y * scale)
+        val segment = vector.getValue("logicalSegment").jsonArray.map(::sharedPoint).map(::scaled)
+        val contact = scaled(sharedPoint(vector.getValue("logicalContactPoint")))
+        val incoming = scaled(sharedPoint(vector.getValue("logicalIncomingVelocity")))
+        val viewport = PetRect(0f, 0f, 400f, 400f)
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport, segment)
+        val landed = advancePet(
+            PetState(
+                position = contact,
+                mode = PetMode.FALL,
+                verticalVelocity = incoming.y,
+            ),
+            listOf(chart),
+            viewport,
+            halfSize = 0f,
+            fallUnitScale = scale,
+        )
+
+        assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, landed.mode.name.lowercase())
+        assertEquals(
+            vector.getValue("expectedInitialLogicalCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-5f,
+        )
+
+        val advanced = advancePet(
+            landed,
+            listOf(chart),
+            viewport,
+            halfSize = 0f,
+            fallUnitScale = scale,
+        )
+        val expectedPosition = sharedPoint(vector.getValue("expectedNextPhysicalPosition"))
+
+        assertEquals(
+            vector.getValue("expectedNextLogicalCurveVelocity").jsonPrimitive.float,
+            advanced.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(expectedPosition.x, advanced.position.x, 1e-4f)
+        assertEquals(expectedPosition.y, advanced.position.y, 1e-4f)
+    }
+
+    @Test
+    fun `curve landing projection clamps uphill speed`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "fling-projection-clamps-uphill-speed",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val incoming = sharedPoint(vector.getValue("incomingVelocity"))
+        val landed = advancePet(
+            PetState(
+                position = sharedPoint(vector.getValue("contactPoint")),
+                mode = PetMode.FLING,
+                horizontalVelocity = incoming.x,
+                verticalVelocity = incoming.y,
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, landed.mode.name.lowercase())
+        assertEquals(
+            vector.getValue("expectedInitialCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(vector.getValue("expectedPathDirection").jsonPrimitive.float.toInt(), landed.pathDirection)
+
+        val advanced = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        val expectedPosition = sharedPoint(vector.getValue("expectedNextPosition"))
+        assertEquals(
+            vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+            advanced.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(expectedPosition.x, advanced.position.x, 1e-4f)
+        assertEquals(expectedPosition.y, advanced.position.y, 1e-4f)
+    }
+
+    @Test
+    fun `uphill fling slows and reverses downhill by shared tick limit`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "uphill-fling-slows-before-reversing-downhill",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val incoming = sharedPoint(vector.getValue("incomingVelocity"))
+        val landed = advancePet(
+            PetState(
+                position = sharedPoint(vector.getValue("contactPoint")),
+                mode = PetMode.FLING,
+                horizontalVelocity = incoming.x,
+                verticalVelocity = incoming.y,
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        assertEquals(
+            vector.getValue("expectedInitialCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(vector.getValue("expectedPathDirection").jsonPrimitive.float.toInt(), landed.pathDirection)
+
+        var state = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        val expectedPosition = sharedPoint(vector.getValue("expectedNextPosition"))
+        assertEquals(
+            vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+            state.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(expectedPosition.x, state.position.x, 1e-4f)
+        assertEquals(expectedPosition.y, state.position.y, 1e-4f)
+        assertTrue(state.position.x < landed.position.x)
+
+        val tickLimit = vector.getValue("expectedDownhillByTick").jsonPrimitive.float.toInt()
+        var reversedAt: Int? = if (state.curveVelocity!! >= 0f) 1 else null
+        for (tick in 2..tickLimit) {
+            state = advancePet(
+                state,
+                listOf(chart),
+                PetRect(0f, 0f, 200f, 200f),
+                halfSize = 0f,
+            )
+            if (reversedAt == null && state.curveVelocity!! >= 0f) reversedAt = tick
+        }
+        assertEquals(tickLimit, reversedAt)
+        assertEquals(1, state.pathDirection)
+    }
+
+    @Test
+    fun `vertical fall follows downhill when curve registration is reversed`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "vertical-fall-uses-reverse-order-downhill-on-ascending-segment",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val incoming = sharedPoint(vector.getValue("incomingVelocity"))
+        val landed = advancePet(
+            PetState(
+                position = sharedPoint(vector.getValue("contactPoint")),
+                mode = PetMode.FALL,
+                targetId = chart.id,
+                verticalVelocity = incoming.y,
+            ),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        assertEquals(
+            vector.getValue("expectedInitialCurveVelocity").jsonPrimitive.float,
+            landed.curveVelocity!!,
+            1e-5f,
+        )
+        assertEquals(vector.getValue("expectedPathDirection").jsonPrimitive.float.toInt(), landed.pathDirection)
+
+        val advanced = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        assertEquals(
+            vector.getValue("expectedNextCurveVelocity").jsonPrimitive.float,
+            advanced.curveVelocity!!,
+            1e-5f,
+        )
+        assertTrue(advanced.position.x < landed.position.x)
+        assertTrue(advanced.position.y > landed.position.y)
+    }
+
+    @Test
+    fun `curve downhill acceleration eases toward terminal speed independent of cruise step`() {
+        val vector = sharedVector(
+            "curveLandingVectors",
+            "zero-speed-mid-segment-starts-downhill-without-vertex-snap",
+        )
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            vector.getValue("segment").jsonArray.map(::sharedPoint),
+        )
+        val landed = releaseDrag(
+            PetState(sharedPoint(vector.getValue("contactPoint")), PetMode.DRAGGING),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        val ordinaryStep = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+            step = PET_CRUISE_SPEED,
+        )
+        val overriddenStep = advancePet(
+            landed,
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+            step = 30f,
+        )
+        assertEquals(ordinaryStep.position.x, overriddenStep.position.x, 1e-6f)
+        assertEquals(ordinaryStep.position.y, overriddenStep.position.y, 1e-6f)
+        assertEquals(ordinaryStep.curveVelocity!!, overriddenStep.curveVelocity!!, 1e-6f)
+
+        var state = landed
+        var previousVelocity = 0f
+        var previousAcceleration = Float.POSITIVE_INFINITY
+        repeat(8) {
+            state = advancePet(
+                state,
+                listOf(chart),
+                PetRect(0f, 0f, 200f, 200f),
+                halfSize = 0f,
+            )
+            val velocity = state.curveVelocity!!
+            val acceleration = velocity - previousVelocity
+            assertTrue(acceleration > 0f)
+            assertTrue(acceleration < previousAcceleration)
+            assertTrue(velocity < PET_CURVE_DOWNHILL_TERMINAL_SPEED)
+            previousVelocity = velocity
+            previousAcceleration = acceleration
+        }
+    }
+
+    @Test
+    fun `removing landed curve clears physical velocity before free fall`() {
+        val chart = PetTarget(
+            "curve",
+            PetTargetKind.CHART,
+            PetRect(0f, 0f, 200f, 200f),
+            listOf(PetPoint(0f, 100f), PetPoint(100f, 120f)),
+        )
+        val landed = releaseDrag(
+            PetState(PetPoint(50f, 110f), PetMode.DRAGGING),
+            listOf(chart),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+
+        val falling = advancePet(
+            landed.copy(curveVelocity = 2f),
+            emptyList(),
+            PetRect(0f, 0f, 200f, 200f),
+            halfSize = 0f,
+        )
+        assertEquals(PetMode.FALL, falling.mode)
+        assertEquals(null, falling.targetId)
+        assertEquals(null, falling.curveVelocity)
     }
 
     @Test
@@ -1139,6 +1634,7 @@ class PetCompanionTest {
         assertEquals(vector.getValue("expectedMode").jsonPrimitive.content, next.mode.name.lowercase())
         assertEquals(chart.id, next.targetId)
         assertEquals(0f, next.horizontalVelocity, 1e-6f)
+        assertEquals(null, next.curveVelocity)
         val expectedContact = sharedPoint(vector.getValue("expectedContactPoint"))
         assertEquals(expectedContact.x, next.position.x, 1e-3f)
         assertEquals(expectedContact.y, next.position.y, 1e-3f)
@@ -1165,10 +1661,12 @@ class PetCompanionTest {
             halfSize = 0f,
         )
 
-        assertEquals(PetMode.IDLE, next.mode)
+        assertEquals(PetMode.SLIDE, next.mode)
         assertEquals(chart.id, next.targetId)
         assertEquals(0f, next.horizontalVelocity, 1e-6f)
         assertEquals(0f, next.verticalVelocity, 1e-6f)
+        assertEquals(PET_CURVE_LANDING_SPEED_LIMIT, next.curveVelocity!!, 1e-6f)
+        assertEquals(1, next.pathDirection)
     }
 
     @Test
@@ -1187,13 +1685,16 @@ class PetCompanionTest {
         )
         assertEquals(PetMode.BOUNCE, state.mode)
         assertEquals(0f, state.horizontalVelocity, 1e-6f)
+        assertEquals(null, state.curveVelocity)
 
         repeat(100) {
             if (state.mode != PetMode.BOUNCE) return@repeat
             state = advancePet(state, listOf(support), viewport, halfSize = 20f)
             assertEquals(0f, state.horizontalVelocity, 1e-6f)
+            assertEquals(null, state.curveVelocity)
         }
         assertEquals(PetMode.IDLE, state.mode)
         assertEquals(0f, state.horizontalVelocity, 1e-6f)
+        assertEquals(null, state.curveVelocity)
     }
 }

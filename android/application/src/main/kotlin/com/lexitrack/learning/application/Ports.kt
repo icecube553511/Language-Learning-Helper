@@ -8,6 +8,7 @@ import com.lexitrack.learning.domain.VocabularyEntry
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.MarkMode
 import com.lexitrack.learning.domain.DictationFormat
+import com.lexitrack.learning.domain.PetVitals
 import java.io.InputStream
 import java.time.LocalDate
 import kotlinx.coroutines.flow.StateFlow
@@ -50,17 +51,23 @@ interface VocabularyRepository {
     suspend fun updateTags(wordIds: Set<String>, add: Set<String>, remove: Set<String>): Int = 0
 }
 
+/** Opaque token owned and interpreted only by a ReviewRepository adapter. */
+interface ReviewSavepoint
+
 interface ReviewRepository {
     val schedules: StateFlow<Map<String, ScheduleState>>
     val history: StateFlow<List<ReviewEvent>>
 
-    suspend fun saveReview(wordId: String, state: ScheduleState, event: ReviewEvent)
+    suspend fun saveReview(wordId: String, state: ScheduleState, event: ReviewEvent): ReviewSavepoint
+    suspend fun rollbackReview(savepoint: ReviewSavepoint)
 }
 
 interface LearntWordsRepository {
     val learntWords: StateFlow<Map<String, LearntWord>>
+    val petVitals: StateFlow<PetVitals>
 
     suspend fun saveLearntWords(words: Collection<LearntWord>)
+    suspend fun saveLearningOutcome(word: LearntWord, vitals: PetVitals)
 }
 
 interface SettingsRepository {
