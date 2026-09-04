@@ -563,13 +563,22 @@ fun advancePet(
     val target = if (currentState.mode == PetMode.FALL) {
         nearestFallTarget(currentState.position, candidates, margin)
     } else {
-        currentState.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
-            ?: nearestPetTarget(
+        val retained = currentState.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
+        val contentExists = validTargets.any { it.kind != PetTargetKind.EDGE }
+        // A thin edge must never be retained as a long-term support while real
+        // content exists: a pet that once landed on a boundary would keep
+        // creeping along it forever (visually motionless) and never return to
+        // the page content.
+        if (retained != null && (retained.kind != PetTargetKind.EDGE || !contentExists)) {
+            retained
+        } else {
+            nearestPetTarget(
                 currentState.position,
                 candidates,
                 margin,
                 viewport,
             )
+        }
     }
         ?: return if (currentState.mode == PetMode.FALL) {
             advanceFreeFall(currentState.copy(targetId = null), viewport, margin, unitScale)

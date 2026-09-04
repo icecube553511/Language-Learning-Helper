@@ -457,6 +457,47 @@ class PetCompanionTests(unittest.TestCase):
         only_edge = nearest_pet_target(position, [edge], viewport=viewport)
         self.assertEqual(only_edge.id, "edge:bottom")
 
+    def test_retained_edge_target_yields_to_content(self):
+        """A pet already following an edge must re-select content next tick.
+
+        Once the companion lands on a thin boundary the retained target would
+        otherwise keep it creeping along the edge forever (visually motionless)
+        even though real content targets exist.
+        """
+        state = PetState(
+            position=PetPoint(59.0, 120.0),
+            mode=PetMode.ROLL,
+            target_id="edge:left",
+            path_direction=1,
+            movement_speed=1.2,
+        )
+        targets = [
+            PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0.0, 0.0, 3.0, 700.0)),
+            PetTarget("study:card", PetTargetKind.SURFACE, PetRect(240.0, 80.0, 600.0, 500.0)),
+        ]
+        viewport = PetRect(0.0, 0.0, 960.0, 700.0)
+
+        advanced = advance_pet(state, targets, viewport, pet_size=56.0)
+
+        self.assertNotEqual(advanced.target_id, "edge:left")
+        self.assertEqual(advanced.target_id, "study:card")
+
+    def test_edge_retained_when_no_content_exists(self):
+        """With no content available the edge remains a legal retained support."""
+        state = PetState(
+            position=PetPoint(59.0, 120.0),
+            mode=PetMode.ROLL,
+            target_id="edge:left",
+            path_direction=1,
+            movement_speed=1.2,
+        )
+        targets = [PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0.0, 0.0, 3.0, 700.0))]
+        viewport = PetRect(0.0, 0.0, 960.0, 700.0)
+
+        advanced = advance_pet(state, targets, viewport, pet_size=56.0)
+
+        self.assertEqual(advanced.target_id, "edge:left")
+
     def test_ordinary_rectangles_expose_only_the_expanded_upper_support(self):
         target = PetTarget("panel", PetTargetKind.SURFACE, PetRect(20, 30, 60, 40))
         start, end = target.support_segment(PetPoint(50, 70), pet_size=10)

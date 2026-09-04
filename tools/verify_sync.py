@@ -1004,6 +1004,7 @@ def verify_pet_contract() -> None:
         "归一化单位切线",
         "单个帧错误",
         "释放指针捕获",
+        "不得在存在内容目标时被保留",
     ):
         if marker not in contract_text:
             fail(f"Pet companion curve landing contract is missing {marker}")
