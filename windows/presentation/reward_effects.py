@@ -664,6 +664,30 @@ class RewardEffectLayer(tk.Toplevel):
         except (AttributeError, OSError, TypeError):
             pass
 
+    def native_hit_test(self, hwnd: int, x: int, y: int) -> int:
+        """Return the WM_NCHITTEST result of one of the layer's native surfaces.
+
+        Used by the smoke probe to prove every surface of the overlay passes
+        hits through while a flight is visible.
+        """
+        if sys.platform != "win32":
+            return 0
+        try:
+            user32 = ctypes.windll.user32
+            send_message = user32.SendMessageW
+            pointer_type = ctypes.c_ssize_t if ctypes.sizeof(ctypes.c_void_p) > 4 else ctypes.c_long
+            send_message.restype = pointer_type
+            send_message.argtypes = [
+                wintypes.HWND,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            ]
+            lparam = ((int(y) & 0xFFFF) << 16) | (int(x) & 0xFFFF)
+            return int(send_message(hwnd, WM_NCHITTEST, 0, lparam))
+        except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
+            return 0
+
     def _restore_hit_test_passthrough(self) -> None:
         """Restore Tk's original WNDPROC before the native window is freed."""
         if sys.platform == "win32":

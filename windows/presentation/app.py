@@ -6276,6 +6276,36 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         for _ in range(3):
             app.update_idletasks()
             app.update()
+
+    # Reward-layer click-through probe: while a flight is visible, every
+    # native surface of the overlay must be subclassed to return
+    # HTTRANSPARENT, otherwise the full-screen layer would swallow all mouse
+    # input for the duration of the animation.
+    reward_layer_click_through_ready = False
+    if app._reward_effects is not None:
+        layer = app._reward_effects.layer
+        surfaces = layer._native_surfaces()
+        subclassed = {handle for handle, _original in layer._passthrough_handles}
+        try:
+            layer.show()
+            reward_layer_click_through_ready = bool(
+                surfaces
+                and not layer._passthrough_failures
+                and all(surface in subclassed for surface in surfaces)
+                and all(
+                    int(layer.native_hit_test(surface, app.winfo_rootx(), app.winfo_rooty()))
+                    == -1
+                    for surface in surfaces
+                )
+            )
+        except tk.TclError:
+            reward_layer_click_through_ready = False
+        finally:
+            try:
+                app._reward_effects.model.clear()
+                layer.hide()
+            except tk.TclError:
+                pass
     result = {
         "ok": (
             set(visited) == set(app.pages)
@@ -6325,6 +6355,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and reminder_word_bubble_cleanup_ready
             and pet_navigation_ready
             and pet_control_coverage_ready
+            and reward_layer_click_through_ready
             and all(
                 pet_control_classes_seen & alternatives
                 for alternatives in (
@@ -6356,6 +6387,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "petDialogFocusPromotionReady": pet_dialog_focus_promotion_ready,
         "petNavigationReady": pet_navigation_ready,
         "petControlCoverageReady": pet_control_coverage_ready,
+        "rewardLayerClickThroughReady": reward_layer_click_through_ready,
         "petControlClasses": sorted(pet_control_classes_seen),
         "catalogCount": app.catalog_count,
         "studyCardReady": app.current_card is None or len(app.current_card.examples) >= 3,
