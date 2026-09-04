@@ -2083,13 +2083,19 @@ class LexiTrackApp(tk.Tk):
         self._pet_drag_samples = []
         self._pet_dragging = True
         self._pet_drag_host_dialog = None
-        self._record_pet_sample(
-            self._pet_drag_samples,
-            self._pet_now_ms(),
-            self.pet_companion.state.position,
-            window=self,
-        )
-        self._grab_pet_overlay(self._pet_overlay)
+        try:
+            self._record_pet_sample(
+                self._pet_drag_samples,
+                self._pet_now_ms(),
+                self.pet_companion.state.position,
+                window=self,
+            )
+            self._grab_pet_overlay(self._pet_overlay)
+        except tk.TclError:
+            # A transient teardown must not leave the pet in a grabbed drag
+            # that would swallow every subsequent pointer event.
+            self._release_pet_overlay(self._pet_overlay)
+            self._pet_dragging = False
 
     def _pet_move(self, event) -> None:
         pointer = self._pet_pointer(event)
@@ -2204,73 +2210,78 @@ class LexiTrackApp(tk.Tk):
             self._pet_move(event)
             return self._pet_drag_host_dialog
 
-        dialog, moved_for_release = _resolve_pet_release_host(
-            self,
-            self._pet_drag_host_dialog,
-            final_move,
-        )
-        if dialog is not None:
-            if dialog is self:
-                if not moved_for_release:
-                    pointer = self._pet_pointer(event)
-                    moved = self.pet_companion.drag_move(
-                        PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
+        try:
+            dialog, moved_for_release = _resolve_pet_release_host(
+                self,
+                self._pet_drag_host_dialog,
+                final_move,
+            )
+            if dialog is not None:
+                if dialog is self:
+                    if not moved_for_release:
+                        pointer = self._pet_pointer(event)
+                        moved = self.pet_companion.drag_move(
+                            PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
+                            self._pet_viewport(),
+                        )
+                        self._record_pet_sample(
+                            self._pet_drag_samples,
+                            self._pet_now_ms(),
+                            moved.position,
+                            window=self,
+                        )
+                    velocity = estimate_release_velocity(self._pet_drag_samples)
+                    self.pet_companion.drag_release(
+                        self._collect_pet_targets(),
                         self._pet_viewport(),
+                        release_velocity=velocity,
                     )
-                    self._record_pet_sample(
-                        self._pet_drag_samples,
-                        self._pet_now_ms(),
-                        moved.position,
-                        window=self,
-                    )
+                    self._pet_drag_samples = []
+                else:
+                    runtime = self._dialog_pet_runtimes.get(dialog)
+                    if runtime is not None:
+                        if not moved_for_release:
+                            event_point = PetPoint(
+                                float(event.x_root - dialog.winfo_rootx()),
+                                float(event.y_root - dialog.winfo_rooty()),
+                            )
+                            moved = runtime.companion.drag_move(
+                                PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
+                                self._pet_viewport_for(dialog),
+                            )
+                            runtime.drag_samples = runtime.drag_samples or []
+                            self._record_pet_sample(
+                                runtime.drag_samples,
+                                self._pet_now_ms(),
+                                moved.position,
+                                window=dialog,
+                            )
+                        velocity = estimate_release_velocity(runtime.drag_samples)
+                        runtime.companion.drag_release(
+                            self._collect_dialog_pet_targets(dialog, runtime.key),
+                            self._pet_viewport_for(dialog),
+                            release_velocity=velocity,
+                        )
+                        runtime.drag_samples = []
+            else:
+                self._pet_targets = self._collect_pet_targets()
                 velocity = estimate_release_velocity(self._pet_drag_samples)
                 self.pet_companion.drag_release(
-                    self._collect_pet_targets(),
+                    self._pet_targets,
                     self._pet_viewport(),
                     release_velocity=velocity,
                 )
-                self._release_pet_overlay(self._pet_overlay)
                 self._pet_drag_samples = []
-            else:
-                runtime = self._dialog_pet_runtimes.get(dialog)
-                if runtime is not None:
-                    if not moved_for_release:
-                        event_point = PetPoint(
-                            float(event.x_root - dialog.winfo_rootx()),
-                            float(event.y_root - dialog.winfo_rooty()),
-                        )
-                        moved = runtime.companion.drag_move(
-                            PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
-                            self._pet_viewport_for(dialog),
-                        )
-                        runtime.drag_samples = runtime.drag_samples or []
-                        self._record_pet_sample(
-                            runtime.drag_samples,
-                            self._pet_now_ms(),
-                            moved.position,
-                            window=dialog,
-                        )
-                    velocity = estimate_release_velocity(runtime.drag_samples)
-                    runtime.companion.drag_release(
-                        self._collect_dialog_pet_targets(dialog, runtime.key),
-                        self._pet_viewport_for(dialog),
-                        release_velocity=velocity,
-                    )
-                    self._release_pet_overlay(runtime.overlay)
-                    runtime.drag_samples = []
+        finally:
+            # Pointer capture (``grab_set``) must always be released.  A drag
+            # handler error otherwise leaves every subsequent mouse event
+            # routed to the sprite window, which locks the whole page even
+            # though the application is still responsive.
+            self._release_pet_overlay(self._pet_overlay)
+            for runtime in self._dialog_pet_runtimes.values():
+                self._release_pet_overlay(runtime.overlay)
             self._pet_drag_host_dialog = None
             self._pet_dragging = False
-            return
-        self._pet_targets = self._collect_pet_targets()
-        velocity = estimate_release_velocity(self._pet_drag_samples)
-        self.pet_companion.drag_release(
-            self._pet_targets,
-            self._pet_viewport(),
-            release_velocity=velocity,
-        )
-        self._release_pet_overlay(self._pet_overlay)
-        self._pet_drag_samples = []
-        self._pet_dragging = False
 
     def _configure_styles(self):
         style = ttk.Style(self)

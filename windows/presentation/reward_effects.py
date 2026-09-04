@@ -458,6 +458,7 @@ class RewardEffectLayer(tk.Toplevel):
         # the trampoline used by the native window procedure.
         self._passthrough_handles: list[tuple[int, int]] = []
         self._passthrough_callbacks: list = []
+        self._passthrough_failures: list[int] = []
         self._call_window_proc = None
         self.withdraw()
         self.overrideredirect(True)
@@ -492,54 +493,103 @@ class RewardEffectLayer(tk.Toplevel):
             )
         return 0, 0, max(1, parent.winfo_screenwidth()), max(1, parent.winfo_screenheight())
 
+    def _native_surfaces(self) -> list[int]:
+        """Return the layer's top-level native window plus every descendant HWND.
+
+        The effect surface must be click-transparent on *every* native window
+        in its hierarchy.  Some Tk builds nest an extra wrapper or drawing
+        window below the Toplevel; a single unsubclassed surface would swallow
+        mouse events for as long as the flight is visible, which locks the
+        page even though the orb animation itself keeps running.
+        """
+        result: list[int] = []
+        try:
+            widget_hwnd = int(self.winfo_id() or 0)
+        except (tk.TclError, TypeError, ValueError):
+            return result
+        hwnd = widget_hwnd
+        if sys.platform == "win32":
+            try:
+                user32 = ctypes.windll.user32
+                get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+                get_style.restype = ctypes.c_void_p
+                get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+                window_style = int(get_style(widget_hwnd, -16) or 0)
+                if window_style & 0x40000000:  # WS_CHILD
+                    parent_hwnd = int(user32.GetParent(widget_hwnd) or 0)
+                    if parent_hwnd:
+                        hwnd = parent_hwnd
+                enumerator_type = ctypes.WINFUNCTYPE(
+                    wintypes.BOOL,
+                    wintypes.HWND,
+                    wintypes.LPARAM,
+                )
+
+                @enumerator_type
+                def collect(child_hwnd, _lparam):
+                    result.append(int(child_hwnd))
+                    return True
+
+                user32.EnumChildWindows(hwnd, collect, 0)
+            except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
+                pass
+        for candidate in (hwnd, widget_hwnd):
+            if candidate and candidate not in result:
+                # EnumChildWindows returns descendants only; the top-level
+                # itself must be subclassed too.
+                result.append(candidate)
+        try:
+            canvas_hwnd = int(self.canvas.winfo_id() or 0)
+        except (tk.TclError, TypeError, ValueError):
+            canvas_hwnd = 0
+        if canvas_hwnd and canvas_hwnd not in result:
+            result.append(canvas_hwnd)
+        return result
+
     def _enable_mouse_passthrough(self) -> None:
         if sys.platform != "win32":
             return
         try:
-            user32 = ctypes.windll.user32
-            get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-            set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
-            # Explicit pointer signatures avoid truncating a 64-bit WNDPROC.
-            get_style.restype = ctypes.c_void_p
-            get_style.argtypes = [wintypes.HWND, ctypes.c_int]
-            set_style.restype = ctypes.c_void_p
-            set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-            widget_hwnd = int(self.winfo_id())
-            hwnd = widget_hwnd
-            # Tk normally exposes the Toplevel HWND directly.  A few Tk builds
-            # expose an intermediate child HWND instead; only in that case use
-            # its parent, so an owned application window is never subclassed.
-            window_style = int(get_style(widget_hwnd, -16) or 0)
-            if window_style & 0x40000000:  # WS_CHILD
-                parent_hwnd = int(user32.GetParent(widget_hwnd) or 0)
-                if parent_hwnd:
-                    hwnd = parent_hwnd
-            extended_style = int(get_style(hwnd, -20) or 0)
-            set_style(
-                hwnd,
-                -20,
-                extended_style | 0x00000020 | 0x00080000 | 0x08000000 | 0x00000080,
-            )
-            self._install_hit_test_passthrough(user32, hwnd)
-            # Some Tk builds expose an intermediate child HWND below the real
-            # top-level.  Make that window pass hits through as well so every
-            # native surface of the effect layer is click-transparent.
-            if widget_hwnd != hwnd:
-                self._install_hit_test_passthrough(user32, widget_hwnd)
-            # Tk places the drawing surface in a child window.  That child is
-            # the real hit-test target over most of the screen, so it must also
-            # pass hits through or it will swallow every mouse event while the
-            # reward flight is visible.
-            canvas_hwnd = int(self.canvas.winfo_id())
-            if canvas_hwnd and canvas_hwnd != hwnd:
-                self._install_hit_test_passthrough(user32, canvas_hwnd)
+            self._enable_mouse_passthrough_with(ctypes.windll.user32)
         except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
             pass
 
-    def _install_hit_test_passthrough(self, user32, hwnd: int) -> None:
-        """Subclass the native layer window so hit tests reach Tk controls."""
-        if any(existing == hwnd for existing, _original in self._passthrough_handles):
+    def _enable_mouse_passthrough_with(self, user32) -> None:
+        get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        # Explicit pointer signatures avoid truncating a 64-bit WNDPROC.
+        get_style.restype = ctypes.c_void_p
+        get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+        set_style.restype = ctypes.c_void_p
+        set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        surfaces = self._native_surfaces()
+        if not surfaces:
             return
+        top_level = surfaces[0]
+        extended_style = int(get_style(top_level, -20) or 0)
+        try:
+            set_style(
+                top_level,
+                -20,
+                extended_style | 0x00000020 | 0x00080000 | 0x08000000 | 0x00000080,
+            )
+        except (OSError, TypeError, ValueError, ctypes.ArgumentError):
+            pass
+        # Subclass every native surface of the layer so Win32 forwards a
+        # hit to the application window below regardless of how many
+        # wrapper windows this Tk build creates.
+        for surface in surfaces:
+            self._install_hit_test_passthrough(user32, surface)
+
+    def _install_hit_test_passthrough(self, user32, hwnd: int) -> bool:
+        """Subclass the native layer window so hit tests reach Tk controls.
+
+        Return ``False`` (without raising) when the surface could not be
+        subclassed, so callers can diagnose a layer that would otherwise
+        swallow input.
+        """
+        if any(existing == hwnd for existing, _original in self._passthrough_handles):
+            return True
         get_proc = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
         set_proc = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
         call_proc = user32.CallWindowProcW
@@ -565,7 +615,8 @@ class RewardEffectLayer(tk.Toplevel):
         ]
         original = get_proc(hwnd, _GWL_WNDPROC)
         if not original:
-            return
+            self._note_passthrough_failure(hwnd, "no original window procedure")
+            return False
         original_pointer = int(original)
 
         @wnd_proc_type
@@ -585,10 +636,33 @@ class RewardEffectLayer(tk.Toplevel):
                 # the ctypes callback boundary.
                 return 0
 
-        set_proc(hwnd, _GWL_WNDPROC, wnd_proc)
+        try:
+            set_proc(hwnd, _GWL_WNDPROC, wnd_proc)
+        except (OSError, TypeError, ValueError, ctypes.ArgumentError):
+            self._note_passthrough_failure(hwnd, f"SetWindowLongPtr failed")
+            return False
+        installed = get_proc(hwnd, _GWL_WNDPROC)
+        expected = ctypes.cast(wnd_proc, ctypes.c_void_p).value
+        if int(installed or 0) != int(expected or 0):
+            self._note_passthrough_failure(hwnd, "window procedure not installed")
+            return False
         self._passthrough_handles.append((hwnd, original_pointer))
         self._passthrough_callbacks.append(wnd_proc)
         self._call_window_proc = call_proc
+        return True
+
+    def _note_passthrough_failure(self, hwnd: int, reason: str) -> None:
+        if self._passthrough_failures.count(hwnd) > 0:
+            return
+        self._passthrough_failures.append(hwnd)
+        try:
+            if sys.stderr is not None:
+                sys.stderr.write(
+                    f"LexiTrack reward layer: click-through not installed on {hwnd:#x} ({reason}); "
+                    "mouse input may be blocked while a reward flight is visible.\n"
+                )
+        except (AttributeError, OSError, TypeError):
+            pass
 
     def _restore_hit_test_passthrough(self) -> None:
         """Restore Tk's original WNDPROC before the native window is freed."""
@@ -604,6 +678,7 @@ class RewardEffectLayer(tk.Toplevel):
                 pass
         self._passthrough_handles.clear()
         self._passthrough_callbacks.clear()
+        self._passthrough_failures.clear()
         self._call_window_proc = None
 
     def show(self) -> None:
@@ -785,24 +860,35 @@ class RewardEffectsController:
         if self._destroyed:
             return
         self._advance_clock()
+        host_visible = True
         try:
-            if not self._host_visible():
-                self.layer.hide()
-            else:
+            host_visible = self._host_visible()
+            if host_visible:
                 target = self.target_provider()
                 self.model.update(self._animation_now_ms, target, self.pet_half_size)
-                if self.model.active_count:
-                    self.layer.show()
-                    self.layer.render(self.model, self._animation_now_ms)
-                    self.layer.keep_above()
-                else:
-                    self.layer.hide()
+            else:
+                self.layer.hide()
         except Exception:
             # A single failed frame (for example a transient control teardown
             # while sampling the pet target) must not strand the overlay or
-            # freeze the animation: skip the frame and let the flights keep
-            # aging so they still clean up and hide the layer.
+            # freeze the animation: skip the frame and keep the flights aging
+            # so they still clean up and hide the layer.
             pass
+        if host_visible and self.model.active_count:
+            try:
+                self.layer.show()
+                self.layer.render(self.model, self._animation_now_ms)
+                self.layer.keep_above()
+            except Exception:
+                pass
+        elif not self.model.active_count:
+            # The layer must come down even when every earlier attempt to
+            # hide it failed; a lingering full-screen surface would block
+            # input on the whole page.
+            try:
+                self.layer.hide()
+            except tk.TclError:
+                pass
         if self.model.active_count:
             self._after_id = self.host.after(FRAME_MS, self._tick)
 

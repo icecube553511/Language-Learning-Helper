@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 from pathlib import Path
@@ -350,6 +351,70 @@ class RewardEffectsTests(unittest.TestCase):
         self.assertEqual(controller._after_id, "after:1")
         self.assertEqual(len(host.scheduled), 1)
 
+    def test_pet_press_releases_capture_when_sampling_fails(self):
+        """A failed drag press must not leave a grab that swallows all input."""
+        app = object.__new__(LexiTrackApp)
+        app._pet_render_generation = 0
+        app._pet_render_after_ids = []
+        app._pet_drag_samples = []
+        app._pet_dragging = False
+        app._pet_drag_host_dialog = None
+        app._cancel_main_pet_render = lambda: None
+
+        class Overlay:
+            def __init__(self):
+                self.released = 0
+
+            def release_pointer(self):
+                self.released += 1
+
+        overlay = Overlay()
+        app._pet_overlay = overlay
+        app._dialog_pet_runtimes = {}
+        app._pet_pointer = lambda _event: PetPoint(12.0, 34.0)
+        app.pet_companion = Mock()
+        app.pet_companion.state = PetState(PetPoint(20.0, 50.0))
+        app.pet_companion.drag_start = Mock(return_value=app.pet_companion.state)
+        app._record_pet_sample = Mock(side_effect=tk.TclError("unmapped mid-press"))
+        app._grab_pet_overlay = lambda _overlay: None
+
+        app._pet_press(Mock())
+
+        self.assertEqual(overlay.released, 1)
+        self.assertFalse(app._pet_dragging)
+
+    def test_pet_release_always_releases_pointer_capture(self):
+        """Even when the release path raises, the pointer grab must be released."""
+        app = object.__new__(LexiTrackApp)
+        app._pet_drag_host_dialog = None
+        app._pet_dragging = True
+        app._pet_drag_samples = []
+
+        class Overlay:
+            def __init__(self):
+                self.released = 0
+
+            def release_pointer(self):
+                self.released += 1
+
+        overlay = Overlay()
+        app._pet_overlay = overlay
+        app._dialog_pet_runtimes = {}
+        app.pet_companion = Mock()
+        app._pet_drag_offset = PetPoint(0.0, 0.0)
+
+        def boom_move(_event):
+            raise tk.TclError("card teardown during drag")
+
+        app._pet_move = boom_move
+
+        with self.assertRaises(tk.TclError):
+            app._pet_release(Mock())
+
+        self.assertEqual(overlay.released, 1)
+        self.assertFalse(app._pet_dragging)
+        self.assertIsNone(app._pet_drag_host_dialog)
+
     def test_effect_layer_hit_test_is_explicitly_transparent(self):
         self.assertEqual(transparent_hit_test_result(WM_NCHITTEST), HTTRANSPARENT)
         self.assertIsNone(transparent_hit_test_result(0x0201))
@@ -360,11 +425,22 @@ class RewardEffectsTests(unittest.TestCase):
         layer = object.__new__(RewardEffectLayer)
         layer._passthrough_handles = []
         layer._passthrough_callbacks = []
+        layer._passthrough_failures = []
         layer._call_window_proc = None
 
+        installed: dict[int, object] = {}
+
+        def fake_get(hwnd, index):
+            value = installed.get(int(hwnd), 0xDEAD_BEEF)
+            return value if isinstance(value, int) else ctypes.cast(value, ctypes.c_void_p).value
+
+        def fake_set(hwnd, index, value):
+            installed[int(hwnd)] = value
+            return 0
+
         user32 = Mock()
-        user32.GetWindowLongPtrW = Mock(return_value=0xDEAD_BEEF)
-        user32.SetWindowLongPtrW = Mock(return_value=0)
+        user32.GetWindowLongPtrW = Mock(side_effect=fake_get)
+        user32.SetWindowLongPtrW = Mock(side_effect=fake_set)
         user32.CallWindowProcW = Mock(return_value=0)
 
         layer._install_hit_test_passthrough(user32, 0x1234)
@@ -377,6 +453,64 @@ class RewardEffectsTests(unittest.TestCase):
             [0x1234, 0x5678],
         )
         self.assertEqual(len(layer._passthrough_callbacks), 2)
+        self.assertEqual(layer._passthrough_failures, [])
+
+    def test_effect_layer_enumerates_every_descendant_surface(self):
+        """Every native surface of the layer hierarchy must become click-through.
+
+        Some Tk builds insert extra wrapper windows between the Toplevel and
+        the drawing canvas; a single unsubclassed surface would swallow every
+        mouse event while the reward flight is visible.
+        """
+        layer = object.__new__(RewardEffectLayer)
+        layer._passthrough_handles = []
+        layer._passthrough_callbacks = []
+        layer._passthrough_failures = []
+        layer._call_window_proc = None
+        layer._native_surfaces = lambda: [0x1000, 0x1001, 0x1002, 0x1003]
+
+        installed: dict[int, object] = {}
+
+        def fake_get(hwnd, index):
+            value = installed.get(int(hwnd), 0xDEAD_BEEF)
+            return value if isinstance(value, int) else ctypes.cast(value, ctypes.c_void_p).value
+
+        def fake_set(hwnd, index, value):
+            installed[int(hwnd)] = value
+            return 0
+
+        user32 = Mock()
+        user32.GetWindowLongPtrW = Mock(side_effect=fake_get)
+        user32.SetWindowLongPtrW = Mock(side_effect=fake_set)
+        user32.CallWindowProcW = Mock(return_value=0)
+
+        layer._enable_mouse_passthrough_with(user32)
+
+        self.assertEqual(
+            [handle for handle, _original in layer._passthrough_handles],
+            [0x1000, 0x1001, 0x1002, 0x1003],
+        )
+        self.assertEqual(len(layer._passthrough_callbacks), 4)
+        self.assertEqual(layer._passthrough_failures, [])
+
+    def test_effect_layer_reports_uninstallable_surface(self):
+        """A surface whose window procedure cannot be replaced must be reported."""
+        layer = object.__new__(RewardEffectLayer)
+        layer._passthrough_handles = []
+        layer._passthrough_callbacks = []
+        layer._passthrough_failures = []
+        layer._call_window_proc = None
+
+        user32 = Mock()
+        user32.GetWindowLongPtrW = Mock(return_value=0xDEAD_BEEF)
+        user32.SetWindowLongPtrW = Mock(return_value=0)
+        user32.CallWindowProcW = Mock(return_value=0)
+
+        success = layer._install_hit_test_passthrough(user32, 0x4321)
+
+        self.assertFalse(success)
+        self.assertEqual(layer._passthrough_handles, [])
+        self.assertIn(0x4321, layer._passthrough_failures)
 
     def test_tunable_configuration_matches_golden_contract(self):
         feedback = GOLDEN["rewardFlight"]
