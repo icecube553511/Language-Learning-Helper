@@ -765,7 +765,7 @@ private fun PetAlertDialog(
                     onPointerActiveChange = {},
                     preferredActive = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
-                RewardEffectsCanvas(
+                FeedbackCanvas(
                     windowOrigin = viewportOrigin,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -795,10 +795,10 @@ fun LexiTrackApp(
     val petWindowCoordinator = remember {
         PetWindowCoordinator()
     }
-    val rewardEffectsController = remember { RewardEffectsController() }
+    val feedbackController = remember { FeedbackController() }
     val petHalfSizePx = with(LocalDensity.current) { PET_DISPLAY_SIZE_DP.dp.toPx() / 2f }
-    LaunchedEffect(viewModel, rewardEffectsController) {
-        viewModel.rewardEffects.collect(rewardEffectsController::emit)
+    LaunchedEffect(viewModel, feedbackController) {
+        viewModel.feedbackEvents.collect(feedbackController::emit)
     }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
@@ -832,7 +832,7 @@ fun LexiTrackApp(
             LocalRegisterPetWindow provides registerPetWindow,
             LocalPetWindowStack provides petWindows,
             LocalPetWindowCoordinator provides petWindowCoordinator,
-            LocalRewardEffectsController provides rewardEffectsController,
+            LocalFeedbackController provides feedbackController,
             LocalPetNavigationKey provides state.section,
         ) {
             Box(
@@ -978,12 +978,12 @@ fun LexiTrackApp(
             onPointerActiveChange = { petPointerActive = it },
             preferredActive = isMainPetWindowVisible(petWindows),
         )
-        RewardEffectsCanvas(
+        FeedbackCanvas(
             windowOrigin = petViewportOrigin,
             modifier = Modifier.fillMaxSize(),
         )
-        RewardEffectsAnimator(
-            controller = rewardEffectsController,
+        FeedbackAnimator(
+            controller = feedbackController,
             coordinator = petWindowCoordinator,
             petHalfSizePx = petHalfSizePx,
         )
@@ -1558,7 +1558,7 @@ private fun StudyScreen(
     card: VocabularyEntry?,
     revealed: Boolean,
     onReveal: () -> Unit,
-    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
+    onRate: (ReviewRating, FeedbackOrigin) -> Unit,
     title: String,
     emptyTitle: String,
     emptyMessage: String,
@@ -1634,7 +1634,7 @@ private fun ReviewScreen(
     state: MainUiState,
     onStart: () -> Unit,
     onReveal: () -> Unit,
-    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
+    onRate: (ReviewRating, FeedbackOrigin) -> Unit,
     onLevelsChange: (Set<String>) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
@@ -1758,7 +1758,7 @@ private fun LevelFilterRow(
 @Composable
 private fun RevealedCardContent(
     card: VocabularyEntry,
-    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
+    onRate: (ReviewRating, FeedbackOrigin) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -1838,7 +1838,7 @@ private fun RatingButton(
     label: String,
     color: Color,
     modifier: Modifier,
-    onClick: (RewardEffectOrigin) -> Unit,
+    onClick: (FeedbackOrigin) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
     val hostView = LocalView.current
@@ -1861,7 +1861,7 @@ private fun RatingButton(
                         pass = PointerEventPass.Initial,
                     )
                     pointerDown = RatingPointerDown(
-                        origin = RewardEffectOrigin(
+                        origin = FeedbackOrigin(
                             x = bounds.left + down.position.x,
                             y = bounds.top + down.position.y,
                         ),

@@ -71,8 +71,8 @@ from presentation.widgets import (
     centered_window_position,
     draw_icon,
 )
-from presentation.reward_effects import (
-    RewardEffectsController,
+from presentation.reward_feedback import (
+    RewardFeedbackController,
     RewardPoint,
     STUDY_REWARD_COLOR,
 )
@@ -465,12 +465,12 @@ class LexiTrackApp(tk.Tk):
         # after the pet crosses back into the root host.
         self._pet_drag_host_dialog: tk.Misc | None = None
         self._pet_last_rendered_position: PetPoint | None = None
-        self._reward_effects: RewardEffectsController | None = None
+        self._reward_feedback: RewardFeedbackController | None = None
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
         self._setup_pet_overlay()
-        self._reward_effects = RewardEffectsController(
+        self._reward_feedback = RewardFeedbackController(
             self,
             self._reward_pet_center,
             pet_half_size=PET_DISPLAY_SIZE / 2.0,
@@ -582,9 +582,9 @@ class LexiTrackApp(tk.Tk):
         return self._rating_button_center(button)
 
     def _emit_rating_reward(self, source: RewardPoint, color: str) -> None:
-        if self._reward_effects is not None:
+        if self._reward_feedback is not None:
             try:
-                self._reward_effects.emit(source, color)
+                self._reward_feedback.emit(source, color)
             except (RuntimeError, tk.TclError):
                 pass
 
@@ -608,8 +608,8 @@ class LexiTrackApp(tk.Tk):
             height=height,
         )
         overlay.lift()
-        if self._reward_effects is not None:
-            self._reward_effects.keep_above(overlay)
+        if self._reward_feedback is not None:
+            self._reward_feedback.keep_above(overlay)
 
     def _cancel_main_pet_render(self) -> None:
         self._pet_render_generation += 1
@@ -697,9 +697,9 @@ class LexiTrackApp(tk.Tk):
 
     def destroy(self) -> None:
         """Stop the transient pet window before tearing down the Tk root."""
-        if self._reward_effects is not None:
-            self._reward_effects.destroy()
-            self._reward_effects = None
+        if self._reward_feedback is not None:
+            self._reward_feedback.destroy()
+            self._reward_feedback = None
         self._cancel_main_pet_render()
         for dialog in tuple(self._dialog_pet_runtimes):
             self._detach_pet_from_dialog(dialog)
@@ -6281,14 +6281,14 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
     # native surface of the overlay must be subclassed to return
     # HTTRANSPARENT, otherwise the full-screen layer would swallow all mouse
     # input for the duration of the animation.
-    reward_layer_click_through_ready = False
-    if app._reward_effects is not None:
-        layer = app._reward_effects.layer
+    feedback_layer_click_through_ready = False
+    if app._reward_feedback is not None:
+        layer = app._reward_feedback.layer
         surfaces = layer._native_surfaces()
         subclassed = {handle for handle, _original in layer._passthrough_handles}
         try:
             layer.show()
-            reward_layer_click_through_ready = bool(
+            feedback_layer_click_through_ready = bool(
                 surfaces
                 and not layer._passthrough_failures
                 and all(surface in subclassed for surface in surfaces)
@@ -6299,10 +6299,10 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
                 )
             )
         except tk.TclError:
-            reward_layer_click_through_ready = False
+            feedback_layer_click_through_ready = False
         finally:
             try:
-                app._reward_effects.model.clear()
+                app._reward_feedback.model.clear()
                 layer.hide()
             except tk.TclError:
                 pass
@@ -6355,7 +6355,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and reminder_word_bubble_cleanup_ready
             and pet_navigation_ready
             and pet_control_coverage_ready
-            and reward_layer_click_through_ready
+            and feedback_layer_click_through_ready
             and all(
                 pet_control_classes_seen & alternatives
                 for alternatives in (
@@ -6387,7 +6387,7 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "petDialogFocusPromotionReady": pet_dialog_focus_promotion_ready,
         "petNavigationReady": pet_navigation_ready,
         "petControlCoverageReady": pet_control_coverage_ready,
-        "rewardLayerClickThroughReady": reward_layer_click_through_ready,
+        "rewardLayerClickThroughReady": feedback_layer_click_through_ready,
         "petControlClasses": sorted(pet_control_classes_seen),
         "catalogCount": app.catalog_count,
         "studyCardReady": app.current_card is None or len(app.current_card.examples) >= 3,

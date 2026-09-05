@@ -166,8 +166,8 @@ class MainViewModel(
     private var dictationSyncPushGeneration: Long = 0
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
-    private val _rewardEffects = MutableSharedFlow<RewardEffectRequest>(extraBufferCapacity = 64)
-    val rewardEffects: SharedFlow<RewardEffectRequest> = _rewardEffects.asSharedFlow()
+    private val _feedbackEvents = MutableSharedFlow<FeedbackRequest>(extraBufferCapacity = 64)
+    val feedbackEvents: SharedFlow<FeedbackRequest> = _feedbackEvents.asSharedFlow()
 
     /** Keep the flattened selection as a compatibility view over group state. */
     private fun mergeDictationSelection(
@@ -284,7 +284,7 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(answerRevealed = true)
     }
 
-    fun rateCurrent(rating: ReviewRating, origin: RewardEffectOrigin? = null): Boolean {
+    fun rateCurrent(rating: ReviewRating, origin: FeedbackOrigin? = null): Boolean {
         val state = _uiState.value
         val card = state.currentCard ?: return false
         if (!state.answerRevealed || studyRatingInProgress) return false
@@ -294,7 +294,7 @@ class MainViewModel(
             try {
                 useCases.rateWord(card.id, rating)
                 origin?.let {
-                    _rewardEffects.emit(RewardEffectRequest(RewardEffectKind.STUDY, it))
+                    _feedbackEvents.emit(FeedbackRequest(FeedbackKind.STUDY, it))
                 }
                 succeeded = true
                 _uiState.value = _uiState.value.copy(currentCard = null, answerRevealed = false)
@@ -1228,7 +1228,7 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(reviewAnswerRevealed = true)
     }
 
-    fun rateReviewCurrent(rating: ReviewRating, origin: RewardEffectOrigin? = null): Boolean {
+    fun rateReviewCurrent(rating: ReviewRating, origin: FeedbackOrigin? = null): Boolean {
         val state = _uiState.value
         val card = state.reviewCard ?: return false
         if (!state.reviewAnswerRevealed || reviewRatingInProgress) return false
@@ -1237,7 +1237,7 @@ class MainViewModel(
             try {
                 useCases.rateReviewWord(card.id, rating)
                 origin?.let {
-                    _rewardEffects.emit(RewardEffectRequest(RewardEffectKind.REVIEW, it))
+                    _feedbackEvents.emit(FeedbackRequest(FeedbackKind.REVIEW, it))
                 }
                 val current = _uiState.value
                 val remaining = if (current.reviewQueue.firstOrNull()?.id == card.id) {

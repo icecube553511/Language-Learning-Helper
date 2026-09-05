@@ -27,14 +27,23 @@
     "curveLandingSpeedLimit": 8.0,
     "curveDownhillTerminalSpeed": 4.0,
     "curveDownhillResponsePerTick": 0.0625,
-    "curveDirectionEpsilon": 0.000001,
+    "curveDirectionEpsilon": 1e-06,
     "curveLandingRestDirection": "local-positive-y-downhill",
     "curveLandingInitialUphillMotion": true,
     "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
-    "targetKinds": ["control", "surface", "chart", "edge"],
+    "targetKinds": [
+      "control",
+      "surface",
+      "chart",
+      "edge"
+    ],
     "navigationTransition": "drop-to-nearest",
     "supportSide": "upper",
-    "screenEdges": ["left", "right", "bottom"],
+    "screenEdges": [
+      "left",
+      "right",
+      "bottom"
+    ],
     "acceleratedFall": true,
     "fallTimeStepSeconds": 0.016,
     "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
@@ -71,7 +80,11 @@
     "platformManagedUiExcluded": true,
     "windowMigration": {
       "enabled": true,
-      "entryDirections": ["left", "right", "top"],
+      "entryDirections": [
+        "left",
+        "right",
+        "top"
+      ],
       "dragEntry": true,
       "boundaryPolicy": "portal-at-viewport-edge",
       "candidateSelection": "earliest-motion-intersection",
@@ -93,49 +106,53 @@
     "transientOnly": true
   },
   "petVitals": {
-    "satiety": { "minimum": 0.0, "maximum": 100.0, "default": 50.0 },
-    "foodReserve": { "minimum": 0.0, "maximum": 200.0, "default": 0.0 },
-    "foodJar": { "model": "value-object", "aggregateOwner": "pet-vitals", "persistedField": "foodReserve" },
-    "hunger": { "hungryBelow": 30.0, "satisfiedFromInclusive": 70.0, "reserveRefillTarget": 50.0 },
+    "satiety": {
+      "minimum": 0.0,
+      "maximum": 100.0,
+      "default": 50.0
+    },
+    "foodReserve": {
+      "minimum": 0.0,
+      "maximum": 200.0,
+      "default": 0.0
+    },
+    "foodJar": {
+      "model": "value-object",
+      "aggregateOwner": "pet-vitals",
+      "persistedField": "foodReserve"
+    },
+    "hunger": {
+      "hungryBelow": 30.0,
+      "satisfiedFromInclusive": 70.0,
+      "reserveRefillTarget": 50.0
+    },
     "overflowToFoodReserveRatio": 0.2,
-    "moods": ["sad", "worried", "happy", "excited", "bored", "calm"],
+    "moods": [
+      "sad",
+      "worried",
+      "happy",
+      "excited",
+      "bored",
+      "calm"
+    ],
     "defaultMood": "calm",
-    "temporaryReviewTags": ["ToBeReviewed_Forgot", "ToBeReviewed_Vague"],
+    "temporaryReviewTags": [
+      "ToBeReviewed_Forgot",
+      "ToBeReviewed_Vague"
+    ],
     "temporaryReviewTagCardinality": "zero-or-one",
     "persisted": true,
-    "visible": false,
-    "rewardFlight": {
-      "studyColor": "#F4C542",
-      "reviewColor": "platform-primary-teal",
-      "sourceAnchor": "pointer-down-screen-position",
-      "targetTracking": "rendered-pet-center-every-frame",
-      "concurrency": "independent-no-replacement",
-      "visual": {
-        "orbRadius": 13.0,
-        "orbGlowRadius": 30.0,
-        "orbHighlightRadius": 3.0,
-        "orbPulseAmplitude": 0.14,
-        "studyOrbPulsePeriodMs": 460,
-        "reviewOrbPulsePeriodMs": 320,
-        "orbRingRadius": 21.0,
-        "orbRingStrokeWidth": 1.5,
-        "trailMinimumStrokeWidth": 4.0,
-        "trailMaximumStrokeWidth": 9.0,
-        "trailStrokeSpeedFactor": 0.0025,
-        "trailGlowWidthMultiplier": 1.8,
-        "burstParticleRadius": 4.0,
-        "burstParticleGlowRadius": 9.0,
-        "burstRingStartRadius": 12.0,
-        "burstRingEndRadius": 52.0,
-        "burstRingStrokeWidth": 3.0,
-        "burstRingDurationMs": 180
-      }
-    }
+    "visible": false
   },
   "petAppearance": {
     "sourceDirectory": "shared/assets/branding/pet_states",
     "runtimeDirectory": "shared/assets/pets/states",
-    "requiredStateAssets": ["pain.png", "scared.png", "sleep.png", "hungry.png"],
+    "requiredStateAssets": [
+      "pain.png",
+      "scared.png",
+      "sleep.png",
+      "hungry.png"
+    ],
     "happyAssetPattern": "^happy([1-9][0-9]*)\\.png$",
     "thresholds": {
       "largeLandingSpeed": 437.5,
@@ -144,7 +161,14 @@
       "doubleTapWindowMs": 300,
       "hungrySatiety": 0.0
     },
-    "priority": ["pain", "scared", "hungry", "sleep", "happy", "normal"],
+    "priority": [
+      "pain",
+      "scared",
+      "hungry",
+      "sleep",
+      "happy",
+      "normal"
+    ],
     "priorityDecision": "recommended-pain-before-scared",
     "priorityConfirmed": false,
     "missingAssetPolicy": "skip-missing-choice-and-fallback-to-normal",
@@ -162,9 +186,28 @@
   "popupGeometry": {
     "initialPlacement": "measure-before-position-and-viewport-clamp"
   },
-  "learningReminder": { "minimumMinutes": 0.5, "maximumMinutes": 120.0, "defaultMinutes": 30.0 },
-  "studyOrder": { "default": "random", "allowed": ["random", "alphabetical"] },
-  "vocabularyFilters": { "levels": ["CET4", "CET6", "CUSTOM"], "studyAndReviewIndependent": true, "reminderIndependent": true, "multiSelect": true },
+  "learningReminder": {
+    "minimumMinutes": 0.5,
+    "maximumMinutes": 120.0,
+    "defaultMinutes": 30.0
+  },
+  "studyOrder": {
+    "default": "random",
+    "allowed": [
+      "random",
+      "alphabetical"
+    ]
+  },
+  "vocabularyFilters": {
+    "levels": [
+      "CET4",
+      "CET6",
+      "CUSTOM"
+    ],
+    "studyAndReviewIndependent": true,
+    "reminderIndependent": true,
+    "multiSelect": true
+  },
   "capabilities": {
     "dashboard": "ready",
     "librarySearch": "ready",
@@ -198,12 +241,44 @@
     "petMotionContinuityDuringReflow": "ready",
     "petAnimationFrameResilience": "ready",
     "petVitalsAndRatingRewards": "ready",
-    "ratingRewardFlightEffect": "ready",
     "petAppearanceStates": "disabled",
     "dictationRandomSubsetSelection": "ready",
     "dictationRangeSelection": "ready",
     "dictationDraftPersistence": "ready",
-    "dictationDraftSyncPort": "ready"
+    "dictationDraftSyncPort": "ready",
+    "ratingRewardFeedback": "ready"
   },
-  "platforms": ["windows", "android"]
+  "platforms": [
+    "windows",
+    "android"
+  ],
+  "rewardFeedbackVersion": "reward-feedback-v1",
+  "rewardFeedback": {
+    "studyColor": "#F4C542",
+    "reviewColor": "platform-primary-teal",
+    "sourceAnchor": "pointer-down-screen-position",
+    "targetTracking": "rendered-pet-center-every-frame",
+    "concurrency": "independent-no-replacement",
+    "introMs": 150.0,
+    "introArc": 15.0,
+    "seekSpeed": 260.0,
+    "seekAcceleration": 1900.0,
+    "maxSpeed": 1800.0,
+    "contactRadius": 7.0,
+    "burstMs": 280.0,
+    "burstParticles": 12,
+    "maxAgeMs": 2400.0,
+    "missingTargetMs": 600.0,
+    "visual": {
+      "orbRadius": 11.0,
+      "orbGlowRadius": 27.0,
+      "orbHighlightRadius": 2.5,
+      "trailMinimumStrokeWidth": 2.0,
+      "trailMaximumStrokeWidth": 6.0,
+      "trailGlowWidthMultiplier": 1.7,
+      "burstParticleRadius": 3.0,
+      "burstParticleGlowRadius": 7.0
+    },
+    "persisted": false
+  }
 }
