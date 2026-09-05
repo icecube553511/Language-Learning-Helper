@@ -15,6 +15,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.node.ModifierNodeElement
@@ -45,18 +46,27 @@ internal object RewardFlightTuning {
     // Physical contact stays small; these values control the visible feedback
     // and are centralized because later releases will tune the presentation.
     const val ORB_RADIUS = 6.0f
-    const val VISUAL_ORB_RADIUS = 16.0f
-    const val VISUAL_ORB_GLOW_RADIUS = 34.0f
-    const val VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0f
+    const val VISUAL_ORB_RADIUS = 13.0f
+    const val VISUAL_ORB_GLOW_RADIUS = 30.0f
+    const val VISUAL_ORB_HIGHLIGHT_RADIUS = 3.0f
+    const val ORB_PULSE_AMPLITUDE = 0.14f
+    const val STUDY_ORB_PULSE_PERIOD_MS = 460L
+    const val REVIEW_ORB_PULSE_PERIOD_MS = 320L
+    const val ORB_RING_RADIUS = 21.0f
+    const val ORB_RING_STROKE_WIDTH = 1.5f
     const val TRAIL_LIFETIME_MS = 180L
     const val TRAIL_MAXIMUM_POINTS = 20
-    const val TRAIL_MINIMUM_STROKE_WIDTH = 5.0f
-    const val TRAIL_MAXIMUM_STROKE_WIDTH = 12.0f
+    const val TRAIL_MINIMUM_STROKE_WIDTH = 4.0f
+    const val TRAIL_MAXIMUM_STROKE_WIDTH = 9.0f
     const val TRAIL_STROKE_SPEED_FACTOR = 0.0025f
-    const val TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2f
+    const val TRAIL_GLOW_WIDTH_MULTIPLIER = 1.8f
     const val BURST_PARTICLE_COUNT = 18
     const val BURST_PARTICLE_RADIUS = 4.0f
-    const val BURST_PARTICLE_GLOW_RADIUS = 10.0f
+    const val BURST_PARTICLE_GLOW_RADIUS = 9.0f
+    const val BURST_RING_START_RADIUS = 12.0f
+    const val BURST_RING_END_RADIUS = 52.0f
+    const val BURST_RING_STROKE_WIDTH = 3.0f
+    const val BURST_RING_DURATION_MS = 180L
     const val BURST_DURATION_MS = 350L
     const val MAXIMUM_LIFETIME_MS = 2_500L
     const val MISSING_TARGET_TIMEOUT_MS = 500L
@@ -127,6 +137,13 @@ internal data class RewardFlightSnapshot(
     val velocity: PetPoint,
     val stage: RewardFlightStage,
     val trail: List<RewardTrailPoint>,
+    val lifetimeMs: Long,
+)
+
+internal data class RewardBurstSnapshot(
+    val kind: RewardEffectKind,
+    val origin: PetPoint,
+    val progress: Float,
 )
 
 internal data class RewardParticleSnapshot(
@@ -138,6 +155,7 @@ internal data class RewardParticleSnapshot(
 internal data class RewardEffectsSnapshot(
     val flights: List<RewardFlightSnapshot> = emptyList(),
     val particles: List<RewardParticleSnapshot> = emptyList(),
+    val bursts: List<RewardBurstSnapshot> = emptyList(),
 ) {
     val active: Boolean get() = flights.isNotEmpty() || particles.isNotEmpty()
 }
@@ -244,9 +262,18 @@ internal class RewardEffectsEngine {
                     flight.trail.map { RewardTrailPoint(it.position, it.ageMs) },
                     trailLengthForSpeed(speed),
                 ),
+                lifetimeMs = flight.lifetimeMs,
             )
         },
         particles = bursts.flatMap(::burstParticles),
+        bursts = bursts.map {
+            RewardBurstSnapshot(
+                kind = it.kind,
+                origin = it.origin,
+                progress = (it.ageMs.toFloat() / RewardFlightTuning.BURST_RING_DURATION_MS)
+                    .coerceIn(0f, 1f),
+            )
+        },
     )
 
     private fun advanceSpiral(flight: MutableRewardFlight, deltaMs: Long) {
@@ -418,7 +445,17 @@ internal fun RewardEffectsCanvas(
                 )
             }
             val center = flight.position.toOffset(windowOrigin)
-            val glowRadius = RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS
+            val period = if (flight.kind == RewardEffectKind.STUDY) {
+                RewardFlightTuning.STUDY_ORB_PULSE_PERIOD_MS
+            } else {
+                RewardFlightTuning.REVIEW_ORB_PULSE_PERIOD_MS
+            }
+            val phase = (flight.lifetimeMs.toFloat() / period.toFloat()) * (2f * PI.toFloat())
+            val pulse = 1f + RewardFlightTuning.ORB_PULSE_AMPLITUDE * sin(phase)
+            val pulseProgress = ((pulse - 1f) / RewardFlightTuning.ORB_PULSE_AMPLITUDE)
+                .coerceIn(0f, 1f)
+            val coreRadius = RewardFlightTuning.VISUAL_ORB_RADIUS * pulse
+            val glowRadius = RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS * (0.92f + pulseProgress * 0.12f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
@@ -433,7 +470,7 @@ internal fun RewardEffectsCanvas(
                 radius = glowRadius,
                 center = center,
             )
-            val auraRadius = RewardFlightTuning.VISUAL_ORB_RADIUS * 1.35f
+            val auraRadius = coreRadius * 1.35f
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
@@ -448,7 +485,12 @@ internal fun RewardEffectsCanvas(
                 radius = auraRadius,
                 center = center,
             )
-            val coreRadius = RewardFlightTuning.VISUAL_ORB_RADIUS
+            drawCircle(
+                color = color.copy(alpha = 0.58f),
+                radius = RewardFlightTuning.ORB_RING_RADIUS,
+                center = center,
+                style = Stroke(width = RewardFlightTuning.ORB_RING_STROKE_WIDTH),
+            )
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
@@ -474,6 +516,25 @@ internal fun RewardEffectsCanvas(
                 ),
             )
         }
+        snapshot.bursts.forEach { burst ->
+            val center = burst.origin.toOffset(windowOrigin)
+            val eased = 1f - (1f - burst.progress) * (1f - burst.progress)
+            val outerRadius = RewardFlightTuning.BURST_RING_START_RADIUS +
+                (RewardFlightTuning.BURST_RING_END_RADIUS - RewardFlightTuning.BURST_RING_START_RADIUS) * eased
+            val color = rewardColor(burst.kind)
+            drawCircle(
+                color = color.copy(alpha = (1f - burst.progress) * 0.72f),
+                radius = outerRadius,
+                center = center,
+                style = Stroke(width = RewardFlightTuning.BURST_RING_STROKE_WIDTH),
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = (1f - burst.progress) * 0.35f),
+                radius = outerRadius * 0.62f,
+                center = center,
+                style = Stroke(width = 1f),
+            )
+        }
         snapshot.particles.forEach { particle ->
             val particleCenter = particle.position.toOffset(windowOrigin)
             drawCircle(
@@ -491,7 +552,7 @@ internal fun RewardEffectsCanvas(
             )
             drawCircle(
                 color = rewardColor(particle.kind).copy(alpha = particle.alpha),
-                radius = RewardFlightTuning.BURST_PARTICLE_RADIUS,
+                radius = RewardFlightTuning.BURST_PARTICLE_RADIUS * (0.68f + 0.32f * particle.alpha),
                 center = particleCenter,
             )
             drawCircle(

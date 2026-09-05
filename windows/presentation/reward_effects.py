@@ -26,20 +26,29 @@ HOMING_MAXIMUM_SPEED = 2800.0
 # Keep the physical contact radius separate from the visible feedback.  These
 # presentation values are centralized because they will be tuned later.
 ORB_RADIUS = 6.0
-VISUAL_ORB_RADIUS = 16.0
-VISUAL_ORB_GLOW_RADIUS = 34.0
-VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0
+VISUAL_ORB_RADIUS = 13.0
+VISUAL_ORB_GLOW_RADIUS = 30.0
+VISUAL_ORB_HIGHLIGHT_RADIUS = 3.0
+ORB_PULSE_AMPLITUDE = 0.14
+STUDY_ORB_PULSE_PERIOD_MS = 460.0
+REVIEW_ORB_PULSE_PERIOD_MS = 320.0
+ORB_RING_RADIUS = 21.0
+ORB_RING_STROKE_WIDTH = 1.5
 TRAIL_LIFETIME_MS = 180.0
 TRAIL_MAXIMUM_POINTS = 20
 TRAIL_MINIMUM_LENGTH = 18.0
 TRAIL_MAXIMUM_LENGTH = 96.0
-TRAIL_MINIMUM_STROKE_WIDTH = 5.0
-TRAIL_MAXIMUM_STROKE_WIDTH = 12.0
+TRAIL_MINIMUM_STROKE_WIDTH = 4.0
+TRAIL_MAXIMUM_STROKE_WIDTH = 9.0
 TRAIL_STROKE_SPEED_FACTOR = 0.0025
-TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2
+TRAIL_GLOW_WIDTH_MULTIPLIER = 1.8
 BURST_PARTICLE_COUNT = 18
 BURST_PARTICLE_RADIUS = 4.0
-BURST_PARTICLE_GLOW_RADIUS = 10.0
+BURST_PARTICLE_GLOW_RADIUS = 9.0
+BURST_RING_START_RADIUS = 12.0
+BURST_RING_END_RADIUS = 52.0
+BURST_RING_STROKE_WIDTH = 3.0
+BURST_RING_DURATION_MS = 180.0
 BURST_DURATION_MS = 350.0
 MAXIMUM_LIFETIME_MS = 2500.0
 MISSING_TARGET_TIMEOUT_MS = 500.0
@@ -730,6 +739,18 @@ class RewardEffectLayer(tk.Toplevel):
     def _canvas_point(self, point: RewardPoint) -> tuple[float, float]:
         return point.x - self._origin_x, point.y - self._origin_y
 
+    @staticmethod
+    def _pulse_values(flight: RewardFlight, now_ms: float) -> tuple[float, float]:
+        period = (
+            STUDY_ORB_PULSE_PERIOD_MS
+            if flight.color.upper() == STUDY_REWARD_COLOR
+            else REVIEW_ORB_PULSE_PERIOD_MS
+        )
+        phase = math.tau * max(0.0, now_ms - flight.created_at_ms) / period
+        pulse = 1.0 + ORB_PULSE_AMPLITUDE * math.sin(phase)
+        normalized = (pulse - 1.0) / ORB_PULSE_AMPLITUDE
+        return pulse, max(0.0, min(1.0, normalized))
+
     def render(self, model: RewardAnimationModel, now_ms: float) -> None:
         self.canvas.delete("all")
         for flight in model.flights:
@@ -761,13 +782,16 @@ class RewardEffectLayer(tk.Toplevel):
                 )
             if flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
                 x, y = self._canvas_point(flight.position)
+                pulse, pulse_progress = self._pulse_values(flight, now_ms)
+                core_radius = VISUAL_ORB_RADIUS * pulse
+                glow_radius = VISUAL_ORB_GLOW_RADIUS * (0.92 + pulse_progress * 0.12)
                 # Layered stipples approximate a radial alpha falloff on
                 # Tk's binary transparent-color surface.  The outer halo is
                 # sparse, while denser inner rings blend into the core.
                 for radius, stipple in (
-                    (VISUAL_ORB_GLOW_RADIUS, "gray25"),
-                    (VISUAL_ORB_GLOW_RADIUS * 0.78, "gray50"),
-                    (VISUAL_ORB_RADIUS * 1.55, "gray75"),
+                    (glow_radius, "gray25"),
+                    (glow_radius * 0.74, "gray50"),
+                    (core_radius * 1.6, "gray75"),
                 ):
                     self.canvas.create_oval(
                         x - radius,
@@ -778,7 +802,15 @@ class RewardEffectLayer(tk.Toplevel):
                         outline="",
                         stipple=stipple,
                     )
-                radius = VISUAL_ORB_RADIUS
+                self.canvas.create_oval(
+                    x - ORB_RING_RADIUS,
+                    y - ORB_RING_RADIUS,
+                    x + ORB_RING_RADIUS,
+                    y + ORB_RING_RADIUS,
+                    outline=flight.color,
+                    width=max(1, round(ORB_RING_STROKE_WIDTH)),
+                )
+                radius = core_radius
                 self.canvas.create_oval(
                     x - radius,
                     y - radius,
@@ -788,16 +820,41 @@ class RewardEffectLayer(tk.Toplevel):
                     outline=flight.color,
                 )
                 self.canvas.create_oval(
-                    x - VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    y - VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    x + VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    y + VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    x - radius * 0.34 - VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    y - radius * 0.42 - VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    x - radius * 0.34 + VISUAL_ORB_HIGHLIGHT_RADIUS,
+                    y - radius * 0.42 + VISUAL_ORB_HIGHLIGHT_RADIUS,
                     fill="#FFFFFF",
                     outline="#FFFFFF",
                 )
             elif flight.phase is FlightPhase.BURST:
+                if flight.burst_started_at_ms is not None and flight.contact_point is not None:
+                    progress = max(
+                        0.0,
+                        min(1.0, (now_ms - flight.burst_started_at_ms) / BURST_RING_DURATION_MS),
+                    )
+                    eased = 1.0 - (1.0 - progress) ** 2
+                    radius = BURST_RING_START_RADIUS + (
+                        BURST_RING_END_RADIUS - BURST_RING_START_RADIUS
+                    ) * eased
+                    x, y = self._canvas_point(flight.contact_point)
+                    self.canvas.create_oval(
+                        x - radius,
+                        y - radius,
+                        x + radius,
+                        y + radius,
+                        outline=flight.color,
+                        width=max(1, round(BURST_RING_STROKE_WIDTH * (1.0 - progress))),
+                    )
                 for particle in flight.particles:
                     x, y = self._canvas_point(particle.position_at(now_ms))
+                    progress = 0.0
+                    if flight.burst_started_at_ms is not None:
+                        progress = max(
+                            0.0,
+                            min(1.0, (now_ms - flight.burst_started_at_ms) / BURST_DURATION_MS),
+                        )
+                    particle_radius = BURST_PARTICLE_RADIUS * (0.68 + 0.32 * (1.0 - progress))
                     self.canvas.create_oval(
                         x - BURST_PARTICLE_GLOW_RADIUS,
                         y - BURST_PARTICLE_GLOW_RADIUS,
@@ -808,10 +865,10 @@ class RewardEffectLayer(tk.Toplevel):
                         stipple="gray50",
                     )
                     self.canvas.create_oval(
-                        x - BURST_PARTICLE_RADIUS,
-                        y - BURST_PARTICLE_RADIUS,
-                        x + BURST_PARTICLE_RADIUS,
-                        y + BURST_PARTICLE_RADIUS,
+                        x - particle_radius,
+                        y - particle_radius,
+                        x + particle_radius,
+                        y + particle_radius,
                         fill=flight.color,
                         outline=flight.color,
                     )
