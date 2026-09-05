@@ -465,6 +465,8 @@ class LexiTrackApp(tk.Tk):
         # after the pet crosses back into the root host.
         self._pet_drag_host_dialog: tk.Misc | None = None
         self._pet_last_rendered_position: PetPoint | None = None
+        self._pet_trace_handle = None
+        self._pet_trace_after_id: str | None = None
         self._reward_effects: RewardEffectsController | None = None
         self._build_shell()
         self._build_pages()
@@ -2005,6 +2007,34 @@ class LexiTrackApp(tk.Tk):
         self._pet_refresh_after_id = None
         if self._pet_overlay is not None:
             self._pet_targets = self._collect_pet_targets()
+
+    def enable_pet_trace(self, path) -> None:
+        """Write a one-line-per-second pet state trace to ``path``.
+
+        Debug-only composition-root wiring: the trace records the main
+        companion's mode, position, retained target and ticker liveness so a
+        frozen-pet report can be diagnosed from the user's own session.
+        """
+        self._pet_trace_handle = open(path, "w", encoding="utf-8", buffering=1)
+
+        def trace() -> None:
+            try:
+                state = self.pet_companion.state
+                dialog = self._dialog_pet_stack[-1] if self._dialog_pet_stack else None
+                self._pet_trace_handle.write(
+                    f"{time.time():.3f} mode={state.mode.value} pos=({state.position.x:.1f},{state.position.y:.1f}) "
+                    f"target={state.target_id} idle={state.idle_ticks_remaining} "
+                    f"spd={state.movement_speed:.2f} tick={'alive' if self._pet_tick_after_id else 'DEAD'} "
+                    f"fail={self._pet_tick_failures} stack={len(self._dialog_pet_stack)} "
+                    f"dialog={dialog}\n"
+                )
+                if self._pet_trace_after_id is not None:
+                    self.after_cancel(self._pet_trace_after_id)
+                self._pet_trace_after_id = self.after(1_000, trace)
+            except (tk.TclError, OSError, ValueError):
+                self._pet_trace_after_id = None
+
+        self._pet_trace_after_id = self.after(1_000, trace)
 
     def _pet_tick(self) -> None:
         self._pet_tick_after_id = None
