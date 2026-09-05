@@ -278,12 +278,30 @@ class RewardFeedbackLayer(tk.Toplevel):
         return 0, 0, max(1, parent.winfo_screenwidth()), max(1, parent.winfo_screenheight())
 
     def _native_surfaces(self) -> list[int]:
+        """Return the Tk top-level and every native child surface."""
+        try:
+            widget_hwnd = int(self.winfo_id() or 0)
+        except (tk.TclError, TypeError, ValueError):
+            return []
+        root_hwnd = widget_hwnd
         handles: list[int] = []
-        for widget in (self, getattr(self, "canvas", None)):
+        if sys.platform == "win32":
             try:
-                value = int(widget.winfo_id()) if widget is not None else 0
-            except (tk.TclError, TypeError, ValueError):
-                value = 0
+                user32 = ctypes.windll.user32
+                get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+                get_style.restype = ctypes.c_void_p
+                get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+                if int(get_style(widget_hwnd, -16) or 0) & 0x40000000:  # WS_CHILD
+                    root_hwnd = int(user32.GetParent(widget_hwnd) or widget_hwnd)
+                enum_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                @enum_type
+                def collect(child_hwnd, _lparam):
+                    handles.append(int(child_hwnd))
+                    return True
+                user32.EnumChildWindows(root_hwnd, collect, 0)
+            except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
+                pass
+        for value in (root_hwnd, widget_hwnd):
             if value and value not in handles:
                 handles.append(value)
         return handles
@@ -293,7 +311,17 @@ class RewardFeedbackLayer(tk.Toplevel):
             return
         try:
             u = ctypes.windll.user32
-            for hwnd in self._native_surfaces():
+            surfaces = self._native_surfaces()
+            if not surfaces:
+                return
+            get_style = getattr(u, "GetWindowLongPtrW", None) or u.GetWindowLongW
+            set_style = getattr(u, "SetWindowLongPtrW", None) or u.SetWindowLongW
+            get_style.restype = ctypes.c_void_p
+            set_style.restype = ctypes.c_void_p
+            top_level = surfaces[0]
+            extended_style = int(get_style(top_level, -20) or 0)
+            set_style(top_level, -20, extended_style | 0x00000020 | 0x00080000 | 0x08000000 | 0x00000080)
+            for hwnd in surfaces:
                 self._install_hit_test_passthrough(u, hwnd)
         except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
             return
