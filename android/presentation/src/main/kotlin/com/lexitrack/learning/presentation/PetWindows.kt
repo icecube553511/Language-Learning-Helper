@@ -461,10 +461,20 @@ class PetWindowCoordinator(initialState: PetState? = null) {
                         closing.rect.left + state.position.x,
                         closing.rect.top + state.position.y,
                     )
+                    // A falling pet may legitimately be outside the fallback
+                    // host while a dialog is being dismissed.  Clamping that
+                    // world Y to the host's inner edge turns a continuous fall
+                    // into a visible teleport (usually to the top standing
+                    // line). Preserve the out-of-bounds Y until the next
+                    // physics tick brings it back into the viewport.
+                    val fallbackY = world.y - fallback.rect.top
+                    val preserveFallY = state.mode == PetMode.FALL &&
+                        (fallbackY < petHalfSize || fallbackY > fallback.rect.height - petHalfSize)
                     state = state.copy(
                         position = PetPoint(
                             clampInner(world.x - fallback.rect.left, fallback.rect.width, petHalfSize),
-                            clampInner(world.y - fallback.rect.top, fallback.rect.height, petHalfSize),
+                            if (preserveFallY) fallbackY
+                            else clampInner(fallbackY, fallback.rect.height, petHalfSize),
                         ),
                         targetId = null,
                         idleTicksRemaining = 0,
@@ -538,13 +548,17 @@ class PetWindowCoordinator(initialState: PetState? = null) {
                 )
                 state = stateFromEntry(entry)
             } else {
-                // No geometric adjacency: keep the centre, clamped by the
-                // target overlay on its next simulation frame.
+                // No geometric adjacency: keep the centre in the target
+                // overlay, preserving an out-of-bounds fall coordinate.
                 val world = PetPoint(source.rect.left + state.position.x, source.rect.top + state.position.y)
+                val targetY = world.y - target.rect.top
+                val preserveFallY = state.mode == PetMode.FALL &&
+                    (targetY < petHalfSize || targetY > target.rect.height - petHalfSize)
                 state = state.copy(
                     position = PetPoint(
                         clampInner(world.x - target.rect.left, target.rect.width, petHalfSize),
-                        clampInner(world.y - target.rect.top, target.rect.height, petHalfSize),
+                        if (preserveFallY) targetY
+                        else clampInner(targetY, target.rect.height, petHalfSize),
                     ),
                     targetId = null,
                     idleTicksRemaining = 0,
@@ -703,10 +717,15 @@ class PetWindowCoordinator(initialState: PetState? = null) {
     }
 
     private fun portalDirection(source: PetRect, target: PetRect): String? = when {
-        target.left >= source.right - 1f && verticalOverlap(source, target) -> "right"
-        target.right <= source.left + 1f && verticalOverlap(source, target) -> "left"
-        target.top >= source.bottom - 1f && horizontalOverlap(source, target) -> "bottom"
-        target.bottom <= source.top + 1f && horizontalOverlap(source, target) -> "top"
+        // Host activation/unregistration is an immediate handoff, so only
+        // treat windows sharing an edge as portals. A distant dialog can be
+        // vertically aligned with the source while still being hundreds of
+        // pixels away; classifying it as a portal clamps FALL to an edge and
+        // causes the visible teleport this coordinator is meant to avoid.
+        abs(target.left - source.right) <= 1f && verticalOverlap(source, target) -> "right"
+        abs(target.right - source.left) <= 1f && verticalOverlap(source, target) -> "left"
+        abs(target.top - source.bottom) <= 1f && horizontalOverlap(source, target) -> "bottom"
+        abs(target.bottom - source.top) <= 1f && horizontalOverlap(source, target) -> "top"
         else -> null
     }
 

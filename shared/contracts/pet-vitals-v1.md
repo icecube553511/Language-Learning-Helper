@@ -13,7 +13,8 @@ UI until a later contract enables their presentation.
   learnt-word marker and pet vitals together.
 - Infrastructure stores the state in the platform-private learnt-words store.
   Hunger state is derived and is never persisted.
-- Presentation does not expose rating reward animation. None of the transient
+- Presentation may expose the separate `pet-energy-ball-v1` interaction effect;
+  this vitals contract does not own its rendering. None of the transient
   interaction state is persisted.
 
 ## Vitals

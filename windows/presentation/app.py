@@ -60,6 +60,12 @@ from presentation.pet_windows import (
     select_adjacent_window_hit,
     state_at_exit,
 )
+from presentation.reward_effects import (
+    REVIEW_REWARD_COLOR,
+    RewardEffectsController,
+    RewardPoint,
+    STUDY_REWARD_COLOR,
+)
 from presentation.widgets import (
     DictationLoadingOverlay,
     MemoryChart,
@@ -155,6 +161,21 @@ def preserve_pet_motion_for_targets(
         avoid_target_id=None,
         curve_velocity=None,
     )
+
+
+def _transfer_pet_axis(
+    value: float,
+    extent: float,
+    pet_half_size: float,
+    *,
+    preserve_out_of_bounds: bool = False,
+) -> float:
+    """Map one host coordinate without collapsing an active fall."""
+    half = max(0.0, float(pet_half_size))
+    coordinate = float(value)
+    if preserve_out_of_bounds and (coordinate < half or coordinate > extent - half):
+        return coordinate
+    return min(max(coordinate, half), max(half, extent - half))
 
 
 def open_dictation_group(
@@ -462,10 +483,16 @@ class LexiTrackApp(tk.Tk):
         self._pet_last_rendered_position: PetPoint | None = None
         self._pet_trace_handle = None
         self._pet_trace_after_id: str | None = None
+        self._reward_effects: RewardEffectsController | None = None
         self._build_shell()
         self._build_pages()
         self._bind_shortcuts()
         self._setup_pet_overlay()
+        self._reward_effects = RewardEffectsController(
+            self,
+            self._reward_pet_center,
+            pet_half_size=PET_DISPLAY_SIZE / 2.0,
+        )
         self.show_page("dashboard")
         self.after(1_000, self._check_review_reminder)
         self.after(250, self._schedule_word_reminder)
@@ -528,6 +555,57 @@ class LexiTrackApp(tk.Tk):
         self._schedule_pet_target_refresh()
         self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
 
+    def _reward_pet_center(self) -> RewardPoint | None:
+        """Return the currently rendered Bingzi center in screen coordinates."""
+        overlay: PetOverlay | None = None
+        if self._dialog_pet_stack:
+            runtime = self._dialog_pet_runtimes.get(self._dialog_pet_stack[-1])
+            overlay = runtime.overlay if runtime is not None else None
+        else:
+            overlay = self._pet_overlay
+        if overlay is None:
+            return None
+        try:
+            if not overlay.winfo_exists() or not overlay.winfo_viewable():
+                return None
+            return RewardPoint(
+                float(overlay.winfo_rootx()) + float(overlay.winfo_width()) / 2.0,
+                float(overlay.winfo_rooty()) + float(overlay.winfo_height()) / 2.0,
+            )
+        except tk.TclError:
+            return None
+
+    def _remember_rating_pointer(self, event: tk.Event) -> None:
+        event.widget._reward_pointer_down = (
+            RewardPoint(float(event.x_root), float(event.y_root)),
+            self._pet_now_ms(),
+        )
+
+    @staticmethod
+    def _clear_rating_pointer(event: tk.Event) -> None:
+        event.widget._reward_pointer_down = None
+
+    def _rating_button_center(self, button: tk.Button) -> RewardPoint:
+        button.update_idletasks()
+        return RewardPoint(
+            float(button.winfo_rootx()) + float(button.winfo_width()) / 2.0,
+            float(button.winfo_rooty()) + float(button.winfo_height()) / 2.0,
+        )
+
+    def _rating_source_point(self, button: tk.Button) -> RewardPoint:
+        pointer = getattr(button, "_reward_pointer_down", None)
+        button._reward_pointer_down = None
+        if pointer is not None and self._pet_now_ms() - float(pointer[1]) <= 1_000.0:
+            return pointer[0]
+        return self._rating_button_center(button)
+
+    def _emit_rating_reward(self, source: RewardPoint, color: str) -> None:
+        if self._reward_effects is not None:
+            try:
+                self._reward_effects.emit(source, color)
+            except (RuntimeError, tk.TclError):
+                pass
+
     def _apply_pet_facing(self, overlay: PetOverlay, state: PetState) -> None:
         image = self._pet_images.get(state.facing) or self._pet_image
         if image is not None:
@@ -548,15 +626,33 @@ class LexiTrackApp(tk.Tk):
             height=height,
         )
         overlay.lift()
+        if self._reward_effects is not None:
+            self._reward_effects.keep_above(overlay)
 
     def _cancel_main_pet_render(self) -> None:
+        attributes = vars(self)
+        if "_pet_render_generation" not in attributes:
+            return
         self._pet_render_generation += 1
-        for callback_id in self._pet_render_after_ids:
+        for callback_id in attributes.get("_pet_render_after_ids") or ():
             try:
                 self.after_cancel(callback_id)
             except tk.TclError:
                 pass
         self._pet_render_after_ids = []
+
+    def _invalidate_main_pet_render(self) -> None:
+        """Drop queued frames before a layout operation changes pet targets.
+
+        Tk can run an already scheduled interpolation callback after a card or
+        page has been reflowed.  That callback carries the previous target
+        geometry and can briefly place the sprite at a stale coordinate (most
+        visible while a FALL is being retargeted).  Keep the reducer state and
+        use it as the next interpolation anchor instead.
+        """
+        self._cancel_main_pet_render()
+        if "pet_companion" in vars(self):
+            self._pet_last_rendered_position = self.pet_companion.state.position
 
     def _cancel_dialog_pet_render(
         self,
@@ -635,6 +731,9 @@ class LexiTrackApp(tk.Tk):
 
     def destroy(self) -> None:
         """Stop the transient pet window before tearing down the Tk root."""
+        if self._reward_effects is not None:
+            self._reward_effects.destroy()
+            self._reward_effects = None
         self._cancel_main_pet_render()
         for dialog in tuple(self._dialog_pet_runtimes):
             self._detach_pet_from_dialog(dialog)
@@ -879,9 +978,11 @@ class LexiTrackApp(tk.Tk):
                 max(world.x - target_rect.left, half),
                 max(half, target_rect.width - half),
             )
-            local_y = min(
-                max(world.y - target_rect.top, half),
-                max(half, target_rect.height - half),
+            local_y = _transfer_pet_axis(
+                world.y - target_rect.top,
+                target_rect.height,
+                half,
+                preserve_out_of_bounds=source_state.mode == PetMode.FALL,
             )
             return replace(
                 source_state,
@@ -1382,10 +1483,21 @@ class LexiTrackApp(tk.Tk):
                 source_rect.left + state.position.x,
                 source_rect.top + state.position.y,
             )
+            local_y = world.y - target_rect.top
             local = self._pet_viewport_for(target).clamp(
-                PetPoint(world.x - target_rect.left, world.y - target_rect.top),
+                PetPoint(world.x - target_rect.left, local_y),
                 PET_DISPLAY_SIZE / 2.0,
             )
+            if state.mode == PetMode.FALL:
+                local = PetPoint(
+                    local.x,
+                    _transfer_pet_axis(
+                        local_y,
+                        target_rect.height,
+                        PET_DISPLAY_SIZE / 2.0,
+                        preserve_out_of_bounds=True,
+                    ),
+                )
             transferred = replace(
                 state,
                 position=local,
@@ -2457,11 +2569,16 @@ class LexiTrackApp(tk.Tk):
             button = self._primary_button(
                 self.rating_frame,
                 label,
-                lambda value=rating: self.rate_current(value),
+                lambda value=rating, index=column: self.rate_current(
+                    value,
+                    self._rating_source_point(self.rating_buttons[index]),
+                ),
                 color=color,
                 width=8,
             )
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
+            button.bind("<ButtonPress-1>", self._remember_rating_pointer, add="+")
+            button.bind("<Leave>", self._clear_rating_pointer, add="+")
             self.rating_buttons.append(button)
         self.answer_panel = tk.Frame(self.study_card, bg=SURFACE)
         self.answer_panel.bind("<Configure>", self._resize_study_answer, add="+")
@@ -2559,11 +2676,16 @@ class LexiTrackApp(tk.Tk):
             button = self._primary_button(
                 self.review_rating_frame,
                 label,
-                lambda value=rating: self.rate_review_current(value),
+                lambda value=rating, index=column: self.rate_review_current(
+                    value,
+                    self._rating_source_point(self.review_rating_buttons[index]),
+                ),
                 color=color,
                 width=8,
             )
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
+            button.bind("<ButtonPress-1>", self._remember_rating_pointer, add="+")
+            button.bind("<Leave>", self._clear_rating_pointer, add="+")
             self.review_rating_buttons.append(button)
         self.review_answer_panel = tk.Frame(self.review_card, bg=SURFACE)
         self.review_answer_panel.bind("<Configure>", self._resize_review_answer, add="+")
@@ -4652,6 +4774,14 @@ class LexiTrackApp(tk.Tk):
         if self.current_page == "dictation" and key != "dictation":
             if not self._confirm_dictation_leave():
                 return
+        if self.current_page != key:
+            reward_effects = vars(self).get("_reward_effects")
+            if reward_effects is not None:
+                reward_effects.clear()
+        # Page packing immediately changes target geometry.  Invalidate
+        # callbacks scheduled against the previous page before navigation
+        # turns the companion into a FALL transition.
+        self._invalidate_main_pet_render()
         self.word_bubbles.clear()
         if self.current_page and self.current_page != key:
             self.pet_companion.navigate()
@@ -4728,6 +4858,9 @@ class LexiTrackApp(tk.Tk):
         self.dashboard_chart.set_data(self.service.forecast(7), self.service.retention_curve(7))
 
     def load_study_card(self, exclude_id: str = ""):
+        # Rating a card unpacks and repacks answer controls; queued frames may
+        # otherwise write the old card position after the reflow.
+        self._invalidate_main_pet_render()
         self.word_bubbles.clear()
         self.current_card = self.service.next_card(exclude_id=exclude_id)
         self.answer_visible = False
@@ -4754,6 +4887,7 @@ class LexiTrackApp(tk.Tk):
     def reveal_answer(self):
         if self.current_card is None or self.answer_visible:
             return
+        self._invalidate_main_pet_render()
         entry = self.current_card
         self.answer_visible = True
         self._apply_answer_text(
@@ -4777,10 +4911,17 @@ class LexiTrackApp(tk.Tk):
     def rate_current(
         self,
         rating: ReviewRating,
+        source: RewardPoint | None = None,
     ):
         if self.current_card is None or not self.answer_visible:
             return
         previous = self.current_card.word_id
+        if source is None:
+            index = tuple(ReviewRating).index(rating)
+            source = self._rating_button_center(self.rating_buttons[index])
+        # Start the transient feedback before persistence/reflow can unmap
+        # the rating controls and move the pet target.
+        self._emit_rating_reward(source, STUDY_REWARD_COLOR)
         self.service.rate_card(previous, rating)
         self._sync_review_batch_control()
         self.load_study_card(exclude_id=previous)
@@ -4817,6 +4958,7 @@ class LexiTrackApp(tk.Tk):
         self._show_next_review_card()
 
     def _show_next_review_card(self):
+        self._invalidate_main_pet_render()
         self.word_bubbles.clear()
         self.review_answer_visible = False
         self.review_answer_panel.pack_forget()
@@ -4841,6 +4983,7 @@ class LexiTrackApp(tk.Tk):
     def reveal_review_answer(self):
         if not self.review_queue or self.review_answer_visible:
             return
+        self._invalidate_main_pet_render()
         card = self.review_queue[0]
         self.review_answer_visible = True
         self._apply_answer_text(card, self.review_meaning, self.review_example_texts, self.review_example_labels, max(360, self.review_answer_panel.winfo_width() - 80))
@@ -4851,10 +4994,17 @@ class LexiTrackApp(tk.Tk):
     def rate_review_current(
         self,
         rating: ReviewRating,
+        source: RewardPoint | None = None,
     ):
         if not self.review_queue or not self.review_answer_visible:
             return
         card = self.review_queue[0]
+        if source is None:
+            index = tuple(ReviewRating).index(rating)
+            source = self._rating_button_center(self.review_rating_buttons[index])
+        # Keep the visual response independent from the review repository;
+        # the card may be rebuilt immediately after this call.
+        self._emit_rating_reward(source, REVIEW_REWARD_COLOR)
         self.service.rate_review_card(card.word_id, rating)
         self.review_queue.pop(0)
         self._show_next_review_card()
@@ -4867,9 +5017,11 @@ class LexiTrackApp(tk.Tk):
 
     def _rate_visible_card(self, rating: ReviewRating):
         if self.current_page == "study" and self.answer_visible:
-            self.rate_current(rating)
+            index = tuple(ReviewRating).index(rating)
+            self.rate_current(rating, self._rating_button_center(self.rating_buttons[index]))
         elif self.current_page == "review" and self.review_answer_visible:
-            self.rate_review_current(rating)
+            index = tuple(ReviewRating).index(rating)
+            self.rate_review_current(rating, self._rating_button_center(self.review_rating_buttons[index]))
 
     def _check_review_reminder(self):
         due_count = self.service.due_review_count()
