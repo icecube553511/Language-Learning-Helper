@@ -318,8 +318,14 @@ class RewardFeedbackLayer(tk.Toplevel):
                 return
             get_style = getattr(u, "GetWindowLongPtrW", None) or u.GetWindowLongW
             set_style = getattr(u, "SetWindowLongPtrW", None) or u.SetWindowLongW
-            get_style.restype = ctypes.c_void_p
-            set_style.restype = ctypes.c_void_p
+            # Explicit signatures are required on 64-bit Windows.  ctypes
+            # otherwise assumes 32-bit ``int`` arguments and truncates the
+            # native window procedure pointer, which can crash the process
+            # as soon as Tk destroys the overlay or dispatches a mouse event.
+            get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_style.restype = ctypes.c_ssize_t
+            set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+            set_style.restype = ctypes.c_ssize_t
             top_level = surfaces[0]
             extended_style = int(get_style(top_level, -20) or 0)
             set_style(top_level, -20, extended_style | 0x00000020 | 0x00080000 | 0x08000000 | 0x00000080)
@@ -335,6 +341,12 @@ class RewardFeedbackLayer(tk.Toplevel):
         set_proc = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
         call_proc = user32.CallWindowProcW
         pointer = ctypes.c_ssize_t if ctypes.sizeof(ctypes.c_void_p) > 4 else ctypes.c_long
+        get_proc.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_proc.restype = pointer
+        set_proc.argtypes = [wintypes.HWND, ctypes.c_int, pointer]
+        set_proc.restype = pointer
+        call_proc.argtypes = [pointer, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        call_proc.restype = pointer
         proc_type = ctypes.WINFUNCTYPE(pointer, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
         original = get_proc(hwnd, _GWL_WNDPROC)
         if not original:
@@ -352,7 +364,10 @@ class RewardFeedbackLayer(tk.Toplevel):
             except Exception:
                 return 0
         try:
-            set_proc(hwnd, _GWL_WNDPROC, callback)
+            # Convert the Python callback explicitly to the native pointer
+            # type expected by SetWindowLongPtrW.
+            callback_address = int(ctypes.cast(callback, ctypes.c_void_p).value or 0)
+            set_proc(hwnd, _GWL_WNDPROC, pointer(callback_address))
         except Exception:
             self._passthrough_failures.append(hwnd)
             return False
@@ -426,6 +441,9 @@ class RewardFeedbackLayer(tk.Toplevel):
             try:
                 u = ctypes.windll.user32
                 set_proc = getattr(u, "SetWindowLongPtrW", None) or u.SetWindowLongW
+                pointer = ctypes.c_ssize_t if ctypes.sizeof(ctypes.c_void_p) > 4 else ctypes.c_long
+                set_proc.argtypes = [wintypes.HWND, ctypes.c_int, pointer]
+                set_proc.restype = pointer
                 for hwnd, original in self._passthrough_handles:
                     set_proc(hwnd, _GWL_WNDPROC, original)
             except Exception:
