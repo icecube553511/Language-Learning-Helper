@@ -11,6 +11,10 @@ import tkinter as tk
 from typing import Callable
 
 STUDY_REWARD_COLOR = "#F4C542"
+# Review feedback uses the platform's primary teal.  Keep this alias beside
+# the study colour so rating flows do not depend on unrelated page styling
+# constants from ``presentation.app``.
+REVIEW_REWARD_COLOR = "#16866F"
 FRAME_MS = 16
 WM_NCHITTEST = 0x0084
 WM_MOUSEACTIVATE = 0x0021

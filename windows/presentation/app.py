@@ -74,6 +74,7 @@ from presentation.widgets import (
 from presentation.reward_feedback import (
     RewardFeedbackController,
     RewardPoint,
+    REVIEW_REWARD_COLOR,
     STUDY_REWARD_COLOR,
 )
 
@@ -4910,7 +4911,7 @@ class LexiTrackApp(tk.Tk):
         if source is None:
             index = tuple(ReviewRating).index(rating)
             source = self._rating_button_center(self.review_rating_buttons[index])
-        self._emit_rating_reward(source, ACCENT)
+        self._emit_rating_reward(source, REVIEW_REWARD_COLOR)
         self.review_queue.pop(0)
         self._show_next_review_card()
 

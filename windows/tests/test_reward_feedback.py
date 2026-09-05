@@ -16,6 +16,7 @@ from presentation.reward_feedback import (
     RewardFeedbackModel,
     RewardFeedbackController,
     RewardPoint,
+    REVIEW_REWARD_COLOR,
     STUDY_REWARD_COLOR,
     transparent_hit_test_result,
     WM_NCHITTEST,
@@ -110,6 +111,45 @@ class RewardFeedbackV2Tests(unittest.TestCase):
         b = controller.model.emit((10, 0), "#def", 0)
         self.assertEqual(controller.model.active_count, 2)
         self.assertIsNot(a.trail, b.trail)
+
+    def test_rating_colours_are_platform_specific(self):
+        self.assertEqual(STUDY_REWARD_COLOR, "#F4C542")
+        self.assertEqual(REVIEW_REWARD_COLOR, "#16866F")
+
+    def test_study_rating_emits_gold_feedback(self):
+        from presentation.app import LexiTrackApp
+        from domain.models import ReviewRating
+
+        app = object.__new__(LexiTrackApp)
+        app.current_card = type("Card", (), {"word_id": "word-1"})()
+        app.answer_visible = True
+        app.service = Mock()
+        app._rating_button_center = Mock(return_value=RewardPoint(10, 20))
+        app._emit_rating_reward = Mock()
+        app._sync_review_batch_control = Mock()
+        app.load_study_card = Mock()
+        app.rating_buttons = []
+
+        app.rate_current(ReviewRating.GOOD, RewardPoint(10, 20))
+
+        app._emit_rating_reward.assert_called_once_with(RewardPoint(10, 20), STUDY_REWARD_COLOR)
+
+    def test_review_rating_emits_teal_feedback(self):
+        from presentation.app import LexiTrackApp
+        from domain.models import ReviewRating
+
+        app = object.__new__(LexiTrackApp)
+        app.review_queue = [type("Card", (), {"word_id": "word-1"})()]
+        app.review_answer_visible = True
+        app.service = Mock()
+        app._rating_button_center = Mock(return_value=RewardPoint(30, 40))
+        app._emit_rating_reward = Mock()
+        app.review_rating_buttons = []
+        app._show_next_review_card = Mock()
+
+        app.rate_review_current(ReviewRating.GOOD, RewardPoint(30, 40))
+
+        app._emit_rating_reward.assert_called_once_with(RewardPoint(30, 40), REVIEW_REWARD_COLOR)
 
 
 if __name__ == "__main__":
