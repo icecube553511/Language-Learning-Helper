@@ -7,6 +7,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RewardFeedbackTest {
+    @Test fun `intro arc transitions to accelerating seek at contract timing`() {
+        val engine = FeedbackEngine()
+        engine.emit(FeedbackRequest(FeedbackKind.STUDY, FeedbackOrigin(0f, 0f)))
+        val target = FeedbackTarget(PetPoint(800f, 0f), 10f)
+        engine.step(149, target)
+        val intro = engine.snapshot().orbs.single()
+        assertEquals(149L, intro.ageMs)
+        engine.step(1, target)
+        val seek = engine.snapshot().orbs.single()
+        assertTrue(seek.velocity.lengthForTest() >= FeedbackTuning.SEEK_SPEED)
+        val speed = seek.velocity.lengthForTest()
+        engine.step(80, target)
+        assertTrue(engine.snapshot().orbs.single().velocity.lengthForTest() > speed)
+    }
+
     @Test fun `events keep independent identities and orbit first`() {
         val engine = FeedbackEngine()
         val a = engine.emit(FeedbackRequest(FeedbackKind.STUDY, FeedbackOrigin(0f, 0f)))
@@ -31,5 +46,7 @@ class RewardFeedbackTest {
         assertEquals(FeedbackOrigin(20f, 40f), origin)
     }
 }
+
+private fun PetPoint.lengthForTest() = kotlin.math.hypot(x, y)
 
 

@@ -32,12 +32,22 @@ import kotlin.math.sqrt
 
 /** A small, deterministic feedback system for study and review ratings. */
 internal object FeedbackTuning {
-    const val ORBIT_MS = 220L
+    /** Duration of the soft launch arc before the orb starts seeking Bingzi. */
+    const val INTRO_MS = 150L
+    /** Kept as an alias for callers that used the original tuning name. */
+    const val ORBIT_MS = INTRO_MS
+    const val INTRO_ARC = 15f
+    const val SEEK_SPEED = 260f
+    const val SEEK_ACCELERATION = 1_900f
+    const val MAX_SPEED = 1_800f
     const val TRAIL_MS = 140L
     const val IMPACT_MS = 280L
-    const val MAX_AGE_MS = 2_200L
-    const val TARGET_GRACE_MS = 550L
+    const val MAX_AGE_MS = 2_400L
+    const val TARGET_GRACE_MS = 600L
     const val ORB_RADIUS = 7f
+    const val VISUAL_ORB_RADIUS = 11f
+    const val VISUAL_GLOW_RADIUS = 27f
+    const val VISUAL_HIGHLIGHT_RADIUS = 2.5f
     const val IMPACT_RADIUS = 46f
     const val PARTICLES = 12
 }
@@ -92,17 +102,24 @@ internal class FeedbackEngine {
             if (target == null) orb.noTargetMs += deltaMs else orb.noTargetMs = 0
             if (orb.ageMs >= FeedbackTuning.MAX_AGE_MS || orb.noTargetMs >= FeedbackTuning.TARGET_GRACE_MS) { it.remove(); continue }
             val previous = orb.position
-            if (orb.ageMs < FeedbackTuning.ORBIT_MS) {
-                val p = orb.ageMs.toFloat() / FeedbackTuning.ORBIT_MS
-                val angle = (p * 2f * PI).toFloat()
-                val radius = 5f + 15f * p
+            val enteredSeek = orb.ageMs >= FeedbackTuning.INTRO_MS && orb.ageMs - deltaMs < FeedbackTuning.INTRO_MS
+            if (orb.ageMs < FeedbackTuning.INTRO_MS) {
+                val p = (orb.ageMs.toFloat() / FeedbackTuning.INTRO_MS).coerceIn(0f, 1f)
+                // A short, easing arc gives the glow a soft launch without delaying the seek.
+                val eased = p * p * (3f - 2f * p)
+                val angle = (2f * PI * (0.15f + 0.55f * eased)).toFloat()
+                val radius = FeedbackTuning.INTRO_ARC * (1f - eased)
                 orb.position = PetPoint(orb.origin.x + cos(angle) * radius, orb.origin.y + sin(angle) * radius)
             } else if (target != null) {
                 val delta = target.center - orb.position
                 val distance = delta.length()
                 val direction = if (distance < 0.001f) PetPoint(0f, 0f) else delta / distance
-                val speed = (260f + orb.ageMs * 2f).coerceAtMost(1_900f)
-                orb.velocity = direction * speed
+                // Accelerate toward the current target every frame so a reflowing pet is tracked.
+                if (enteredSeek) orb.velocity = direction * FeedbackTuning.SEEK_SPEED
+                orb.velocity = (orb.velocity + direction * (FeedbackTuning.SEEK_ACCELERATION * dt)).let { velocity ->
+                    val speed = velocity.length()
+                    if (speed > FeedbackTuning.MAX_SPEED) velocity / speed * FeedbackTuning.MAX_SPEED else velocity
+                }
                 val next = orb.position + orb.velocity * dt
                 val contact = target.halfSize.coerceAtLeast(0f) + FeedbackTuning.ORB_RADIUS
                 if (distance <= contact || next.distanceTo(target.center) <= contact) {
@@ -172,12 +189,14 @@ internal fun FeedbackCanvas(windowOrigin: PetPoint, modifier: Modifier = Modifie
             val color = feedbackColor(orb.kind); val center = orb.position.toOffset(windowOrigin)
             orb.trail.zipWithNext().forEachIndexed { i, (a, b) ->
                 val alpha = (i + 1f) / orb.trail.size * 0.6f
-                drawLine(color.copy(alpha = alpha * 0.3f), a.toOffset(windowOrigin), b.toOffset(windowOrigin), 10f, StrokeCap.Round)
-                drawLine(color.copy(alpha = alpha), a.toOffset(windowOrigin), b.toOffset(windowOrigin), 3f, StrokeCap.Round)
+                val speedRatio = (orb.velocity.length() / FeedbackTuning.MAX_SPEED).coerceIn(0f, 1f)
+                val width = 2f + 4f * speedRatio
+                drawLine(color.copy(alpha = alpha * 0.3f), a.toOffset(windowOrigin), b.toOffset(windowOrigin), width * 1.7f, StrokeCap.Round)
+                drawLine(color.copy(alpha = alpha), a.toOffset(windowOrigin), b.toOffset(windowOrigin), width, StrokeCap.Round)
             }
-            drawCircle(Brush.radialGradient(listOf(Color.White, color.copy(alpha = 0.8f), Color.Transparent), center, 24f), 24f, center)
-            drawCircle(color, FeedbackTuning.ORB_RADIUS, center)
-            drawCircle(Color.White.copy(alpha = 0.9f), 2f, center - Offset(2f, 2f))
+            drawCircle(Brush.radialGradient(listOf(Color.White, color.copy(alpha = 0.8f), Color.Transparent), center, FeedbackTuning.VISUAL_GLOW_RADIUS), FeedbackTuning.VISUAL_GLOW_RADIUS, center)
+            drawCircle(color, FeedbackTuning.VISUAL_ORB_RADIUS, center)
+            drawCircle(Color.White.copy(alpha = 0.9f), FeedbackTuning.VISUAL_HIGHLIGHT_RADIUS, center - Offset(3f, 3f))
         }
         snapshot.impacts.forEach { impact ->
             val color = feedbackColor(impact.kind); val center = impact.origin.toOffset(windowOrigin); val p = impact.progress
