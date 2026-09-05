@@ -1,9 +1,8 @@
 # pet-vitals-v1
 
-`pet-vitals-v1` defines Bingzi's persisted internal vitals, rating rewards, and
-the transient reward-flight feedback shared by Windows and Android. These
-values are intentionally absent from the UI until a later contract enables
-their presentation.
+`pet-vitals-v1` defines Bingzi's persisted internal vitals and rating rewards
+shared by Windows and Android. These values are intentionally absent from the
+UI until a later contract enables their presentation.
 
 ## Onion boundary
 
@@ -14,9 +13,8 @@ their presentation.
   learnt-word marker and pet vitals together.
 - Infrastructure stores the state in the platform-private learnt-words store.
   Hunger state is derived and is never persisted.
-- Presentation owns reward-flight instances, trails, bursts, pointer
-  coordinates, and the current rendered pet target. None of that animation
-  state is persisted.
+- Presentation does not expose rating reward animation. None of the transient
+  interaction state is persisted.
 
 ## Vitals
 
@@ -84,36 +82,3 @@ uses the marker that existed before the rating:
 | none | `0.2 / 0.5` | `0.3 / 0.8` |
 | `ToBeReviewed_Vague` | `1.0 / 0.7` | `1.2 / 1.0` |
 | `ToBeReviewed_Forgot` | `1.5 / 0.9` | `2.0 / 1.4` |
-
-## Reward-flight feedback
-
-An accepted pointer rating on Study emits an independent gold flight at the
-pointer-down screen position. Review uses the platform's primary teal. A
-keyboard or accessibility activation falls back to the button center. Each
-flight first follows the configured short accelerating spiral, then homes with
-acceleration toward Bingzi's current rendered center. The target is sampled on
-every frame so dragging, autonomous movement, or a host-window migration does
-not leave the flight aimed at a stale position.
-
-Trail history is time based, so faster movement produces a visibly longer
-same-color trail. Contact uses the current pet half-size plus orb radius and
-emits a radial point burst at the contact location. A new accepted click never
-cancels an older flight or burst; all instances update and clean up
-independently. Each accepted zero-reward `again`/`hard` action still emits
-feedback. A single failed frame in the animation loop (for example a transient
-geometry error while sampling the pet target) must not cancel the loop or
-leave the overlay layer stranded: the frame is skipped, the flights keep
-aging, and they still clean up and hide the layer when finished. Animation
-state pauses while its host is not visible and is cancelled only when the host
-is destroyed or no active pet target exists for the configured timeout.
-
-The physical `orbRadius` remains the contact radius. The shared `visual` tuning
-values in the golden contract make the transient feedback observable: the
-visible orb uses radius `16`, its glow reaches `34`, the trail core is `5..12`
-wide and scales with speed, and burst particles use radius `4` with a `10`-pixel
-glow. These are presentation constants deliberately kept centralized for later
-tuning; they do not alter the trajectory or persistence rules.
-
-The shared trajectory vectors fix the end of the 180 ms spiral at `(18, 0)`
-relative to the activation point and require interpolation at the oldest trail
-boundary, so the rendered polyline does not exceed the speed-derived length.

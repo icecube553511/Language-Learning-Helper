@@ -1703,71 +1703,17 @@ def verify_pet_vitals_contract() -> None:
         if not math.isclose(reserve, float(vector["expectedFoodReserve"]), abs_tol=1e-9):
             fail(f"Pet vital vector {vector['name']} differs at food reserve")
 
-    effect = payload.get("rewardFlight", {})
-    expected_effect = {
-        "studyColor": "#F4C542",
-        "reviewColor": "platform-primary-teal",
-        "sourceAnchor": "pointer-down-screen-position",
-        "targetTracking": "rendered-pet-center-every-frame",
-        "frameMs": 16,
-        "spiralDurationMs": 180,
-        "spiralTurns": 1.0,
-        "spiralRadiusStart": 4.0,
-        "spiralRadiusEnd": 18.0,
-        "homingInitialSpeed": 180.0,
-        "homingAcceleration": 2400.0,
-        "homingMaximumSpeed": 2800.0,
-        "orbRadius": 6.0,
-        "visual": {
-            "orbRadius": 16.0,
-            "orbGlowRadius": 34.0,
-            "orbHighlightRadius": 4.0,
-            "trailMinimumStrokeWidth": 5.0,
-            "trailMaximumStrokeWidth": 12.0,
-            "trailStrokeSpeedFactor": 0.0025,
-            "trailGlowWidthMultiplier": 2.2,
-            "burstParticleRadius": 4.0,
-            "burstParticleGlowRadius": 10.0,
-        },
-        "trailLifetimeMs": 180,
-        "trailMaximumPoints": 20,
-        "trailLengthFormula": "clamp(18,96,speed*0.04)",
-        "burstParticleCount": 18,
-        "burstDurationMs": 350,
-        "maximumLifetimeMs": 2500,
-        "missingTargetTimeoutMs": 500,
-        "minimumVerifiedConcurrentFlights": 32,
-        "contactRadius": "pet-half-size-plus-orb-radius",
-        "concurrency": "independent-no-replacement",
-        "persisted": False,
-    }
-    if effect != expected_effect:
-        fail("Pet reward-flight parameters differ")
-    if payload.get("rewardFlightVectors") != {
-        "spiralEndpoint": {
-            "elapsedMs": 180,
-            "relativeX": 18.0,
-            "relativeY": 0.0,
-        },
-        "trailClip": {
-            "speed": 1000.0,
-            "inputX": [0.0, 25.0, 50.0, 75.0],
-            "expectedStartX": 35.0,
-            "expectedEndX": 75.0,
-            "expectedLength": 40.0,
-        },
-    }:
-        fail("Pet reward-flight trajectory vectors differ")
+    if "rewardFlight" in payload or "rewardFlightVectors" in payload:
+        fail("Pet reward-flight contract must be removed")
 
     contract_text = contract_path.read_text(encoding="utf-8")
     for marker in (
         "20%",
         "single-value enum",
         "not a vocabulary/catalog",
-        "current rendered center",
         "`FoodJar` domain value object",
         "cross-repository",
-        "single failed frame",
+        "does not expose rating reward animation",
     ):
         if marker not in contract_text:
             fail(f"Pet vitals contract is missing {marker}")
@@ -1798,21 +1744,39 @@ def verify_pet_vitals_contract() -> None:
         "temporaryReviewTagCardinality": tags["cardinality"],
         "persisted": True,
         "visible": False,
-        "rewardFlight": {
-            "studyColor": effect["studyColor"],
-            "reviewColor": effect["reviewColor"],
-            "sourceAnchor": effect["sourceAnchor"],
-            "targetTracking": effect["targetTracking"],
-            "concurrency": effect["concurrency"],
-            "visual": effect["visual"],
-        },
     }
     if parity.get("petVitals") != expected_manifest_vitals:
         fail("Parity petVitals projection differs from the golden contract")
     capabilities = parity.get("capabilities", {})
+    if "ratingRewardFlightEffect" in capabilities:
+        fail("Parity must not advertise the removed rating reward-flight effect")
+    for manifest_name, manifest_path in (
+        ("parity.json", CONTRACTS / "parity.json"),
+        ("windows/platform-contract.json", ROOT / "windows/platform-contract.json"),
+        ("android/platform-contract.json", ROOT / "android/platform-contract.json"),
+    ):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if "rewardFlight" in manifest.get("petVitals", {}) or "ratingRewardFlightEffect" in manifest.get("capabilities", {}):
+            fail(f"Removed reward-flight contract remains in {manifest_name}")
+
+    animation_paths = (
+        ROOT / "windows/presentation/reward_effects.py",
+        ROOT / "windows/tests/test_reward_effects.py",
+        ROOT / "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt",
+        ROOT / "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt",
+    )
+    for animation_path in animation_paths:
+        if animation_path.exists():
+            fail(f"Removed rating animation file still exists: {animation_path.relative_to(ROOT)}")
+    for source_path in (
+        ROOT / "windows/presentation/app.py",
+        ROOT / "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt",
+    ):
+        source = source_path.read_text(encoding="utf-8")
+        if "RewardEffects" in source or "rewardFlight" in source or "resolveRatingOrigin" in source:
+            fail(f"Rating UI still links removed animation code: {source_path.relative_to(ROOT)}")
     for capability in (
         "petVitalsAndRatingRewards",
-        "ratingRewardFlightEffect",
         "petMotionContinuityDuringReflow",
         "petAnimationFrameResilience",
     ):
@@ -1841,20 +1805,7 @@ def verify_pet_vitals_contract() -> None:
             "save_learning_outcome",
             "petVitals",
         ),
-        "windows/presentation/reward_effects.py": (
-            "class RewardEffectsController",
-            "clip_trail_to_length",
-            "trail_length_for_speed",
-            "A single failed frame",
-        ),
-        "windows/presentation/app.py": (
-            "Skip the failed frame and keep ticking",
-        ),
         "windows/tests/test_pet_vitals.py": ("FoodJar", "rewardRules"),
-        "windows/tests/test_reward_effects.py": (
-            "minimumVerifiedConcurrentFlights",
-            "pointer_source_uses_press_coordinates",
-        ),
         "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetVitals.kt": (
             "class FoodJar",
             "data class PetVitals",
@@ -1883,27 +1834,9 @@ def verify_pet_vitals_contract() -> None:
         "android/infrastructure/src/test/kotlin/com/lexitrack/learning/infrastructure/AndroidLearntWordsRepositoryTest.kt": (
             "cancellationAfterCommitStillPublishesLearningOutcome",
         ),
-        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": (
-            "class RewardEffectsEngine",
-            "resolveRatingOrigin",
-            "visibleTrail",
-            "trailLengthForSpeed",
-        ),
-        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt": (
-            "onRate(ReviewRating.AGAIN",
-            "onRate(ReviewRating.HARD",
-            "onRate(ReviewRating.GOOD",
-            "onRate(ReviewRating.EASY",
-            "resolveRatingOrigin",
-            "Skip the failed frame and keep the loop alive",
-        ),
         "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetVitalsGoldenContractTest.kt": (
             "FoodJar",
             "rewardRules",
-        ),
-        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": (
-            "minimumVerifiedConcurrentFlights",
-            "trailLengthForSpeed",
         ),
     }
     for relative_path, markers in implementation_markers.items():

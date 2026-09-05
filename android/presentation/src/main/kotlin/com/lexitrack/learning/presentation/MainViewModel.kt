@@ -39,10 +39,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -166,8 +163,6 @@ class MainViewModel(
     private var dictationSyncPushGeneration: Long = 0
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
-    private val _rewardEffects = MutableSharedFlow<RewardEffectRequest>(extraBufferCapacity = 64)
-    val rewardEffects: SharedFlow<RewardEffectRequest> = _rewardEffects.asSharedFlow()
 
     /** Keep the flattened selection as a compatibility view over group state. */
     private fun mergeDictationSelection(
@@ -284,7 +279,7 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(answerRevealed = true)
     }
 
-    fun rateCurrent(rating: ReviewRating, origin: RewardEffectOrigin? = null): Boolean {
+    fun rateCurrent(rating: ReviewRating): Boolean {
         val state = _uiState.value
         val card = state.currentCard ?: return false
         if (!state.answerRevealed || studyRatingInProgress) return false
@@ -293,9 +288,6 @@ class MainViewModel(
             var succeeded = false
             try {
                 useCases.rateWord(card.id, rating)
-                origin?.let {
-                    _rewardEffects.emit(RewardEffectRequest(RewardEffectKind.STUDY, it))
-                }
                 succeeded = true
                 _uiState.value = _uiState.value.copy(currentCard = null, answerRevealed = false)
             } catch (cancelled: CancellationException) {
@@ -1228,7 +1220,7 @@ class MainViewModel(
         _uiState.value = _uiState.value.copy(reviewAnswerRevealed = true)
     }
 
-    fun rateReviewCurrent(rating: ReviewRating, origin: RewardEffectOrigin? = null): Boolean {
+    fun rateReviewCurrent(rating: ReviewRating): Boolean {
         val state = _uiState.value
         val card = state.reviewCard ?: return false
         if (!state.reviewAnswerRevealed || reviewRatingInProgress) return false
@@ -1236,9 +1228,6 @@ class MainViewModel(
         viewModelScope.launch {
             try {
                 useCases.rateReviewWord(card.id, rating)
-                origin?.let {
-                    _rewardEffects.emit(RewardEffectRequest(RewardEffectKind.REVIEW, it))
-                }
                 val current = _uiState.value
                 val remaining = if (current.reviewQueue.firstOrNull()?.id == card.id) {
                     current.reviewQueue.drop(1)

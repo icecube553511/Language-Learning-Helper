@@ -46,7 +46,7 @@ Android app (composition root) -> presentation -> application -> domain
 - **默写导出契约**：`shared/contracts/dictation-export-v1.md` 与 `shared/contracts/dictation-export-golden-v1.json`；preview 与 DOCX/PDF 必须消费同一个平台无关 `Document` model。
 - **例句气泡契约**：`shared/contracts/word-bubble-v1.md` 与 `shared/contracts/word-bubble-golden-v1.json`；token、查词与 20 层栈由两端共同遵守。
 - **冰子宠物契约**：`shared/contracts/pet-companion-v1.md` 与 `shared/contracts/pet-companion-golden-v1.json`；源图在 `shared/assets/branding/`，透明运行资源由 `tools/prepare_pet_asset.py` 派生，UI 目标几何与拖拽状态只在 presentation。
-- **冰子成长契约**：`shared/contracts/pet-vitals-v1.md` 与 `shared/contracts/pet-vitals-golden-v1.json`；`FoodJar` 是 `PetVitals` 持有的显式值对象，成长值和恢复标记持久化，饥饿状态派生，追踪光球保持 presentation 瞬态。
+- **冰子成长契约**：`shared/contracts/pet-vitals-v1.md` 与 `shared/contracts/pet-vitals-golden-v1.json`；`FoodJar` 是 `PetVitals` 持有的显式值对象，成长值和恢复标记持久化，饥饿状态派生。
 - **冰子形象契约**：`shared/contracts/pet-appearance-v1.md` 与 `shared/contracts/pet-appearance-golden-v1.json`；源 PNG 位于 `shared/assets/branding/pet_states/`，工具生成的运行资源位于 `shared/assets/pets/states/`，当前 capability 为 disabled。
 
 ## 目录结构
@@ -77,7 +77,7 @@ android/app/            Activity、SAF 与唯一 Android 组合根
 
 学习卡请求从 UI/ViewModel 进入应用用例，应用层通过仓储端口取得词条和学习状态，领域层验证/调度后由基础设施保存；UI 只接收结果。CSV 导入则由平台文件选择器取得字节/路径，经基础设施解析和逐行校验，应用层写入词库仓储，再由 UI 展示统一的成功、跳过、失败报告。
 
-评分时，application 同时调用调度器与 `pet-vitals-v1` 领域 reducer；恢复标记跟随已学词内部元数据，宠物成长状态经端口持久化。排期写入返回可回滚 savepoint，后续 marker/vitals 写入失败时 application 执行进程内补偿；两个物理存储仍不具备跨崩溃原子性。按钮坐标、在途光球、拖尾和接触爆点仅由 presentation 管理，不进入 UI state 的业务属性或持久化文件。
+评分时，application 同时调用调度器与 `pet-vitals-v1` 领域 reducer；恢复标记跟随已学词内部元数据，宠物成长状态经端口持久化。排期写入返回可回滚 savepoint，后续 marker/vitals 写入失败时 application 执行进程内补偿；两个物理存储仍不具备跨崩溃原子性。
 
 默写导出从 UI 选择候选词条、字段和格式开始，经 application 产生平台无关的 `Document`，infrastructure 的预览、DOCX writer 或 PDF writer 都消费该模型；文件对话框/SAF 只由 composition root 提供。至少一个格式成功写出后，才按 ASK/ALWAYS/NEVER 执行本地 `evaluated` tag override。
 
@@ -93,7 +93,7 @@ android/app/            Activity、SAF 与唯一 Android 组合根
 - VocabularyEntry 的稳定 ID、membership、标签、例句最低要求必须与共享契约一致。
 - `dictation-export-v1` 的 Unicode code point 下划线、词性 token、完整词边界、例句覆盖和手选不足确认文案必须由两端共同测试覆盖。
 - `word-bubble-v1` 的 token 边界、未知词 fallback、20 层上限和点击关闭行为必须由两端共同测试覆盖；气泡栈不进入学习数据。
-- `pet-vitals-v1` 的完整奖励矩阵、上下限、溢出/补食、恢复标记互斥及并发光球必须由两端读取同一 golden vectors 覆盖；数值暂不展示。
+- `pet-vitals-v1` 的完整奖励矩阵、上下限、溢出/补食和恢复标记互斥必须由两端读取同一 golden vectors 覆盖；数值暂不展示。
 - `pet-appearance-v1` 的高速落地、3 秒滞空、30 秒静止、300ms 双击、严格零饱食度、资源排序和优先级必须由两端读取同一 golden vectors 覆盖；当前资源缺失时 capability 保持 disabled。
 - Windows、Android 和共享契约必须在同一功能提交中同步；能力只有双端测试通过后才能标记 ready。
 - 跨端功能必须在同一提交中进入 CI，并通过 GitHub PR 留下审计记录。
@@ -119,7 +119,7 @@ Android 构建需要 JDK 17、Android SDK 35；Windows 打包还需要 windows/r
 | 改学习/复习业务 | 两端 application 与 domain，再补两端测试 |
 | 改本地存储 | 各端 infrastructure，保持端口不变 |
 | 改页面交互 | 对应 presentation；Android 文件选择仍留在 app |
-| 改冰子成长/奖励 | pet-vitals 契约 -> 两端 domain/application/infrastructure；光球只改 presentation |
+| 改冰子成长/奖励 | pet-vitals 契约 -> 两端 domain/application/infrastructure |
 | 添加冰子形象素材 | `shared/assets/branding/pet_states/` -> `python tools/prepare_pet_appearance_assets.py` -> `shared/assets/pets/states/` |
 | 改冰子形象状态 | `shared/contracts/pet-appearance-v1.md` -> 两端 domain/test -> 三份 manifest |
 | 添加回归测试 | windows/tests/ 或 Android 各模块 src/test |
