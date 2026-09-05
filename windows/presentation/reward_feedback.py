@@ -283,16 +283,18 @@ class RewardFeedbackLayer(tk.Toplevel):
             widget_hwnd = int(self.winfo_id() or 0)
         except (tk.TclError, TypeError, ValueError):
             return []
+        # ``winfo_id()`` is the native surface owned by this Toplevel.  On
+        # some Tk builds it reports a child HWND, but walking to ``GetParent``
+        # in that case escapes into the main application window.  Enumerating
+        # from that parent would subclass every application control and make
+        # all subsequent clicks appear dead.  Keep the enumeration rooted at
+        # the layer handle itself so only this overlay's descendants are
+        # touched.
         root_hwnd = widget_hwnd
         handles: list[int] = []
         if sys.platform == "win32":
             try:
                 user32 = ctypes.windll.user32
-                get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-                get_style.restype = ctypes.c_void_p
-                get_style.argtypes = [wintypes.HWND, ctypes.c_int]
-                if int(get_style(widget_hwnd, -16) or 0) & 0x40000000:  # WS_CHILD
-                    root_hwnd = int(user32.GetParent(widget_hwnd) or widget_hwnd)
                 enum_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
                 @enum_type
                 def collect(child_hwnd, _lparam):
