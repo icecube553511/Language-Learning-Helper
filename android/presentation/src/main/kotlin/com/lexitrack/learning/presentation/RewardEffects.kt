@@ -82,9 +82,9 @@ internal fun rewardTrailLength(speedPxPerSecond: Float): Float =
 internal fun RewardEffectsHost(
     request: RewardEffectRequest?,
     hostOrigin: PetPoint,
-    targetProvider: () -> Offset? = { null },
     onFinished: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    targetProvider: () -> Offset? = { null },
 ) {
     var orbProgress by remember { mutableStateOf(0f) }
     var burstProgress by remember { mutableStateOf(0f) }
