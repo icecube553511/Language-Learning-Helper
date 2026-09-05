@@ -303,10 +303,10 @@ class RewardFeedbackLayer(tk.Toplevel):
                 user32.EnumChildWindows(root_hwnd, collect, 0)
             except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
                 pass
-        for value in (root_hwnd, widget_hwnd):
-            if value and value not in handles:
-                handles.append(value)
-        return handles
+        # Keep the Toplevel first: callers apply window-wide extended styles
+        # to the owner before subclassing its child drawing surfaces.
+        ordered = [root_hwnd, widget_hwnd, *handles]
+        return list(dict.fromkeys(value for value in ordered if value))
 
     def _enable_mouse_passthrough(self) -> None:
         if sys.platform != "win32":
