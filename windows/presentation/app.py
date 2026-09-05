@@ -582,6 +582,20 @@ class LexiTrackApp(tk.Tk):
             return pointer[0]
         return self._rating_button_center(button)
 
+    def _rating_fallback_source(self) -> RewardPoint:
+        """Provide a finite origin while a rating card is rebuilding."""
+        target_provider = getattr(self, "_reward_pet_center", None)
+        target = target_provider() if target_provider is not None else None
+        if target is not None:
+            return target
+        try:
+            return RewardPoint(
+                float(self.winfo_rootx()) + float(self.winfo_width()) / 2.0,
+                float(self.winfo_rooty()) + float(self.winfo_height()) / 2.0,
+            )
+        except Exception:
+            return RewardPoint(0.0, 0.0)
+
     def _emit_rating_reward(self, source: RewardPoint, color: str) -> None:
         if self._reward_feedback is not None:
             try:
@@ -4831,7 +4845,14 @@ class LexiTrackApp(tk.Tk):
         self.service.rate_card(previous, rating)
         if source is None:
             index = tuple(ReviewRating).index(rating)
-            source = self._rating_button_center(self.rating_buttons[index])
+            # The card can be rated from a keyboard shortcut while its
+            # controls are being rebuilt.  Keep the feedback anchored even
+            # when the matching button is temporarily unavailable.
+            button = self.rating_buttons[index] if index < len(self.rating_buttons) else None
+            if button is not None:
+                source = self._rating_button_center(button)
+            else:
+                source = self._rating_fallback_source()
         self._emit_rating_reward(source, STUDY_REWARD_COLOR)
         self._sync_review_batch_control()
         self.load_study_card(exclude_id=previous)
@@ -4910,7 +4931,11 @@ class LexiTrackApp(tk.Tk):
         self.service.rate_review_card(card.word_id, rating)
         if source is None:
             index = tuple(ReviewRating).index(rating)
-            source = self._rating_button_center(self.review_rating_buttons[index])
+            button = self.review_rating_buttons[index] if index < len(self.review_rating_buttons) else None
+            if button is not None:
+                source = self._rating_button_center(button)
+            else:
+                source = self._rating_fallback_source()
         self._emit_rating_reward(source, REVIEW_REWARD_COLOR)
         self.review_queue.pop(0)
         self._show_next_review_card()
