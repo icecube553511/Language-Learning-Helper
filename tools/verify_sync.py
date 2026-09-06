@@ -1703,17 +1703,71 @@ def verify_pet_vitals_contract() -> None:
         if not math.isclose(reserve, float(vector["expectedFoodReserve"]), abs_tol=1e-9):
             fail(f"Pet vital vector {vector['name']} differs at food reserve")
 
-    if "rewardFlight" in payload or "rewardFlightVectors" in payload:
-        fail("Pet reward-flight contract must be removed")
+    effect = payload.get("rewardFlight", {})
+    expected_effect = {
+        "studyColor": "#F4C542",
+        "reviewColor": "platform-primary-teal",
+        "sourceAnchor": "pointer-down-screen-position",
+        "targetTracking": "rendered-pet-center-every-frame",
+        "frameMs": 16,
+        "spiralDurationMs": 180,
+        "spiralTurns": 1.0,
+        "spiralRadiusStart": 4.0,
+        "spiralRadiusEnd": 18.0,
+        "homingInitialSpeed": 180.0,
+        "homingAcceleration": 2400.0,
+        "homingMaximumSpeed": 2800.0,
+        "orbRadius": 6.0,
+        "visual": {
+            "orbRadius": 16.0,
+            "orbGlowRadius": 34.0,
+            "orbHighlightRadius": 4.0,
+            "trailMinimumStrokeWidth": 5.0,
+            "trailMaximumStrokeWidth": 12.0,
+            "trailStrokeSpeedFactor": 0.0025,
+            "trailGlowWidthMultiplier": 2.2,
+            "burstParticleRadius": 4.0,
+            "burstParticleGlowRadius": 10.0,
+        },
+        "trailLifetimeMs": 180,
+        "trailMaximumPoints": 20,
+        "trailLengthFormula": "clamp(18,96,speed*0.04)",
+        "burstParticleCount": 18,
+        "burstDurationMs": 350,
+        "maximumLifetimeMs": 2500,
+        "missingTargetTimeoutMs": 500,
+        "minimumVerifiedConcurrentFlights": 32,
+        "contactRadius": "pet-half-size-plus-orb-radius",
+        "concurrency": "independent-no-replacement",
+        "persisted": False,
+    }
+    if effect != expected_effect:
+        fail("Pet reward-flight parameters differ")
+    if payload.get("rewardFlightVectors") != {
+        "spiralEndpoint": {
+            "elapsedMs": 180,
+            "relativeX": 18.0,
+            "relativeY": 0.0,
+        },
+        "trailClip": {
+            "speed": 1000.0,
+            "inputX": [0.0, 25.0, 50.0, 75.0],
+            "expectedStartX": 35.0,
+            "expectedEndX": 75.0,
+            "expectedLength": 40.0,
+        },
+    }:
+        fail("Pet reward-flight trajectory vectors differ")
 
     contract_text = contract_path.read_text(encoding="utf-8")
     for marker in (
         "20%",
         "single-value enum",
         "not a vocabulary/catalog",
+        "current rendered center",
         "`FoodJar` domain value object",
         "cross-repository",
-        "`pet-energy-ball-v1` interaction effect",
+        "single failed frame",
     ):
         if marker not in contract_text:
             fail(f"Pet vitals contract is missing {marker}")
@@ -1744,32 +1798,21 @@ def verify_pet_vitals_contract() -> None:
         "temporaryReviewTagCardinality": tags["cardinality"],
         "persisted": True,
         "visible": False,
+        "rewardFlight": {
+            "studyColor": effect["studyColor"],
+            "reviewColor": effect["reviewColor"],
+            "sourceAnchor": effect["sourceAnchor"],
+            "targetTracking": effect["targetTracking"],
+            "concurrency": effect["concurrency"],
+            "visual": effect["visual"],
+        },
     }
     if parity.get("petVitals") != expected_manifest_vitals:
         fail("Parity petVitals projection differs from the golden contract")
     capabilities = parity.get("capabilities", {})
-    if "ratingRewardFlightEffect" in capabilities:
-        fail("Parity must not advertise the removed rating reward-flight effect")
-    for manifest_name, manifest_path in (
-        ("parity.json", CONTRACTS / "parity.json"),
-        ("windows/platform-contract.json", ROOT / "windows/platform-contract.json"),
-        ("android/platform-contract.json", ROOT / "android/platform-contract.json"),
-    ):
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if "rewardFlight" in manifest.get("petVitals", {}) or "ratingRewardFlightEffect" in manifest.get("capabilities", {}):
-            fail(f"Removed reward-flight contract remains in {manifest_name}")
-
-    # The old reward-flight contract was removed.  The presentation-only
-    # pet-energy-ball-v1 effect is verified separately below.
-    for source_path in (
-        ROOT / "windows/presentation/app.py",
-        ROOT / "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt",
-    ):
-        source = source_path.read_text(encoding="utf-8")
-        if "rewardFlight" in source or "resolveRatingOrigin" in source:
-            fail(f"Rating UI still links removed animation code: {source_path.relative_to(ROOT)}")
     for capability in (
         "petVitalsAndRatingRewards",
+        "ratingRewardFlightEffect",
         "petMotionContinuityDuringReflow",
         "petAnimationFrameResilience",
     ):
@@ -1798,7 +1841,20 @@ def verify_pet_vitals_contract() -> None:
             "save_learning_outcome",
             "petVitals",
         ),
+        "windows/presentation/reward_effects.py": (
+            "class RewardEffectsController",
+            "clip_trail_to_length",
+            "trail_length_for_speed",
+            "A single failed frame",
+        ),
+        "windows/presentation/app.py": (
+            "Skip the failed frame and keep ticking",
+        ),
         "windows/tests/test_pet_vitals.py": ("FoodJar", "rewardRules"),
+        "windows/tests/test_reward_effects.py": (
+            "minimumVerifiedConcurrentFlights",
+            "pointer_source_uses_press_coordinates",
+        ),
         "android/domain/src/main/kotlin/com/lexitrack/learning/domain/PetVitals.kt": (
             "class FoodJar",
             "data class PetVitals",
@@ -1827,9 +1883,27 @@ def verify_pet_vitals_contract() -> None:
         "android/infrastructure/src/test/kotlin/com/lexitrack/learning/infrastructure/AndroidLearntWordsRepositoryTest.kt": (
             "cancellationAfterCommitStillPublishesLearningOutcome",
         ),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": (
+            "class RewardEffectsEngine",
+            "resolveRatingOrigin",
+            "visibleTrail",
+            "trailLengthForSpeed",
+        ),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt": (
+            "onRate(ReviewRating.AGAIN",
+            "onRate(ReviewRating.HARD",
+            "onRate(ReviewRating.GOOD",
+            "onRate(ReviewRating.EASY",
+            "resolveRatingOrigin",
+            "Skip the failed frame and keep the loop alive",
+        ),
         "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetVitalsGoldenContractTest.kt": (
             "FoodJar",
             "rewardRules",
+        ),
+        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": (
+            "minimumVerifiedConcurrentFlights",
+            "trailLengthForSpeed",
         ),
     }
     for relative_path, markers in implementation_markers.items():
@@ -1859,65 +1933,6 @@ def verify_pet_vitals_contract() -> None:
             if marker in source:
                 fail(f"Hidden pet state leaked into UI: {source_path.relative_to(ROOT)} has {marker}")
 
-
-def verify_pet_energy_ball_contract() -> None:
-    contract_path = CONTRACTS / "pet-energy-ball-v1.md"
-    golden_path = CONTRACTS / "pet-energy-ball-golden-v1.json"
-    if not contract_path.is_file() or "pet-energy-ball-v1" not in contract_path.read_text(encoding="utf-8"):
-        fail("Pet energy-ball contract is missing")
-    payload = json.loads(golden_path.read_text(encoding="utf-8"))
-    if payload.get("contractVersion") != "pet-energy-ball-v1":
-        fail("Unexpected pet energy-ball contract version")
-    phases = payload.get("phases", {})
-    if phases.get("study", {}).get("color") != "#F5C451" or phases.get("review", {}).get("color") != "#39D9D0":
-        fail("Pet energy-ball phase colors differ")
-    motion = payload.get("motion", {})
-    if motion.get("acceleration") != "continuous-toward-live-pet":
-        fail("Pet energy-ball must target the live pet")
-    if float(motion.get("maxSpeedLogicalPxPerSecond", 0)) != 1800.0 or float(motion.get("hitRadiusLogicalPx", 0)) != 36.0:
-        fail("Pet energy-ball motion limits differ")
-    if motion.get("trailLengthLogicalPx") != {"minimum": 12.0, "maximum": 96.0}:
-        fail("Pet energy-ball trail bounds differ")
-    burst = payload.get("burst", {})
-    if (
-        burst.get("particleCount") != 18
-        or burst.get("lifetimeMs") != 260
-        or burst.get("radialSpeedLogicalPxPerSecond") != {"minimum": 180.0, "maximum": 460.0}
-        or burst.get("inheritsPhaseColor") is not True
-    ):
-        fail("Pet energy-ball burst semantics differ")
-    if payload.get("maxConcurrentBalls") != 3 or payload.get("transient") is not True:
-        fail("Pet energy-ball lifecycle semantics differ")
-    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
-    expected = {
-        "studyColor": "#F5C451",
-        "reviewColor": "#39D9D0",
-        "maxSpeedLogicalPxPerSecond": 1800.0,
-        "hitRadiusLogicalPx": 36.0,
-        "trailLengthLogicalPx": [12.0, 96.0],
-        "burstParticleCount": 18,
-        "burstLifetimeMs": 260,
-        "maxConcurrentBalls": 3,
-        "transient": True,
-    }
-    if parity.get("petEnergyBallVersion") != "pet-energy-ball-v1" or parity.get("petEnergyBall") != expected:
-        fail("Parity pet energy-ball projection differs")
-    if parity.get("capabilities", {}).get("petEnergyBallEffect") != "ready":
-        fail("Pet energy-ball capability is not ready")
-    implementation_markers = {
-        "windows/presentation/reward_effects.py": ("RewardFlight", "STUDY_REWARD_COLOR", "REVIEW_REWARD_COLOR"),
-        "windows/tests/test_reward_effects.py": ("RewardAnimationModel",),
-        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": ("RewardEffectMode", "StudyRewardGold", "ReviewRewardCyan"),
-        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": ("rewardTrailLength",),
-    }
-    for relative_path, markers in implementation_markers.items():
-        source_path = ROOT / relative_path
-        if not source_path.is_file():
-            fail(f"Pet energy-ball implementation is missing {relative_path}")
-        source = source_path.read_text(encoding="utf-8")
-        for marker in markers:
-            if marker not in source:
-                fail(f"Pet energy-ball implementation {relative_path} is missing {marker}")
 
 def normalize_group_membership(code: str) -> str:
     normalized = unicodedata.normalize("NFKC", code.strip()).upper()
@@ -2530,7 +2545,6 @@ def verify_platform_markers() -> None:
             "wordBubbleVersion",
             "petCompanionVersion",
             "petVitalsVersion",
-            "petEnergyBallVersion",
             "petAppearanceVersion",
             "vocabularyGroupsVersion",
             "contentVersion",
@@ -2541,7 +2555,6 @@ def verify_platform_markers() -> None:
             "branding",
             "petCompanion",
             "petVitals",
-            "petEnergyBall",
             "petAppearance",
             "fontScale",
             "popupGeometry",
@@ -2564,7 +2577,6 @@ def main() -> int:
     verify_pet_contract()
     verify_pet_appearance_contract()
     verify_pet_vitals_contract()
-    verify_pet_energy_ball_contract()
     verify_vocabulary_groups_contract()
     verify_font_scale_popup_contract()
     verify_catalog()

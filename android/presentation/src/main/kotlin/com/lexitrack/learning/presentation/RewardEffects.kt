@@ -1,224 +1,617 @@
 package com.lexitrack.learning.presentation
 
+import android.view.View
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.zIndex
 import com.lexitrack.learning.domain.PetPoint
-import com.lexitrack.learning.domain.PetRect
+import kotlinx.coroutines.isActive
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.sin
+import kotlin.math.sqrt
+import kotlin.math.roundToLong
 
-/** The rating effect is presentation-only and is never persisted with learning data. */
-internal enum class RewardEffectMode {
+/** Animation parameters are centralized because visual tuning will change later. */
+internal object RewardFlightTuning {
+    const val FRAME_MS = 16L
+    const val SPIRAL_DURATION_MS = 180L
+    const val SPIRAL_TURNS = 1.0f
+    const val SPIRAL_RADIUS_START = 4.0f
+    const val SPIRAL_RADIUS_END = 18.0f
+    const val HOMING_INITIAL_SPEED = 180.0f
+    const val HOMING_ACCELERATION = 2_400.0f
+    const val HOMING_MAXIMUM_SPEED = 2_800.0f
+    // Physical contact stays small; these values control the visible feedback
+    // and are centralized because later releases will tune the presentation.
+    const val ORB_RADIUS = 6.0f
+    const val VISUAL_ORB_RADIUS = 16.0f
+    const val VISUAL_ORB_GLOW_RADIUS = 34.0f
+    const val VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0f
+    const val TRAIL_LIFETIME_MS = 180L
+    const val TRAIL_MAXIMUM_POINTS = 20
+    const val TRAIL_MINIMUM_STROKE_WIDTH = 5.0f
+    const val TRAIL_MAXIMUM_STROKE_WIDTH = 12.0f
+    const val TRAIL_STROKE_SPEED_FACTOR = 0.0025f
+    const val TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2f
+    const val BURST_PARTICLE_COUNT = 18
+    const val BURST_PARTICLE_RADIUS = 4.0f
+    const val BURST_PARTICLE_GLOW_RADIUS = 10.0f
+    const val BURST_DURATION_MS = 350L
+    const val MAXIMUM_LIFETIME_MS = 2_500L
+    const val MISSING_TARGET_TIMEOUT_MS = 500L
+    const val MINIMUM_VERIFIED_CONCURRENT_FLIGHTS = 32
+    const val BURST_MINIMUM_SPEED = 120.0f
+    const val BURST_SPEED_STEP = 18.0f
+}
+
+enum class RewardEffectKind {
     STUDY,
     REVIEW,
 }
 
-/** Contract marker: pet-energy-ball-v1. */
-internal const val PET_ENERGY_BALL_CONTRACT = "pet-energy-ball-v1"
-internal const val PET_ENERGY_BALL_MAX_SPEED_PX_PER_SECOND = 1_800f
-internal const val PET_ENERGY_BALL_HIT_RADIUS_PX = 36f
-internal const val PET_ENERGY_BALL_MIN_TRAIL_PX = 12f
-internal const val PET_ENERGY_BALL_MAX_TRAIL_PX = 96f
-internal const val PET_ENERGY_BALL_PARTICLE_COUNT = 18
-internal const val PET_ENERGY_BALL_BURST_DURATION_MS = 260f
-internal const val PET_ENERGY_BALL_MAX_CONCURRENT = 3
+data class RewardEffectOrigin(val x: Float, val y: Float) {
+    init {
+        require(x.isFinite() && y.isFinite()) { "Reward origin must be finite" }
+    }
 
-internal val StudyRewardGold = Color(0xFFF5C451)
-internal val ReviewRewardCyan = Color(0xFF39D9D0)
+    internal fun toPetPoint() = PetPoint(x, y)
+}
 
-internal data class RewardEffectRequest(
-    val id: Long,
-    val start: Offset,
-    val target: Offset,
-    val color: Color,
-    val durationMillis: Int = rewardDurationMillis((target - start).getDistance()),
+data class RewardEffectRequest(
+    val kind: RewardEffectKind,
+    val origin: RewardEffectOrigin,
 )
 
-internal fun rewardColor(mode: RewardEffectMode): Color = when (mode) {
-    RewardEffectMode.STUDY -> StudyRewardGold
-    RewardEffectMode.REVIEW -> ReviewRewardCyan
-}
+internal const val RATING_POINTER_ORIGIN_FRESHNESS_MS = 1_500L
 
-/**
- * Resolve a screen-space destination even while the pet host is being
- * registered.  The coordinator is normally ready before a rating button can
- * be tapped, but Compose can deliver the first tap during that registration
- * frame.  Dropping that tap makes the feature appear randomly disabled, so
- * use the host centre as a short-lived destination and let the live target
- * provider retarget the flight on the next frame.
- */
-internal fun rewardTargetOrViewportCenter(
-    target: PetPoint?,
-    viewportOrigin: PetPoint,
-    viewport: PetRect,
-): Offset? = target?.let { Offset(it.x, it.y) }
-    ?: viewport.takeIf { it.valid }?.let {
-        Offset(
-            viewportOrigin.x + it.width / 2f,
-            viewportOrigin.y + it.height / 2f,
-        )
+internal data class RatingPointerDown(
+    val origin: RewardEffectOrigin,
+    val capturedAtUptimeMs: Long,
+)
+
+internal fun resolveRatingOrigin(
+    pointerDown: RatingPointerDown?,
+    buttonBounds: Rect,
+    nowUptimeMs: Long,
+): RewardEffectOrigin {
+    val pointerAge = pointerDown?.let { nowUptimeMs - it.capturedAtUptimeMs }
+    if (pointerDown != null && pointerAge in 0L..RATING_POINTER_ORIGIN_FRESHNESS_MS) {
+        return pointerDown.origin
     }
-
-internal fun rewardDurationMillis(distancePx: Float): Int =
-    (360f + distancePx.coerceIn(0f, 1_600f) * 0.18f).toInt().coerceIn(360, 650)
-
-/** Quadratic ease-in gives the orb a visible acceleration toward Bingzi. */
-internal fun rewardProgress(elapsedMillis: Float, durationMillis: Int): Float {
-    if (durationMillis <= 0) return 1f
-    return (elapsedMillis / durationMillis).coerceIn(0f, 1f).let { it * it }
+    return RewardEffectOrigin(
+        x = (buttonBounds.left + buttonBounds.right) / 2f,
+        y = (buttonBounds.top + buttonBounds.bottom) / 2f,
+    )
 }
 
-internal fun rewardOrbPosition(request: RewardEffectRequest, progress: Float): Offset =
-    request.start + (request.target - request.start) * progress.coerceIn(0f, 1f)
-
-internal fun rewardSpeedPxPerSecond(
-    distancePx: Float,
-    elapsedMillis: Float,
-    durationMillis: Int,
-): Float {
-    if (durationMillis <= 0) return 0f
-    val normalizedTime = (elapsedMillis / durationMillis).coerceIn(0f, 1f)
-    return (distancePx * 2f * normalizedTime / (durationMillis / 1_000f))
-        .coerceAtMost(PET_ENERGY_BALL_MAX_SPEED_PX_PER_SECOND)
+internal enum class RewardFlightStage {
+    SPIRAL,
+    HOMING,
 }
 
-internal fun rewardTrailLength(speedPxPerSecond: Float): Float =
-    (PET_ENERGY_BALL_MIN_TRAIL_PX + speedPxPerSecond * 0.047f)
-        .coerceIn(PET_ENERGY_BALL_MIN_TRAIL_PX, PET_ENERGY_BALL_MAX_TRAIL_PX)
+internal data class RewardTarget(
+    val center: PetPoint,
+    val halfSize: Float,
+)
 
-@Composable
-internal fun RewardEffectsHost(
-    request: RewardEffectRequest?,
-    hostOrigin: PetPoint,
-    onFinished: (Long) -> Unit,
-    modifier: Modifier = Modifier,
-    targetProvider: () -> Offset? = { null },
+internal data class RewardTrailPoint(
+    val position: PetPoint,
+    val ageMs: Long,
+)
+
+internal data class RewardFlightSnapshot(
+    val id: Long,
+    val kind: RewardEffectKind,
+    val position: PetPoint,
+    val velocity: PetPoint,
+    val stage: RewardFlightStage,
+    val trail: List<RewardTrailPoint>,
+)
+
+internal data class RewardParticleSnapshot(
+    val kind: RewardEffectKind,
+    val position: PetPoint,
+    val alpha: Float,
+)
+
+internal data class RewardEffectsSnapshot(
+    val flights: List<RewardFlightSnapshot> = emptyList(),
+    val particles: List<RewardParticleSnapshot> = emptyList(),
 ) {
-    var orbProgress by remember { mutableStateOf(0f) }
-    var burstProgress by remember { mutableStateOf(0f) }
-    var flowPhase by remember { mutableStateOf(0f) }
-    var burstStarted by remember { mutableStateOf(false) }
-    var collisionTarget by remember { mutableStateOf<Offset?>(null) }
-    var liveTarget by remember { mutableStateOf<Offset?>(null) }
+    val active: Boolean get() = flights.isNotEmpty() || particles.isNotEmpty()
+}
 
-    LaunchedEffect(request?.id) {
-        val current = request ?: run {
-            orbProgress = 0f
-            burstProgress = 0f
-            return@LaunchedEffect
-        }
-        val flightDuration = current.durationMillis.toFloat()
-        val burstDuration = PET_ENERGY_BALL_BURST_DURATION_MS
-        liveTarget = current.target
-        burstStarted = false
-        burstProgress = 0f
-        collisionTarget = null
-        val startedAt = withFrameNanos { it }
-        var burstStartedAt: Float? = null
-        while (true) {
-            val elapsed = (withFrameNanos { it } - startedAt) / 1_000_000f
-            targetProvider()?.let { liveTarget = it }
-            val frameRequest = current.copy(target = liveTarget ?: current.target)
-            val nextProgress = rewardProgress(elapsed, current.durationMillis)
-            val framePosition = rewardOrbPosition(frameRequest, nextProgress)
-            val targetDistance = (frameRequest.target - framePosition).getDistance()
-            if (burstStartedAt == null && (targetDistance <= PET_ENERGY_BALL_HIT_RADIUS_PX || elapsed >= flightDuration)) {
-                burstStartedAt = elapsed
-                burstStarted = true
-                collisionTarget = frameRequest.target
-                orbProgress = 1f
-            } else if (burstStartedAt == null) {
-                orbProgress = nextProgress
+private data class MutableTrailPoint(
+    val position: PetPoint,
+    var ageMs: Long,
+)
+
+private data class MutableRewardFlight(
+    val id: Long,
+    val kind: RewardEffectKind,
+    val origin: PetPoint,
+    var position: PetPoint,
+    var velocity: PetPoint = PetPoint(0f, 0f),
+    var stage: RewardFlightStage = RewardFlightStage.SPIRAL,
+    var spiralElapsedMs: Long = 0L,
+    var lifetimeMs: Long = 0L,
+    var missingTargetMs: Long = 0L,
+    val trail: MutableList<MutableTrailPoint> = mutableListOf(MutableTrailPoint(origin, 0L)),
+)
+
+private data class MutableRewardBurst(
+    val kind: RewardEffectKind,
+    val origin: PetPoint,
+    var ageMs: Long = 0L,
+)
+
+internal class RewardEffectsEngine {
+    private val flights = mutableListOf<MutableRewardFlight>()
+    private val bursts = mutableListOf<MutableRewardBurst>()
+    private var nextId = 1L
+
+    fun emit(request: RewardEffectRequest): Long {
+        val id = nextId++
+        val origin = request.origin.toPetPoint()
+        flights += MutableRewardFlight(id = id, kind = request.kind, origin = origin, position = origin)
+        return id
+    }
+
+    fun step(deltaMs: Long, target: RewardTarget?) {
+        if (deltaMs <= 0L) return
+        bursts.forEach { it.ageMs += deltaMs }
+        bursts.removeAll { it.ageMs >= RewardFlightTuning.BURST_DURATION_MS }
+
+        val iterator = flights.iterator()
+        while (iterator.hasNext()) {
+            val flight = iterator.next()
+            flight.lifetimeMs += deltaMs
+            flight.trail.forEach { it.ageMs += deltaMs }
+            flight.trail.removeAll { it.ageMs > RewardFlightTuning.TRAIL_LIFETIME_MS }
+
+            if (target == null) {
+                flight.missingTargetMs += deltaMs
+            } else {
+                flight.missingTargetMs = 0L
             }
-            flowPhase = (elapsed / 140f) % 1f
-            burstProgress = burstStartedAt?.let { (elapsed - it) / burstDuration }?.coerceIn(0f, 1f) ?: 0f
-            if (burstStartedAt != null && elapsed >= burstStartedAt + burstDuration) {
-                orbProgress = 0f
-                burstProgress = 0f
-                burstStarted = false
-                collisionTarget = null
-                onFinished(current.id)
-                break
+            if (
+                flight.lifetimeMs >= RewardFlightTuning.MAXIMUM_LIFETIME_MS ||
+                flight.missingTargetMs >= RewardFlightTuning.MISSING_TARGET_TIMEOUT_MS
+            ) {
+                iterator.remove()
+                continue
             }
+
+            var remainingMs = deltaMs
+            if (flight.stage == RewardFlightStage.SPIRAL) {
+                val spiralStep = minOf(
+                    remainingMs,
+                    RewardFlightTuning.SPIRAL_DURATION_MS - flight.spiralElapsedMs,
+                )
+                advanceSpiral(flight, spiralStep)
+                remainingMs -= spiralStep
+                if (flight.spiralElapsedMs >= RewardFlightTuning.SPIRAL_DURATION_MS) {
+                    flight.stage = RewardFlightStage.HOMING
+                    flight.velocity = target?.let {
+                        direction(flight.position, it.center) * RewardFlightTuning.HOMING_INITIAL_SPEED
+                    } ?: PetPoint(0f, 0f)
+                }
+            }
+
+            if (flight.stage == RewardFlightStage.HOMING && remainingMs > 0L && target != null) {
+                val contact = advanceHoming(flight, remainingMs, target)
+                if (contact != null) {
+                    bursts += MutableRewardBurst(flight.kind, contact)
+                    iterator.remove()
+                    continue
+                }
+            }
+            addTrailPoint(flight)
         }
     }
 
-    val active = request ?: return
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val orbRadius = with(density) { 6.dp.toPx() }
-    val localOrigin = Offset(hostOrigin.x, hostOrigin.y)
-    val liveRequest = active.copy(target = liveTarget ?: active.target)
-    val start = liveRequest.start - localOrigin
-    val target = (collisionTarget ?: liveRequest.target) - localOrigin
-    val position = rewardOrbPosition(liveRequest, orbProgress) - localOrigin
-    val direction = (target - start).let { vector ->
-        val length = vector.getDistance()
-        if (length > 0.5f) vector / length else Offset(0f, -1f)
-    }
-    val distance = (target - start).getDistance()
-    val elapsedForSpeed = active.durationMillis * kotlin.math.sqrt(orbProgress)
-    val trail = rewardTrailLength(
-        rewardSpeedPxPerSecond(distance, elapsedForSpeed, active.durationMillis),
+    fun snapshot(): RewardEffectsSnapshot = RewardEffectsSnapshot(
+        flights = flights.map { flight ->
+            val speed = flight.velocity.length()
+            RewardFlightSnapshot(
+                id = flight.id,
+                kind = flight.kind,
+                position = flight.position,
+                velocity = flight.velocity,
+                stage = flight.stage,
+                trail = visibleTrail(
+                    flight.trail.map { RewardTrailPoint(it.position, it.ageMs) },
+                    trailLengthForSpeed(speed),
+                ),
+            )
+        },
+        particles = bursts.flatMap(::burstParticles),
     )
 
-    Canvas(modifier = modifier.zIndex(30f)) {
-        if (!burstStarted) {
-            // Layered lines and circles produce a soft halo without a platform-specific blur.
-            for (index in 0 until 6) {
-                val fraction = index / 6f
-                val tail = position - direction * (trail * fraction)
-                drawLine(
-                    color = active.color.copy(alpha = 0.05f + (1f - fraction) * 0.12f),
-                    start = tail,
-                    end = position,
-                    strokeWidth = orbRadius * (2.2f - fraction),
-                    cap = StrokeCap.Round,
-                )
-            }
-            repeat(3) { index ->
-                val fraction = (flowPhase + index * 0.31f) % 1f
-                val flowPoint = position - direction * (trail * fraction)
-                drawCircle(active.color.copy(alpha = (1f - fraction) * 0.36f), orbRadius * (0.3f + 0.14f * (1f - fraction)), flowPoint)
-            }
-            drawCircle(active.color.copy(alpha = 0.09f), orbRadius * 4.2f, position)
-            drawCircle(active.color.copy(alpha = 0.18f), orbRadius * 2.4f, position)
-            drawCircle(Color.White.copy(alpha = 0.92f), orbRadius * 0.72f, position)
-            drawCircle(active.color, orbRadius, position, style = androidx.compose.ui.graphics.drawscope.Fill)
+    private fun advanceSpiral(flight: MutableRewardFlight, deltaMs: Long) {
+        if (deltaMs <= 0L) return
+        val previous = flight.position
+        flight.spiralElapsedMs += deltaMs
+        val progress = (
+            flight.spiralElapsedMs.toFloat() / RewardFlightTuning.SPIRAL_DURATION_MS.toFloat()
+            ).coerceIn(0f, 1f)
+        val acceleratedProgress = progress * progress
+        val angle = (2.0 * PI * RewardFlightTuning.SPIRAL_TURNS * acceleratedProgress).toFloat()
+        val radius = lerp(
+            RewardFlightTuning.SPIRAL_RADIUS_START,
+            RewardFlightTuning.SPIRAL_RADIUS_END,
+            progress,
+        )
+        flight.position = PetPoint(
+            flight.origin.x + cos(angle) * radius,
+            flight.origin.y + sin(angle) * radius,
+        )
+        val seconds = deltaMs / 1_000f
+        flight.velocity = if (seconds > 0f) (flight.position - previous) / seconds else flight.velocity
+    }
+
+    private fun advanceHoming(
+        flight: MutableRewardFlight,
+        deltaMs: Long,
+        target: RewardTarget,
+    ): PetPoint? {
+        val seconds = deltaMs / 1_000f
+        val previous = flight.position
+        val targetDirection = direction(previous, target.center)
+        if (flight.velocity.length() <= 1e-4f) {
+            flight.velocity = targetDirection * RewardFlightTuning.HOMING_INITIAL_SPEED
         }
-        if (burstStarted) {
-            val fade = 1f - burstProgress
-            drawCircle(active.color.copy(alpha = 0.18f * fade), orbRadius * (2f + 8f * burstProgress), target)
-            repeat(PET_ENERGY_BALL_PARTICLE_COUNT) { index ->
-                val angle = (2.0 * PI * index / PET_ENERGY_BALL_PARTICLE_COUNT).toFloat()
-                val rayDirection = Offset(cos(angle), sin(angle))
-                val inner = target + rayDirection * (orbRadius * (0.5f + burstProgress * 2f))
-                val outer = target + rayDirection * (orbRadius * (1.5f + burstProgress * 10f))
-                drawLine(
-                    color = active.color.copy(alpha = fade * 0.72f),
-                    start = inner,
-                    end = outer,
-                    strokeWidth = orbRadius * fade.coerceAtLeast(0.18f) * 0.55f,
-                    cap = StrokeCap.Round,
-                )
-                drawCircle(
-                    color = Color.White.copy(alpha = fade * 0.8f),
-                    radius = orbRadius * fade * 0.42f,
-                    center = outer,
-                )
-            }
+        val accelerated = flight.velocity + targetDirection * (RewardFlightTuning.HOMING_ACCELERATION * seconds)
+        flight.velocity = accelerated.capped(RewardFlightTuning.HOMING_MAXIMUM_SPEED)
+        val next = previous + flight.velocity * seconds
+        val contactRadius = target.halfSize.coerceAtLeast(0f) + RewardFlightTuning.ORB_RADIUS
+        val contact = segmentCircleContact(previous, next, target.center, contactRadius)
+        flight.position = contact ?: next
+        return contact
+    }
+
+    private fun addTrailPoint(flight: MutableRewardFlight) {
+        val last = flight.trail.lastOrNull()?.position
+        if (last == flight.position) return
+        flight.trail += MutableTrailPoint(flight.position, 0L)
+        while (flight.trail.size > RewardFlightTuning.TRAIL_MAXIMUM_POINTS) {
+            flight.trail.removeAt(0)
         }
     }
+}
+
+internal class RewardEffectsController(
+    private val engine: RewardEffectsEngine = RewardEffectsEngine(),
+) {
+    var snapshot by mutableStateOf(engine.snapshot())
+        private set
+
+    fun emit(request: RewardEffectRequest) {
+        engine.emit(request)
+        snapshot = engine.snapshot()
+    }
+
+    fun step(deltaMs: Long, target: RewardTarget?) {
+        engine.step(deltaMs, target)
+        snapshot = engine.snapshot()
+    }
+}
+
+internal val LocalRewardEffectsController = staticCompositionLocalOf { RewardEffectsController() }
+internal val StudyRewardGold = Color(0xFFF4C542)
+
+/**
+ * Keep the visual layer in the pointer hit-test path without taking ownership
+ * of the gesture.  A full-size sibling with a pointer-input modifier would
+ * otherwise become the only hit target on Compose versions that stop at the
+ * highest z-index sibling.  Sharing the hit-test result lets the underlying
+ * rating buttons and navigation controls continue to receive their events.
+ */
+private fun Modifier.pointerTransparent(): Modifier = this.then(PointerTransparentElement)
+
+private object PointerTransparentElement : ModifierNodeElement<PointerTransparentNode>() {
+    override fun create(): PointerTransparentNode = PointerTransparentNode()
+
+    override fun update(node: PointerTransparentNode) = Unit
+
+    override fun equals(other: Any?): Boolean = other === this
+
+    override fun hashCode(): Int = javaClass.hashCode()
+}
+
+private class PointerTransparentNode : Modifier.Node(), PointerInputModifierNode {
+    override fun onPointerEvent(
+        pointerEvent: PointerEvent,
+        pass: PointerEventPass,
+        bounds: IntSize,
+    ) = Unit
+
+    override fun onCancelPointerInput() = Unit
+
+    override fun sharePointerInputWithSiblings(): Boolean = true
+}
+
+@Composable
+internal fun RewardEffectsAnimator(
+    controller: RewardEffectsController,
+    coordinator: PetWindowCoordinator,
+    petHalfSizePx: Float,
+) {
+    val hostView = LocalView.current
+    val active = controller.snapshot.active
+    LaunchedEffect(controller, coordinator, petHalfSizePx, active) {
+        if (!active) return@LaunchedEffect
+        var previousFrame = withFrameNanos { it }
+        while (isActive && controller.snapshot.active) {
+            val frame = withFrameNanos { it }
+            if (hostView.isShown && hostView.windowVisibility == View.VISIBLE) {
+                val elapsedMs = ((frame - previousFrame) / 1_000_000L)
+                    .coerceIn(1L, RewardFlightTuning.FRAME_MS * 2)
+                val target = coordinator.worldPosition()
+                    ?.takeIf { coordinator.activeWindowId != null }
+                    ?.let { RewardTarget(it, petHalfSizePx) }
+                controller.step(elapsedMs, target)
+            }
+            previousFrame = frame
+        }
+    }
+}
+
+@Composable
+internal fun RewardEffectsCanvas(
+    windowOrigin: PetPoint,
+    modifier: Modifier = Modifier,
+) {
+    val controller = LocalRewardEffectsController.current
+    val snapshot = controller.snapshot
+    Canvas(
+        // This canvas is deliberately visual-only.  Explicitly sharing the
+        // pointer hit-test keeps it from turning the whole page into a modal
+        // animation while the reward flight is being rendered.
+        modifier = modifier
+            .pointerTransparent()
+            .zIndex(21f),
+    ) {
+        snapshot.flights.forEach { flight ->
+            val color = rewardColor(flight.kind)
+            val trail = flight.trail
+            val baseStrokeWidth = trailStrokeWidthForSpeed(flight.velocity.length())
+            trail.zipWithNext().forEachIndexed { index, (from, to) ->
+                val ageAlpha = 1f - to.ageMs.toFloat() / RewardFlightTuning.TRAIL_LIFETIME_MS.toFloat()
+                val sequenceAlpha = (index + 1f) / max(1, trail.lastIndex).toFloat()
+                val segmentAlpha = (ageAlpha * sequenceAlpha).coerceIn(0f, 1f)
+                val taperedWidth = baseStrokeWidth * (0.55f + sequenceAlpha * 0.45f)
+                drawLine(
+                    color = color.copy(alpha = segmentAlpha * 0.24f),
+                    start = from.position.toOffset(windowOrigin),
+                    end = to.position.toOffset(windowOrigin),
+                    strokeWidth = baseStrokeWidth * RewardFlightTuning.TRAIL_GLOW_WIDTH_MULTIPLIER,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = color.copy(alpha = segmentAlpha * 0.88f),
+                    start = from.position.toOffset(windowOrigin),
+                    end = to.position.toOffset(windowOrigin),
+                    strokeWidth = taperedWidth,
+                    cap = StrokeCap.Round,
+                )
+            }
+            val center = flight.position.toOffset(windowOrigin)
+            val glowRadius = RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        color.copy(alpha = 0.34f),
+                        color.copy(alpha = 0.18f),
+                        color.copy(alpha = 0.04f),
+                        Color.Transparent,
+                    ),
+                    center = center,
+                    radius = glowRadius,
+                ),
+                radius = glowRadius,
+                center = center,
+            )
+            val auraRadius = RewardFlightTuning.VISUAL_ORB_RADIUS * 1.35f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.32f),
+                        color.copy(alpha = 0.42f),
+                        color.copy(alpha = 0.1f),
+                        Color.Transparent,
+                    ),
+                    center = center,
+                    radius = auraRadius,
+                ),
+                radius = auraRadius,
+                center = center,
+            )
+            val coreRadius = RewardFlightTuning.VISUAL_ORB_RADIUS
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.98f),
+                        color.copy(alpha = 0.98f),
+                        color.copy(alpha = 0.74f),
+                    ),
+                    center = Offset(
+                        center.x - coreRadius * 0.32f,
+                        center.y - coreRadius * 0.38f,
+                    ),
+                    radius = coreRadius * 1.55f,
+                ),
+                radius = coreRadius,
+                center = center,
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.9f),
+                radius = RewardFlightTuning.VISUAL_ORB_HIGHLIGHT_RADIUS,
+                center = Offset(
+                    center.x - coreRadius * 0.35f,
+                    center.y - coreRadius * 0.42f,
+                ),
+            )
+        }
+        snapshot.particles.forEach { particle ->
+            val particleCenter = particle.position.toOffset(windowOrigin)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        rewardColor(particle.kind).copy(alpha = particle.alpha * 0.42f),
+                        rewardColor(particle.kind).copy(alpha = particle.alpha * 0.12f),
+                        Color.Transparent,
+                    ),
+                    center = particleCenter,
+                    radius = RewardFlightTuning.BURST_PARTICLE_GLOW_RADIUS,
+                ),
+                radius = RewardFlightTuning.BURST_PARTICLE_GLOW_RADIUS,
+                center = particleCenter,
+            )
+            drawCircle(
+                color = rewardColor(particle.kind).copy(alpha = particle.alpha),
+                radius = RewardFlightTuning.BURST_PARTICLE_RADIUS,
+                center = particleCenter,
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = particle.alpha * 0.78f),
+                radius = 1.4f,
+                center = particleCenter,
+            )
+        }
+    }
+}
+
+internal fun trailLengthForSpeed(speed: Float): Float = (speed * 0.04f).coerceIn(18f, 96f)
+
+internal fun trailStrokeWidthForSpeed(speed: Float): Float {
+    val boundedSpeed = if (speed.isFinite()) speed.coerceAtLeast(0f) else 0f
+    return (
+        RewardFlightTuning.TRAIL_MINIMUM_STROKE_WIDTH +
+            boundedSpeed * RewardFlightTuning.TRAIL_STROKE_SPEED_FACTOR
+        ).coerceIn(
+            RewardFlightTuning.TRAIL_MINIMUM_STROKE_WIDTH,
+            RewardFlightTuning.TRAIL_MAXIMUM_STROKE_WIDTH,
+        )
+}
+
+internal fun visibleTrail(points: List<RewardTrailPoint>, maximumLength: Float): List<RewardTrailPoint> {
+    require(maximumLength.isFinite() && maximumLength >= 0f) {
+        "Visible trail length must be finite and non-negative"
+    }
+    if (points.size < 2) return points
+    val kept = ArrayDeque<RewardTrailPoint>()
+    kept.addFirst(points.last())
+    var remaining = maximumLength
+    for (index in points.lastIndex downTo 1) {
+        val current = points[index]
+        val previous = points[index - 1]
+        val segmentLength = current.position.distanceTo(previous.position)
+        if (segmentLength <= remaining) {
+            kept.addFirst(previous)
+            remaining -= segmentLength
+            continue
+        }
+        if (segmentLength > 0f && remaining > 0f) {
+            val fraction = remaining / segmentLength
+            kept.addFirst(
+                RewardTrailPoint(
+                    position = current.position + (previous.position - current.position) * fraction,
+                    ageMs = (
+                        current.ageMs + (previous.ageMs - current.ageMs) * fraction
+                        ).roundToLong(),
+                ),
+            )
+        }
+        break
+    }
+    return kept.toList()
+}
+
+private fun burstParticles(burst: MutableRewardBurst): List<RewardParticleSnapshot> {
+    val progress = (burst.ageMs.toFloat() / RewardFlightTuning.BURST_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+    val seconds = burst.ageMs / 1_000f
+    return List(RewardFlightTuning.BURST_PARTICLE_COUNT) { index ->
+        val angle = (2.0 * PI * index / RewardFlightTuning.BURST_PARTICLE_COUNT).toFloat()
+        val speed = RewardFlightTuning.BURST_MINIMUM_SPEED +
+            (index % 5) * RewardFlightTuning.BURST_SPEED_STEP
+        val drag = 1f - progress * 0.45f
+        RewardParticleSnapshot(
+            kind = burst.kind,
+            position = PetPoint(
+                burst.origin.x + cos(angle) * speed * seconds * drag,
+                burst.origin.y + sin(angle) * speed * seconds * drag,
+            ),
+            alpha = (1f - progress) * (1f - progress),
+        )
+    }
+}
+
+private fun segmentCircleContact(
+    start: PetPoint,
+    end: PetPoint,
+    center: PetPoint,
+    radius: Float,
+): PetPoint? {
+    if (start.distanceTo(center) <= radius) return start
+    val delta = end - start
+    val offset = start - center
+    val a = delta dot delta
+    if (a <= 1e-8f) return null
+    val b = 2f * (offset dot delta)
+    val c = (offset dot offset) - radius * radius
+    val discriminant = b * b - 4f * a * c
+    if (discriminant < 0f) return null
+    val root = sqrt(discriminant)
+    val first = (-b - root) / (2f * a)
+    val second = (-b + root) / (2f * a)
+    val time = listOf(first, second).filter { it in 0f..1f }.minOrNull() ?: return null
+    return start + delta * time
+}
+
+private fun direction(from: PetPoint, to: PetPoint): PetPoint {
+    val delta = to - from
+    val length = delta.length()
+    return if (length <= 1e-6f) PetPoint(0f, 0f) else delta / length
+}
+
+private fun PetPoint.capped(maximum: Float): PetPoint {
+    val speed = length()
+    return if (speed <= maximum || speed <= 1e-6f) this else this * (maximum / speed)
+}
+
+private fun PetPoint.toOffset(origin: PetPoint) = Offset(x - origin.x, y - origin.y)
+private fun PetPoint.length(): Float = hypot(x, y)
+private fun PetPoint.distanceTo(other: PetPoint): Float = (this - other).length()
+private infix fun PetPoint.dot(other: PetPoint): Float = x * other.x + y * other.y
+private operator fun PetPoint.plus(other: PetPoint) = PetPoint(x + other.x, y + other.y)
+private operator fun PetPoint.minus(other: PetPoint) = PetPoint(x - other.x, y - other.y)
+private operator fun PetPoint.times(scale: Float) = PetPoint(x * scale, y * scale)
+private operator fun PetPoint.div(scale: Float) = PetPoint(x / scale, y / scale)
+private fun lerp(start: Float, end: Float, progress: Float) = start + (end - start) * progress
+
+private fun rewardColor(kind: RewardEffectKind): Color = when (kind) {
+    RewardEffectKind.STUDY -> StudyRewardGold
+    RewardEffectKind.REVIEW -> BrandTeal
 }

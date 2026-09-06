@@ -18,7 +18,7 @@
 - 默写是可打印 worksheet，不是交互答题；preview 必须与 DOCX/PDF 输出共享同一 `Document` model。`dictation-export-v1` 中的 A4 portrait、字段挖空、词性、例句边界替换、随机无放回选择和 evaluated 规则是单一事实来源。
 - 例句英文词语气泡遵循 `word-bubble-v1`：token 归一化、词性/中文解析、20 层栈、祖先保留和外部点击关闭由共享契约约束；栈状态仅存在 presentation，不得持久化。
 - 冰子宠物遵循 `shared/contracts/pet-companion-v1.md`：源图在 `shared/assets/branding/pet_image.png`，运行 sprite 由 `tools/prepare_pet_asset.py` 生成；目标几何、动画、拖拽和切页掉落均为 presentation 瞬态，domain 只提供平台无关的目标选择/状态 reducer。
-- 冰子成长遵循 `pet-vitals-v1`：饱食、显式 `FoodJar` 储食罐值对象、心情与单值恢复标记持久化，饥饿状态派生；恢复标记不得进入 `VocabularyEntry.tags`。评分奖励属于 domain，平台存储可将 `FoodJar` 保持为兼容的 `foodReserve` 标量；排期与已学词存储之间只做可测试的 savepoint 补偿，不宣称跨文件事务。
+- 冰子成长遵循 `pet-vitals-v1`：饱食、显式 `FoodJar` 储食罐值对象、心情与单值恢复标记持久化，饥饿状态派生；恢复标记不得进入 `VocabularyEntry.tags`。评分奖励属于 domain，追踪光球/拖尾/爆点只属于 presentation。平台存储可将 `FoodJar` 保持为兼容的 `foodReserve` 标量；排期与已学词存储之间只做可测试的 savepoint 补偿，不宣称跨文件事务。
 - 冰子形象遵循 `pet-appearance-v1`：源 PNG 只能放在 `shared/assets/branding/pet_states/`，由 `tools/prepare_pet_appearance_assets.py` 校验并生成 `shared/assets/pets/states/`；domain 只选择注入的形象 key，不扫描目录。当前资源集为空且 `priorityConfirmed` 为 `false`，`petAppearanceStates` 必须为 `disabled`，未来启用前要确认 `pain > scared` 并同步两端 presentation 映射。
 - 导出后的 `evaluated` 只能作为本地 tag override；UI 仅允许 `cet4`、`cet6`、`gk`、`zk`、`evaluated`，不得创建其他 tag，且不得修改内置 catalog。
 - Android 后台提醒由 AlarmManager/Receiver/Notification 外层适配器负责，application/domain 不得依赖 Android SDK。
@@ -47,7 +47,7 @@ Android 构建使用 JDK 17 与 SDK 35；Windows 打包前安装 windows/require
 - shared/contracts/：跨端 schema、算法、CSV 和能力门禁。
 - shared/contracts/dictation-export-v1.md 与 dictation-export-golden-v1.json：可打印默写 worksheet 的格式和 golden vectors。
 - shared/contracts/word-bubble-v1.md 与 word-bubble-golden-v1.json：例句递归词语气泡的共享交互语义。
-- shared/contracts/pet-vitals-v1.md 与 pet-vitals-golden-v1.json：冰子成长和评分奖励语义。
+- shared/contracts/pet-vitals-v1.md 与 pet-vitals-golden-v1.json：冰子成长、评分奖励和追踪光球语义。
 - shared/contracts/pet-appearance-v1.md 与 pet-appearance-golden-v1.json：冰子形象状态、资源命名、优先级和 disabled 规则。
 - shared/content/：生成的内置词库，不手工编辑大 JSON；使用 tools/build_catalog.py 更新。
 - shared/assets/branding/：Windows 与 Android 共用的 canonical 品牌源资产，平台图标资源由此派生。

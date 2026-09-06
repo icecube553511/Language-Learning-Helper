@@ -58,21 +58,6 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(max(value, low), max(low, high))
 
 
-def _transfer_axis(
-    value: float,
-    extent: float,
-    pet_half_size: float,
-    *,
-    preserve_out_of_bounds: bool = False,
-) -> float:
-    """Keep an active fall outside a destination host until its next tick."""
-    half = max(0.0, float(pet_half_size))
-    coordinate = float(value)
-    if preserve_out_of_bounds and (coordinate < half or coordinate > extent - half):
-        return coordinate
-    return _clamp(coordinate, half, max(half, extent - half))
-
-
 def interpolate_pet_position(
     start: PetPoint,
     end: PetPoint,
@@ -434,11 +419,10 @@ class PetWindowCoordinator:
                             max(0.0, pet_half_size),
                             max(max(0.0, pet_half_size), fallback.rect.width - max(0.0, pet_half_size)),
                         ),
-                        _transfer_axis(
+                        _clamp(
                             world.y - fallback.rect.top,
-                            fallback.rect.height,
-                            pet_half_size,
-                            preserve_out_of_bounds=self.state.mode == PetMode.FALL,
+                            max(0.0, pet_half_size),
+                            max(max(0.0, pet_half_size), fallback.rect.height - max(0.0, pet_half_size)),
                         ),
                     ),
                     target_id=None,
@@ -502,11 +486,10 @@ class PetWindowCoordinator:
                             max(0.0, pet_half_size),
                             max(max(0.0, pet_half_size), target.rect.width - max(0.0, pet_half_size)),
                         ),
-                        _transfer_axis(
+                        _clamp(
                             world.y - target.rect.top,
-                            target.rect.height,
-                            pet_half_size,
-                            preserve_out_of_bounds=self.state.mode == PetMode.FALL,
+                            max(0.0, pet_half_size),
+                            max(max(0.0, pet_half_size), target.rect.height - max(0.0, pet_half_size)),
                         ),
                     ),
                     target_id=None,
@@ -682,16 +665,13 @@ class PetWindowCoordinator:
 
 
 def _portal_direction(source: PetRect, target: PetRect) -> str | None:
-    # Immediate host activation/unregistration is a handoff, so only windows
-    # that share an edge are portals. Distant but aligned hosts must preserve
-    # the absolute fall coordinate instead of clamping it to an edge.
-    if abs(target.left - source.right) <= 1.0 and _vertical_overlap(source, target):
+    if target.left >= source.right - 1.0 and _vertical_overlap(source, target):
         return "right"
-    if abs(target.right - source.left) <= 1.0 and _vertical_overlap(source, target):
+    if target.right <= source.left + 1.0 and _vertical_overlap(source, target):
         return "left"
-    if abs(target.top - source.bottom) <= 1.0 and _horizontal_overlap(source, target):
+    if target.top >= source.bottom - 1.0 and _horizontal_overlap(source, target):
         return "bottom"
-    if abs(target.bottom - source.top) <= 1.0 and _horizontal_overlap(source, target):
+    if target.bottom <= source.top + 1.0 and _horizontal_overlap(source, target):
         return "top"
     return None
 

@@ -1,72 +1,207 @@
 package com.lexitrack.learning.presentation
 
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
 import com.lexitrack.learning.domain.PetPoint
-import com.lexitrack.learning.domain.PetRect
+import java.io.File
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.float
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.hypot
 
 class RewardEffectsTest {
+    private val golden by lazy {
+        Json.parseToJsonElement(
+            File(requireNotNull(System.getProperty("pet.vitals.golden.path"))).readText(),
+        ).jsonObject
+    }
+    private val flightGolden by lazy { golden.getValue("rewardFlight").jsonObject }
+    private val flightVectors by lazy { golden.getValue("rewardFlightVectors").jsonObject }
+
     @Test
-    fun `study and review use the contract colors`() {
-        assertEquals(StudyRewardGold, rewardColor(RewardEffectMode.STUDY))
-        assertEquals(ReviewRewardCyan, rewardColor(RewardEffectMode.REVIEW))
+    fun `animation tuning and study color match shared contract`() {
+        assertEquals(flightGolden.long("frameMs"), RewardFlightTuning.FRAME_MS)
+        assertEquals(flightGolden.long("spiralDurationMs"), RewardFlightTuning.SPIRAL_DURATION_MS)
+        assertEquals(flightGolden.float("spiralTurns"), RewardFlightTuning.SPIRAL_TURNS, 0f)
+        assertEquals(flightGolden.float("spiralRadiusStart"), RewardFlightTuning.SPIRAL_RADIUS_START, 0f)
+        assertEquals(flightGolden.float("spiralRadiusEnd"), RewardFlightTuning.SPIRAL_RADIUS_END, 0f)
+        assertEquals(flightGolden.float("homingInitialSpeed"), RewardFlightTuning.HOMING_INITIAL_SPEED, 0f)
+        assertEquals(flightGolden.float("homingAcceleration"), RewardFlightTuning.HOMING_ACCELERATION, 0f)
+        assertEquals(flightGolden.float("homingMaximumSpeed"), RewardFlightTuning.HOMING_MAXIMUM_SPEED, 0f)
+        assertEquals(flightGolden.float("orbRadius"), RewardFlightTuning.ORB_RADIUS, 0f)
+        assertEquals(flightGolden.long("trailLifetimeMs"), RewardFlightTuning.TRAIL_LIFETIME_MS)
+        assertEquals(flightGolden.int("trailMaximumPoints"), RewardFlightTuning.TRAIL_MAXIMUM_POINTS)
+        assertEquals(flightGolden.int("burstParticleCount"), RewardFlightTuning.BURST_PARTICLE_COUNT)
+        assertEquals(flightGolden.long("burstDurationMs"), RewardFlightTuning.BURST_DURATION_MS)
+        assertEquals(flightGolden.long("maximumLifetimeMs"), RewardFlightTuning.MAXIMUM_LIFETIME_MS)
+        assertEquals(flightGolden.long("missingTargetTimeoutMs"), RewardFlightTuning.MISSING_TARGET_TIMEOUT_MS)
+        val visual = flightGolden.getValue("visual").jsonObject
+        assertEquals(visual.float("orbRadius"), RewardFlightTuning.VISUAL_ORB_RADIUS, 0f)
+        assertEquals(visual.float("orbGlowRadius"), RewardFlightTuning.VISUAL_ORB_GLOW_RADIUS, 0f)
+        assertEquals(visual.float("orbHighlightRadius"), RewardFlightTuning.VISUAL_ORB_HIGHLIGHT_RADIUS, 0f)
+        assertEquals(visual.float("trailMinimumStrokeWidth"), RewardFlightTuning.TRAIL_MINIMUM_STROKE_WIDTH, 0f)
+        assertEquals(visual.float("trailMaximumStrokeWidth"), RewardFlightTuning.TRAIL_MAXIMUM_STROKE_WIDTH, 0f)
+        assertEquals(visual.float("trailStrokeSpeedFactor"), RewardFlightTuning.TRAIL_STROKE_SPEED_FACTOR, 0f)
+        assertEquals(visual.float("trailGlowWidthMultiplier"), RewardFlightTuning.TRAIL_GLOW_WIDTH_MULTIPLIER, 0f)
+        assertEquals(visual.float("burstParticleRadius"), RewardFlightTuning.BURST_PARTICLE_RADIUS, 0f)
+        assertEquals(visual.float("burstParticleGlowRadius"), RewardFlightTuning.BURST_PARTICLE_GLOW_RADIUS, 0f)
+        assertEquals(Color(0xFFF4C542), StudyRewardGold)
+        assertEquals("#F4C542", flightGolden.string("studyColor"))
+        assertEquals(Color(0xFF087E8B), BrandTeal)
     }
 
     @Test
-    fun `flight accelerates and reaches target`() {
-        val request = RewardEffectRequest(1L, Offset.Zero, Offset(400f, 0f), StudyRewardGold)
-        val halfway = rewardOrbPosition(request, rewardProgress(request.durationMillis / 2f, request.durationMillis))
-        val complete = rewardOrbPosition(request, rewardProgress(request.durationMillis.toFloat(), request.durationMillis))
+    fun `more than minimum verified flights coexist without replacement`() {
+        val engine = RewardEffectsEngine()
+        val count = flightGolden.int("minimumVerifiedConcurrentFlights") + 8
 
-        assertTrue(halfway.x < 200f)
-        assertEquals(400f, complete.x, 0.001f)
-        assertEquals(0f, complete.y, 0.001f)
-        assertTrue(
-            rewardSpeedPxPerSecond(400f, request.durationMillis / 2f, request.durationMillis) <
-                rewardSpeedPxPerSecond(400f, request.durationMillis.toFloat(), request.durationMillis),
+        repeat(count) { index ->
+            engine.emit(
+                RewardEffectRequest(
+                    kind = if (index % 2 == 0) RewardEffectKind.STUDY else RewardEffectKind.REVIEW,
+                    origin = RewardEffectOrigin(index.toFloat(), (index * 2).toFloat()),
+                ),
+            )
+        }
+
+        assertEquals(count, engine.snapshot().flights.size)
+        assertEquals(count, engine.snapshot().flights.map { it.id }.distinct().size)
+        engine.step(RewardFlightTuning.FRAME_MS, RewardTarget(PetPoint(2_000f, 2_000f), 56f))
+        assertEquals(count, engine.snapshot().flights.size)
+    }
+
+    @Test
+    fun `flight spirals then accelerates toward the target sampled each frame`() {
+        val engine = RewardEffectsEngine()
+        val origin = RewardEffectOrigin(100f, 100f)
+        engine.emit(RewardEffectRequest(RewardEffectKind.STUDY, origin))
+        assertEquals(PetPoint(100f, 100f), engine.snapshot().flights.single().position)
+
+        engine.step(
+            RewardFlightTuning.SPIRAL_DURATION_MS,
+            RewardTarget(PetPoint(1_000f, 100f), 0f),
         )
+        val afterSpiral = engine.snapshot().flights.single()
+        assertEquals(RewardFlightStage.HOMING, afterSpiral.stage)
+        assertTrue(afterSpiral.position.x > origin.x)
+
+        engine.step(RewardFlightTuning.FRAME_MS, RewardTarget(PetPoint(1_000f, 100f), 0f))
+        val firstHoming = engine.snapshot().flights.single()
+        assertTrue(firstHoming.position.x > afterSpiral.position.x)
+
+        engine.step(RewardFlightTuning.FRAME_MS, RewardTarget(PetPoint(100f, 1_000f), 0f))
+        val redirected = engine.snapshot().flights.single()
+        assertTrue(redirected.velocity.y > firstHoming.velocity.y)
     }
 
     @Test
-    fun `duration and trail stay within energy ball bounds`() {
-        assertEquals(360, rewardDurationMillis(0f))
-        assertTrue(rewardDurationMillis(10_000f) <= 650)
-        assertEquals(PET_ENERGY_BALL_MIN_TRAIL_PX, rewardTrailLength(0f), 0.001f)
-        assertEquals(PET_ENERGY_BALL_MAX_TRAIL_PX, rewardTrailLength(100_000f), 0.001f)
-        assertTrue(rewardTrailLength(1_200f) > rewardTrailLength(200f))
-    }
+    fun `spiral endpoint matches the shared flight vector`() {
+        val vector = flightVectors.getValue("spiralEndpoint").jsonObject
+        val origin = RewardEffectOrigin(100f, 200f)
+        val engine = RewardEffectsEngine()
+        engine.emit(RewardEffectRequest(RewardEffectKind.STUDY, origin))
 
-    @Test
-    fun `energy ball contract keeps collision and burst values stable`() {
-        assertEquals("pet-energy-ball-v1", PET_ENERGY_BALL_CONTRACT)
-        assertEquals(1_800f, PET_ENERGY_BALL_MAX_SPEED_PX_PER_SECOND, 0.001f)
-        assertEquals(36f, PET_ENERGY_BALL_HIT_RADIUS_PX, 0.001f)
-        assertEquals(18, PET_ENERGY_BALL_PARTICLE_COUNT)
-        assertEquals(260f, PET_ENERGY_BALL_BURST_DURATION_MS, 0.001f)
-        assertEquals(3, PET_ENERGY_BALL_MAX_CONCURRENT)
-    }
-
-    @Test
-    fun `missing pet registration still gives a visible viewport destination`() {
-        val destination = rewardTargetOrViewportCenter(
-            target = null,
-            viewportOrigin = PetPoint(10f, 20f),
-            viewport = PetRect(0f, 0f, 300f, 500f),
+        engine.step(
+            vector.long("elapsedMs"),
+            RewardTarget(PetPoint(2_000f, 2_000f), 0f),
         )
 
-        assertEquals(Offset(160f, 270f), destination)
+        val endpoint = engine.snapshot().flights.single().position
+        assertEquals(vector.float("relativeX"), endpoint.x - origin.x, 1e-4f)
+        assertEquals(vector.float("relativeY"), endpoint.y - origin.y, 1e-4f)
     }
 
     @Test
-    fun `registered pet destination wins over fallback`() {
-        val destination = rewardTargetOrViewportCenter(
-            target = PetPoint(42f, 84f),
-            viewportOrigin = PetPoint(10f, 20f),
-            viewport = PetRect(0f, 0f, 300f, 500f),
-        )
+    fun `visible trail interpolates the exact shared polyline boundary`() {
+        val vector = flightVectors.getValue("trailClip").jsonObject
+        val input = vector.getValue("inputX").jsonArray.map { it.jsonPrimitive.float }
+        val points = input.mapIndexed { index, x ->
+            RewardTrailPoint(PetPoint(x, 0f), ageMs = (input.lastIndex - index) * 16L)
+        }
 
-        assertEquals(Offset(42f, 84f), destination)
+        val clipped = visibleTrail(points, trailLengthForSpeed(vector.float("speed")))
+        val length = clipped.zipWithNext().sumOf { (start, end) ->
+            hypot(
+                (end.position.x - start.position.x).toDouble(),
+                (end.position.y - start.position.y).toDouble(),
+            )
+        }
+
+        assertEquals(vector.float("expectedStartX"), clipped.first().position.x, 1e-5f)
+        assertEquals(vector.float("expectedEndX"), clipped.last().position.x, 1e-5f)
+        assertEquals(vector.float("expectedLength").toDouble(), length, 1e-5)
     }
+
+    @Test
+    fun `rating origin uses a fresh pointer down and otherwise falls back to button center`() {
+        val bounds = Rect(left = 100f, top = 200f, right = 300f, bottom = 260f)
+        val pointer = RewardEffectOrigin(125f, 225f)
+        val capturedAt = 10_000L
+        val sample = RatingPointerDown(pointer, capturedAt)
+
+        assertEquals(pointer, resolveRatingOrigin(sample, bounds, capturedAt))
+        assertEquals(
+            pointer,
+            resolveRatingOrigin(sample, bounds, capturedAt + RATING_POINTER_ORIGIN_FRESHNESS_MS),
+        )
+        val center = RewardEffectOrigin(200f, 230f)
+        assertEquals(
+            center,
+            resolveRatingOrigin(sample, bounds, capturedAt + RATING_POINTER_ORIGIN_FRESHNESS_MS + 1L),
+        )
+        assertEquals(center, resolveRatingOrigin(null, bounds, capturedAt))
+        assertEquals(center, resolveRatingOrigin(sample, bounds, capturedAt - 1L))
+    }
+
+    @Test
+    fun `speed controls trail length and contact emits exactly eighteen particles`() {
+        assertEquals(18f, trailLengthForSpeed(0f), 0f)
+        assertEquals(40f, trailLengthForSpeed(1_000f), 0f)
+        assertEquals(96f, trailLengthForSpeed(2_800f), 0f)
+        assertEquals(RewardFlightTuning.TRAIL_MINIMUM_STROKE_WIDTH, trailStrokeWidthForSpeed(0f), 0f)
+        assertTrue(trailStrokeWidthForSpeed(1_000f) > trailStrokeWidthForSpeed(100f))
+        assertEquals(RewardFlightTuning.TRAIL_MAXIMUM_STROKE_WIDTH, trailStrokeWidthForSpeed(10_000f), 0f)
+
+        val engine = RewardEffectsEngine()
+        engine.emit(RewardEffectRequest(RewardEffectKind.REVIEW, RewardEffectOrigin(0f, 0f)))
+        val target = RewardTarget(PetPoint(14f, 0f), 56f)
+        engine.step(RewardFlightTuning.SPIRAL_DURATION_MS, target)
+        engine.step(1L, target)
+
+        val snapshot = engine.snapshot()
+        assertTrue(snapshot.flights.isEmpty())
+        assertEquals(RewardFlightTuning.BURST_PARTICLE_COUNT, snapshot.particles.size)
+        assertTrue(snapshot.particles.all { it.kind == RewardEffectKind.REVIEW })
+    }
+
+    @Test
+    fun `missing target timeout cancels only the affected flight`() {
+        val engine = RewardEffectsEngine()
+        engine.emit(RewardEffectRequest(RewardEffectKind.STUDY, RewardEffectOrigin(0f, 0f)))
+
+        engine.step(RewardFlightTuning.MISSING_TARGET_TIMEOUT_MS - 1L, null)
+        assertEquals(1, engine.snapshot().flights.size)
+
+        engine.step(1L, null)
+        assertTrue(engine.snapshot().flights.isEmpty())
+    }
+
+    private fun kotlinx.serialization.json.JsonObject.float(key: String): Float =
+        getValue(key).jsonPrimitive.float
+
+    private fun kotlinx.serialization.json.JsonObject.int(key: String): Int =
+        getValue(key).jsonPrimitive.int
+
+    private fun kotlinx.serialization.json.JsonObject.long(key: String): Long =
+        getValue(key).jsonPrimitive.long
+
+    private fun kotlinx.serialization.json.JsonObject.string(key: String): String =
+        getValue(key).jsonPrimitive.content
 }

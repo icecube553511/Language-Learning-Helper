@@ -11,8 +11,7 @@ import tkinter as tk
 from typing import Callable, Sequence
 
 
-STUDY_REWARD_COLOR = "#F5C451"
-REVIEW_REWARD_COLOR = "#39D9D0"
+STUDY_REWARD_COLOR = "#F4C542"
 
 # Animation constants are intentionally centralized because motion and visual
 # balance will be tuned in later releases.
@@ -23,7 +22,7 @@ SPIRAL_RADIUS_START = 4.0
 SPIRAL_RADIUS_END = 18.0
 HOMING_INITIAL_SPEED = 180.0
 HOMING_ACCELERATION = 2400.0
-HOMING_MAXIMUM_SPEED = 1800.0
+HOMING_MAXIMUM_SPEED = 2800.0
 # Keep the physical contact radius separate from the visible feedback.  These
 # presentation values are centralized because they will be tuned later.
 ORB_RADIUS = 6.0
@@ -32,7 +31,7 @@ VISUAL_ORB_GLOW_RADIUS = 34.0
 VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0
 TRAIL_LIFETIME_MS = 180.0
 TRAIL_MAXIMUM_POINTS = 20
-TRAIL_MINIMUM_LENGTH = 12.0
+TRAIL_MINIMUM_LENGTH = 18.0
 TRAIL_MAXIMUM_LENGTH = 96.0
 TRAIL_MINIMUM_STROKE_WIDTH = 5.0
 TRAIL_MAXIMUM_STROKE_WIDTH = 12.0
@@ -41,9 +40,7 @@ TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2
 BURST_PARTICLE_COUNT = 18
 BURST_PARTICLE_RADIUS = 4.0
 BURST_PARTICLE_GLOW_RADIUS = 10.0
-BURST_DURATION_MS = 260.0
-HIT_RADIUS = 36.0
-MAX_CONCURRENT_BALLS = 3
+BURST_DURATION_MS = 350.0
 MAXIMUM_LIFETIME_MS = 2500.0
 MISSING_TARGET_TIMEOUT_MS = 500.0
 
@@ -108,7 +105,6 @@ class RewardFlightConfig:
     trail_maximum_points: int = TRAIL_MAXIMUM_POINTS
     burst_particle_count: int = BURST_PARTICLE_COUNT
     burst_duration_ms: float = BURST_DURATION_MS
-    hit_radius: float = HIT_RADIUS
     maximum_lifetime_ms: float = MAXIMUM_LIFETIME_MS
     missing_target_timeout_ms: float = MISSING_TARGET_TIMEOUT_MS
 
@@ -203,19 +199,6 @@ def clip_trail_to_length(
     return list(reversed(clipped_reversed))
 
 
-def trail_point_at_distance(samples: Sequence[TrailSample], distance: float) -> RewardPoint | None:
-    """Sample a point from the newest trail suffix for moving energy pulses."""
-    if not samples:
-        return None
-    remaining = max(0.0, float(distance))
-    for newer, older in zip(reversed(samples[1:]), reversed(samples[:-1])):
-        segment = newer.position.distance_to(older.position)
-        if segment >= remaining and segment > 1e-9:
-            return newer.position + (older.position - newer.position).scaled(remaining / segment)
-        remaining -= segment
-    return samples[0].position
-
-
 def _spiral_offset(config: RewardFlightConfig, progress: float) -> RewardPoint:
     accelerated_progress = progress * progress
     turns = config.spiral_turns * accelerated_progress
@@ -274,9 +257,7 @@ class RewardFlight:
     color: str
     created_at_ms: float
     config: RewardFlightConfig = DEFAULT_CONFIG
-    # New flights home immediately; the legacy SPIRAL enum remains accepted
-    # for callers that construct a flight explicitly.
-    phase: FlightPhase = FlightPhase.HOMING
+    phase: FlightPhase = FlightPhase.SPIRAL
     position: RewardPoint = field(init=False)
     velocity: RewardPoint = field(default_factory=lambda: RewardPoint(0.0, 0.0))
     last_update_ms: float = field(init=False)
@@ -323,9 +304,7 @@ class RewardFlight:
         particles: list[BurstParticle] = []
         for index in range(self.config.burst_particle_count):
             angle = math.tau * index / self.config.burst_particle_count
-            speed = 180.0 + (460.0 - 180.0) * (
-                index / max(1, self.config.burst_particle_count - 1)
-            )
+            speed = 145.0 + 28.0 * (index % 4)
             particles.append(BurstParticle(
                 origin=contact,
                 velocity=RewardPoint(math.cos(angle) * speed, math.sin(angle) * speed),
@@ -382,7 +361,7 @@ class RewardFlight:
                         self.position,
                         self.position,
                         target_point,
-                        max(0.0, self.config.hit_radius),
+                        max(0.0, pet_half_size) + self.config.orb_radius,
                     )
                     if contact is not None:
                         self._begin_burst(now_ms, contact)
@@ -404,7 +383,7 @@ class RewardFlight:
                 self.position,
                 destination,
                 target_point,
-                max(0.0, self.config.hit_radius),
+                max(0.0, pet_half_size) + self.config.orb_radius,
             )
             self.position = destination if contact is None else contact
             self._append_trail(now_ms, previous)
@@ -433,8 +412,6 @@ class RewardAnimationModel:
         now_ms: float | None = None,
     ) -> RewardFlight:
         created_at = _monotonic_ms() if now_ms is None else float(now_ms)
-        if len(self.flights) >= MAX_CONCURRENT_BALLS:
-            self.flights[:] = self.flights[-(MAX_CONCURRENT_BALLS - 1):]
         flight = RewardFlight(
             flight_id=self._next_flight_id,
             source=_coerce_point(source) or RewardPoint(0.0, 0.0),
@@ -782,25 +759,6 @@ class RewardEffectLayer(tk.Toplevel):
                     width=width,
                     capstyle=tk.ROUND,
                 )
-            if len(trail) > 1 and flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
-                # Small moving points make the trail read as flowing energy;
-                # they are transient and remain on the same click-through layer.
-                trail_length = trail_polyline_length(trail)
-                for pulse_index in range(3):
-                    pulse_distance = trail_length * ((now_ms / 160.0 + pulse_index / 3.0) % 1.0)
-                    pulse = trail_point_at_distance(trail, pulse_distance)
-                    if pulse is None:
-                        continue
-                    px, py = self._canvas_point(pulse)
-                    pulse_radius = 2.0 + (1.0 - pulse_distance / max(1.0, trail_length)) * 1.5
-                    self.canvas.create_oval(
-                        px - pulse_radius,
-                        py - pulse_radius,
-                        px + pulse_radius,
-                        py + pulse_radius,
-                        fill="#FFFFFF",
-                        outline="",
-                    )
             if flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
                 x, y = self._canvas_point(flight.position)
                 # Layered stipples approximate a radial alpha falloff on
@@ -889,7 +847,6 @@ class RewardEffectsController:
         self._destroyed = False
         self._animation_now_ms = _monotonic_ms()
         self._last_wall_ms = self._animation_now_ms
-        self._render_error: str | None = None
 
     def emit(self, source: RewardPoint | tuple[float, float], color: str) -> RewardFlight:
         if self._destroyed:
@@ -898,13 +855,7 @@ class RewardEffectsController:
         flight = self.model.emit(source, color, self._animation_now_ms)
         try:
             self.layer.show()
-            # Paint the first frame synchronously.  Waiting for the first
-            # timer tick made short flights effectively invisible on Windows
-            # when a card reflow happened in the same event-loop turn.
-            self.layer.render(self.model, self._animation_now_ms)
-            self.layer.update_idletasks()
-        except Exception as error:
-            self._render_error = f"{type(error).__name__}: {error}"
+        except tk.TclError:
             # A transient layer failure must not lose the flight or skip the
             # animation loop; the next tick retries showing the surface.
             pass
@@ -914,20 +865,6 @@ class RewardEffectsController:
 
     def keep_above(self, other: tk.Misc | None = None) -> None:
         self.layer.keep_above(other)
-
-    def clear(self) -> None:
-        """Cancel all active flights and hide the transient layer immediately."""
-        self.model.clear()
-        if self._after_id is not None:
-            try:
-                self.host.after_cancel(self._after_id)
-            except tk.TclError:
-                pass
-            self._after_id = None
-        try:
-            self.layer.hide()
-        except tk.TclError:
-            pass
 
     def _host_visible(self) -> bool:
         try:
@@ -966,12 +903,8 @@ class RewardEffectsController:
                 self.layer.show()
                 self.layer.render(self.model, self._animation_now_ms)
                 self.layer.keep_above()
-                self._render_error = None
-            except Exception as error:
-                # Keep the animation alive, but retain one diagnostic for the
-                # smoke/debug caller instead of silently hiding a bad Canvas
-                # option or native window state.
-                self._render_error = f"{type(error).__name__}: {error}"
+            except Exception:
+                pass
         elif not self.model.active_count:
             # The layer must come down even when every earlier attempt to
             # hide it failed; a lingering full-screen surface would block

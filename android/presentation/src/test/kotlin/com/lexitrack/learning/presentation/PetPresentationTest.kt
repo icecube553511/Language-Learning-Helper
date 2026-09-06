@@ -549,37 +549,6 @@ class PetPresentationTest {
     }
 
     @Test
-    fun `closing nonadjacent host keeps falling pet outside fallback instead of snapping to top`() {
-        val coordinator = PetWindowCoordinator(
-            com.lexitrack.learning.domain.PetState(
-                // The source host is above the fallback; the pet is still
-                // falling above the fallback viewport at close time.
-                position = PetPoint(120f, 100f),
-                mode = PetMode.FALL,
-                verticalVelocity = 125f,
-            ),
-        )
-        coordinator.registerWindow(
-            PetWindow("main", PetRect(0f, 0f, 400f, 300f)),
-            active = false,
-        )
-        coordinator.registerWindow(
-            PetWindow("dialog", PetRect(900f, -200f, 400f, 300f)),
-            active = true,
-            petHalfSize = 56f,
-        )
-
-        coordinator.unregisterWindow("dialog", petHalfSize = 56f)
-
-        assertEquals("main", coordinator.activeWindowId)
-        assertEquals(PetMode.FALL, coordinator.state.mode)
-        // Absolute Y is -100 in the fallback host. It must remain outside
-        // until physics brings it through the top edge.
-        assertEquals(-100f, coordinator.state.position.y, 1e-4f)
-        assertEquals(125f, coordinator.state.verticalVelocity, 1e-4f)
-    }
-
-    @Test
     fun `activating a nonadjacent window clears source curve velocity`() {
         val coordinator = PetWindowCoordinator(
             com.lexitrack.learning.domain.PetState(
@@ -602,32 +571,6 @@ class PetPresentationTest {
         assertEquals(PetPoint(56f, 56f), coordinator.state.position)
         assertNull(coordinator.state.targetId)
         assertNull(coordinator.state.curveVelocity)
-    }
-
-    @Test
-    fun `activating nonadjacent host keeps falling pet outside new viewport`() {
-        val coordinator = PetWindowCoordinator(
-            com.lexitrack.learning.domain.PetState(
-                position = PetPoint(120f, 100f),
-                mode = PetMode.FALL,
-                verticalVelocity = 125f,
-            ),
-        )
-        coordinator.registerWindow(
-            PetWindow("main", PetRect(0f, 0f, 400f, 300f)),
-            active = true,
-            petHalfSize = 56f,
-        )
-        coordinator.registerWindow(PetWindow("dialog", PetRect(900f, 500f, 400f, 300f)))
-
-        assertTrue(coordinator.activate("dialog", petHalfSize = 56f))
-
-        assertEquals("dialog", coordinator.activeWindowId)
-        assertEquals(PetMode.FALL, coordinator.state.mode)
-        // The world centre remains at y=100, which is -400 in the dialog.
-        // It must enter through the top edge instead of snapping to y=56.
-        assertEquals(-400f, coordinator.state.position.y, 1e-4f)
-        assertEquals(125f, coordinator.state.verticalVelocity, 1e-4f)
     }
 
     @Test
