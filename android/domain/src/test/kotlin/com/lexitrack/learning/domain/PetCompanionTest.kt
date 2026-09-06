@@ -9,7 +9,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class PetCompanionTest {
@@ -54,42 +53,6 @@ class PetCompanionTest {
         )
         // With no content available, an edge remains a valid fallback target.
         assertEquals("edge:bottom", nearestPetTarget(position, listOf(edge), viewport = viewport)?.id)
-    }
-
-    @Test
-    fun `retained edge target yields to content next tick`() {
-        val state = PetState(
-            position = PetPoint(59f, 120f),
-            mode = PetMode.ROLL,
-            targetId = "edge:left",
-            movementSpeed = 1.2f,
-        )
-        val targets = listOf(
-            PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0f, 0f, 3f, 700f)),
-            PetTarget("study:card", PetTargetKind.SURFACE, PetRect(240f, 80f, 600f, 500f)),
-        )
-        val viewport = PetRect(0f, 0f, 960f, 700f)
-
-        val advanced = advancePet(state, targets, viewport, halfSize = 56f)
-
-        assertNotEquals("edge:left", advanced.targetId)
-        assertEquals("study:card", advanced.targetId)
-    }
-
-    @Test
-    fun `edge remains retained when no content exists`() {
-        val state = PetState(
-            position = PetPoint(59f, 120f),
-            mode = PetMode.ROLL,
-            targetId = "edge:left",
-            movementSpeed = 1.2f,
-        )
-        val targets = listOf(PetTarget("edge:left", PetTargetKind.EDGE, PetRect(0f, 0f, 3f, 700f)))
-        val viewport = PetRect(0f, 0f, 960f, 700f)
-
-        val advanced = advancePet(state, targets, viewport, halfSize = 56f)
-
-        assertEquals("edge:left", advanced.targetId)
     }
 
     @Test

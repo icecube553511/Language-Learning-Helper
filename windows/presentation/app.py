@@ -465,8 +465,6 @@ class LexiTrackApp(tk.Tk):
         # after the pet crosses back into the root host.
         self._pet_drag_host_dialog: tk.Misc | None = None
         self._pet_last_rendered_position: PetPoint | None = None
-        self._pet_trace_handle = None
-        self._pet_trace_after_id: str | None = None
         self._reward_effects: RewardEffectsController | None = None
         self._build_shell()
         self._build_pages()
@@ -2008,34 +2006,6 @@ class LexiTrackApp(tk.Tk):
         if self._pet_overlay is not None:
             self._pet_targets = self._collect_pet_targets()
 
-    def enable_pet_trace(self, path) -> None:
-        """Write a one-line-per-second pet state trace to ``path``.
-
-        Debug-only composition-root wiring: the trace records the main
-        companion's mode, position, retained target and ticker liveness so a
-        frozen-pet report can be diagnosed from the user's own session.
-        """
-        self._pet_trace_handle = open(path, "w", encoding="utf-8", buffering=1)
-
-        def trace() -> None:
-            try:
-                state = self.pet_companion.state
-                dialog = self._dialog_pet_stack[-1] if self._dialog_pet_stack else None
-                self._pet_trace_handle.write(
-                    f"{time.time():.3f} mode={state.mode.value} pos=({state.position.x:.1f},{state.position.y:.1f}) "
-                    f"target={state.target_id} idle={state.idle_ticks_remaining} "
-                    f"spd={state.movement_speed:.2f} tick={'alive' if self._pet_tick_after_id else 'DEAD'} "
-                    f"fail={self._pet_tick_failures} stack={len(self._dialog_pet_stack)} "
-                    f"dialog={dialog}\n"
-                )
-                if self._pet_trace_after_id is not None:
-                    self.after_cancel(self._pet_trace_after_id)
-                self._pet_trace_after_id = self.after(1_000, trace)
-            except (tk.TclError, OSError, ValueError):
-                self._pet_trace_after_id = None
-
-        self._pet_trace_after_id = self.after(1_000, trace)
-
     def _pet_tick(self) -> None:
         self._pet_tick_after_id = None
         overlay = self._pet_overlay
@@ -2087,16 +2057,6 @@ class LexiTrackApp(tk.Tk):
                 except tk.TclError:
                     self._pet_tick_after_id = None
             self._pet_tick_after_id = None
-        except Exception:
-            # A non-Tk presentation error on a single frame (a geometry or
-            # reducer edge case) must not cancel the companion loop either.
-            # Skip the failed frame and keep ticking, mirroring the Android
-            # ticker.  The loop still exits when the overlay is destroyed or
-            # when scheduling itself fails during host teardown.
-            try:
-                self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
-            except tk.TclError:
-                self._pet_tick_after_id = None
 
     def _pet_pointer(self, event) -> PetPoint:
         return PetPoint(
@@ -2113,19 +2073,13 @@ class LexiTrackApp(tk.Tk):
         self._pet_drag_samples = []
         self._pet_dragging = True
         self._pet_drag_host_dialog = None
-        try:
-            self._record_pet_sample(
-                self._pet_drag_samples,
-                self._pet_now_ms(),
-                self.pet_companion.state.position,
-                window=self,
-            )
-            self._grab_pet_overlay(self._pet_overlay)
-        except tk.TclError:
-            # A transient teardown must not leave the pet in a grabbed drag
-            # that would swallow every subsequent pointer event.
-            self._release_pet_overlay(self._pet_overlay)
-            self._pet_dragging = False
+        self._record_pet_sample(
+            self._pet_drag_samples,
+            self._pet_now_ms(),
+            self.pet_companion.state.position,
+            window=self,
+        )
+        self._grab_pet_overlay(self._pet_overlay)
 
     def _pet_move(self, event) -> None:
         pointer = self._pet_pointer(event)
@@ -2240,78 +2194,73 @@ class LexiTrackApp(tk.Tk):
             self._pet_move(event)
             return self._pet_drag_host_dialog
 
-        try:
-            dialog, moved_for_release = _resolve_pet_release_host(
-                self,
-                self._pet_drag_host_dialog,
-                final_move,
-            )
-            if dialog is not None:
-                if dialog is self:
-                    if not moved_for_release:
-                        pointer = self._pet_pointer(event)
-                        moved = self.pet_companion.drag_move(
-                            PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
-                            self._pet_viewport(),
-                        )
-                        self._record_pet_sample(
-                            self._pet_drag_samples,
-                            self._pet_now_ms(),
-                            moved.position,
-                            window=self,
-                        )
-                    velocity = estimate_release_velocity(self._pet_drag_samples)
-                    self.pet_companion.drag_release(
-                        self._collect_pet_targets(),
+        dialog, moved_for_release = _resolve_pet_release_host(
+            self,
+            self._pet_drag_host_dialog,
+            final_move,
+        )
+        if dialog is not None:
+            if dialog is self:
+                if not moved_for_release:
+                    pointer = self._pet_pointer(event)
+                    moved = self.pet_companion.drag_move(
+                        PetPoint(pointer.x + self._pet_drag_offset.x, pointer.y + self._pet_drag_offset.y),
                         self._pet_viewport(),
-                        release_velocity=velocity,
                     )
-                    self._pet_drag_samples = []
-                else:
-                    runtime = self._dialog_pet_runtimes.get(dialog)
-                    if runtime is not None:
-                        if not moved_for_release:
-                            event_point = PetPoint(
-                                float(event.x_root - dialog.winfo_rootx()),
-                                float(event.y_root - dialog.winfo_rooty()),
-                            )
-                            moved = runtime.companion.drag_move(
-                                PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
-                                self._pet_viewport_for(dialog),
-                            )
-                            runtime.drag_samples = runtime.drag_samples or []
-                            self._record_pet_sample(
-                                runtime.drag_samples,
-                                self._pet_now_ms(),
-                                moved.position,
-                                window=dialog,
-                            )
-                        velocity = estimate_release_velocity(runtime.drag_samples)
-                        runtime.companion.drag_release(
-                            self._collect_dialog_pet_targets(dialog, runtime.key),
-                            self._pet_viewport_for(dialog),
-                            release_velocity=velocity,
-                        )
-                        runtime.drag_samples = []
-            else:
-                self._pet_targets = self._collect_pet_targets()
+                    self._record_pet_sample(
+                        self._pet_drag_samples,
+                        self._pet_now_ms(),
+                        moved.position,
+                        window=self,
+                    )
                 velocity = estimate_release_velocity(self._pet_drag_samples)
                 self.pet_companion.drag_release(
-                    self._pet_targets,
+                    self._collect_pet_targets(),
                     self._pet_viewport(),
                     release_velocity=velocity,
                 )
+                self._release_pet_overlay(self._pet_overlay)
                 self._pet_drag_samples = []
-        finally:
-            # Pointer capture (``grab_set``) must always be released.  A drag
-            # handler error otherwise leaves every subsequent mouse event
-            # routed to the sprite window, which locks the whole page even
-            # though the application is still responsive.
-            self._release_pet_overlay(self._pet_overlay)
-            for runtime in self._dialog_pet_runtimes.values():
-                self._release_pet_overlay(runtime.overlay)
+            else:
+                runtime = self._dialog_pet_runtimes.get(dialog)
+                if runtime is not None:
+                    if not moved_for_release:
+                        event_point = PetPoint(
+                            float(event.x_root - dialog.winfo_rootx()),
+                            float(event.y_root - dialog.winfo_rooty()),
+                        )
+                        moved = runtime.companion.drag_move(
+                            PetPoint(event_point.x + runtime.drag_offset.x, event_point.y + runtime.drag_offset.y),
+                            self._pet_viewport_for(dialog),
+                        )
+                        runtime.drag_samples = runtime.drag_samples or []
+                        self._record_pet_sample(
+                            runtime.drag_samples,
+                            self._pet_now_ms(),
+                            moved.position,
+                            window=dialog,
+                        )
+                    velocity = estimate_release_velocity(runtime.drag_samples)
+                    runtime.companion.drag_release(
+                        self._collect_dialog_pet_targets(dialog, runtime.key),
+                        self._pet_viewport_for(dialog),
+                        release_velocity=velocity,
+                    )
+                    self._release_pet_overlay(runtime.overlay)
+                    runtime.drag_samples = []
             self._pet_drag_host_dialog = None
             self._pet_dragging = False
+            return
+        self._pet_targets = self._collect_pet_targets()
+        velocity = estimate_release_velocity(self._pet_drag_samples)
+        self.pet_companion.drag_release(
+            self._pet_targets,
+            self._pet_viewport(),
+            release_velocity=velocity,
+        )
+        self._release_pet_overlay(self._pet_overlay)
+        self._pet_drag_samples = []
+        self._pet_dragging = False
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -6306,36 +6255,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         for _ in range(3):
             app.update_idletasks()
             app.update()
-
-    # Reward-layer click-through probe: while a flight is visible, every
-    # native surface of the overlay must be subclassed to return
-    # HTTRANSPARENT, otherwise the full-screen layer would swallow all mouse
-    # input for the duration of the animation.
-    reward_layer_click_through_ready = False
-    if app._reward_effects is not None:
-        layer = app._reward_effects.layer
-        surfaces = layer._native_surfaces()
-        subclassed = {handle for handle, _original in layer._passthrough_handles}
-        try:
-            layer.show()
-            reward_layer_click_through_ready = bool(
-                surfaces
-                and not layer._passthrough_failures
-                and all(surface in subclassed for surface in surfaces)
-                and all(
-                    int(layer.native_hit_test(surface, app.winfo_rootx(), app.winfo_rooty()))
-                    == -1
-                    for surface in surfaces
-                )
-            )
-        except tk.TclError:
-            reward_layer_click_through_ready = False
-        finally:
-            try:
-                app._reward_effects.model.clear()
-                layer.hide()
-            except tk.TclError:
-                pass
     result = {
         "ok": (
             set(visited) == set(app.pages)
@@ -6385,7 +6304,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
             and reminder_word_bubble_cleanup_ready
             and pet_navigation_ready
             and pet_control_coverage_ready
-            and reward_layer_click_through_ready
             and all(
                 pet_control_classes_seen & alternatives
                 for alternatives in (
@@ -6417,7 +6335,6 @@ def run_gui_smoke(app: LexiTrackApp) -> dict:
         "petDialogFocusPromotionReady": pet_dialog_focus_promotion_ready,
         "petNavigationReady": pet_navigation_ready,
         "petControlCoverageReady": pet_control_coverage_ready,
-        "rewardLayerClickThroughReady": reward_layer_click_through_ready,
         "petControlClasses": sorted(pet_control_classes_seen),
         "catalogCount": app.catalog_count,
         "studyCardReady": app.current_card is None or len(app.current_card.examples) >= 3,

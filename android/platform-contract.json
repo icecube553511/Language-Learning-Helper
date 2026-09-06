@@ -187,7 +187,6 @@
     "dictationBookLoadingAnimation": "ready",
     "petCurveLandingPhysics": "ready",
     "petMotionContinuityDuringReflow": "ready",
-    "petAnimationFrameResilience": "ready",
     "petVitalsAndRatingRewards": "ready",
     "ratingRewardFlightEffect": "ready",
     "petAppearanceStates": "disabled",

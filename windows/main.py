@@ -78,7 +78,7 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         DictationDocumentExporter(),
         dictation_draft_sync=sync_adapter,
     )
-    app = LexiTrackApp(
+    return LexiTrackApp(
         service=service,
         data_dir=data_dir,
         catalog_count=len(catalog),
@@ -88,13 +88,6 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         pet_asset_left_path=resources / "shared" / "assets" / "pets" / "bingzi-left.png",
         dictation_sync_account_id=sync_config.account_id if sync_config.configured else None,
     )
-    pet_trace = os.environ.get("LEXITRACK_PET_TRACE")
-    if pet_trace:
-        try:
-            app.enable_pet_trace(Path(pet_trace))
-        except OSError:
-            pass
-    return app
 
 
 def run_dictation_export_smoke() -> dict[str, bool]:

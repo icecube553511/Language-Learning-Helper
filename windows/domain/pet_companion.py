@@ -689,18 +689,6 @@ def _target_for_state(
     if state.target_id and state.mode != PetMode.FALL:
         for target in targets:
             if target.id == state.target_id and target.valid:
-                if target.kind == PetTargetKind.EDGE:
-                    # A thin edge must never be retained as a long-term support
-                    # while real content exists.  A pet that once landed on a
-                    # boundary would otherwise keep creeping along it forever
-                    # (visually motionless) and never return to the page
-                    # content.  Re-select so the content preference applies.
-                    if any(
-                        candidate.kind != PetTargetKind.EDGE
-                        for candidate in targets
-                        if candidate.valid
-                    ):
-                        break
                 return target
     valid = tuple(target for target in targets if target.valid)
     if state.avoid_target_id:

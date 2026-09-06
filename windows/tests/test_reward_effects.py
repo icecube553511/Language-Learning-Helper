@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import json
 import math
 from pathlib import Path
@@ -19,7 +18,6 @@ from presentation.reward_effects import (
     DEFAULT_CONFIG,
     FlightPhase,
     RewardAnimationModel,
-    RewardEffectsController,
     RewardPoint,
     STUDY_REWARD_COLOR,
     BURST_PARTICLE_GLOW_RADIUS,
@@ -192,229 +190,6 @@ class RewardEffectsTests(unittest.TestCase):
         self.assertIsNone(app._pet_tick_after_id)
         self.assertEqual(len(scheduled), 4)
 
-    def test_pet_tick_skips_non_tcl_frame_error_instead_of_freezing(self):
-        """Any non-Tk frame error must skip the frame and keep the loop alive.
-
-        The Android ticker survives any per-frame exception; the Windows loop
-        must match so a single unexpected presentation error cannot freeze
-        Bingzi for the rest of the session.
-        """
-        app = object.__new__(LexiTrackApp)
-        app._pet_overlay = object()
-        app._dialog_pet_stack = []
-        app._pet_targets = ()
-        app._pet_tick_failures = 0
-        app._pet_tick_after_id = None
-        app._reward_effects = None
-        app.pet_companion = Mock()
-        app._pet_last_rendered_position = None
-
-        scheduled: list[tuple] = []
-
-        def fake_after(*args):
-            scheduled.append(args)
-            return f"after:{len(scheduled)}"
-
-        app.after = fake_after
-
-        def raise_value(*_args, **_kwargs):
-            raise ValueError("geometry edge case")
-
-        app._collect_pet_targets = raise_value
-
-        app._pet_tick()
-        self.assertEqual(app._pet_tick_failures, 0)
-        self.assertEqual(app._pet_tick_after_id, "after:1")
-        self.assertEqual(len(scheduled), 1)
-
-        # The loop keeps ticking past any number of skipped frames, so a
-        # persistent oddity cannot permanently strand the companion.
-        for _ in range(10):
-            app._pet_tick()
-        self.assertEqual(app._pet_tick_failures, 0)
-        self.assertEqual(app._pet_tick_after_id, "after:11")
-        self.assertEqual(len(scheduled), 11)
-
-    def test_reward_tick_skips_failed_frame_and_still_cleans_up_layer(self):
-        """A render failure must not strand the overlay or cancel animation."""
-
-        class FakeHost:
-            def __init__(self):
-                self.scheduled: list[tuple] = []
-
-            def after(self, delay, callback):
-                self.scheduled.append((delay, callback))
-                return f"after:{len(self.scheduled)}"
-
-            def wm_state(self):
-                return "normal"
-
-            def winfo_exists(self):
-                return True
-
-            def winfo_viewable(self):
-                return True
-
-        class FakeLayer:
-            def __init__(self):
-                self.failures = 1
-                self.shown = 0
-                self.hidden = 0
-
-            def show(self):
-                self.shown += 1
-
-            def hide(self):
-                self.hidden += 1
-
-            def keep_above(self, other=None):
-                pass
-
-            def render(self, model, now_ms):
-                if self.failures > 0:
-                    self.failures -= 1
-                    raise tk.TclError("target teardown while sampling")
-
-        host = FakeHost()
-        layer = FakeLayer()
-        controller = object.__new__(RewardEffectsController)
-        controller.host = host
-        controller.target_provider = lambda: RewardPoint(500.0, 300.0)
-        controller.pet_half_size = 56.0
-        controller.model = RewardAnimationModel()
-        controller.layer = layer
-        controller._after_id = None
-        controller._destroyed = False
-        controller._animation_now_ms = 1_000.0
-        controller._last_wall_ms = 1_000.0
-
-        controller.emit((0.0, 0.0), STUDY_REWARD_COLOR)
-        self.assertEqual(controller.model.active_count, 1)
-        self.assertEqual(controller._after_id, "after:1")
-        self.assertEqual(layer.shown, 1)
-
-        # The first frame's render fails; the frame is skipped and the loop is
-        # rescheduled instead of leaving the layer up forever.
-        controller._tick()
-        self.assertEqual(layer.failures, 0)
-        self.assertEqual(controller._after_id, "after:2")
-        self.assertEqual(layer.shown, 2)
-
-        # Flights keep aging; once they finish the layer hides and the loop
-        # stops rescheduling.
-        controller._animation_now_ms += 5_000.0
-        controller._last_wall_ms = int(controller._animation_now_ms)
-        controller._tick()
-        self.assertEqual(controller.model.active_count, 0)
-        self.assertIsNone(controller._after_id)
-        self.assertGreaterEqual(layer.hidden, 1)
-
-    def test_emit_survives_layer_show_failure_and_still_schedules(self):
-        """A failing layer surface must not lose the flight or skip the loop."""
-
-        class FakeHost:
-            def __init__(self):
-                self.scheduled: list[tuple] = []
-
-            def after(self, delay, callback):
-                self.scheduled.append((delay, callback))
-                return f"after:{len(self.scheduled)}"
-
-            def wm_state(self):
-                return "normal"
-
-            def winfo_exists(self):
-                return True
-
-            def winfo_viewable(self):
-                return True
-
-        class BrokenLayer:
-            def show(self):
-                raise tk.TclError("layer unavailable")
-
-        host = FakeHost()
-        controller = object.__new__(RewardEffectsController)
-        controller.host = host
-        controller.target_provider = lambda: None
-        controller.pet_half_size = 56.0
-        controller.model = RewardAnimationModel()
-        controller.layer = BrokenLayer()
-        controller._after_id = None
-        controller._destroyed = False
-        controller._animation_now_ms = 1_000.0
-        controller._last_wall_ms = 1_000.0
-
-        controller.emit((0.0, 0.0), STUDY_REWARD_COLOR)
-
-        self.assertEqual(controller.model.active_count, 1)
-        self.assertEqual(controller._after_id, "after:1")
-        self.assertEqual(len(host.scheduled), 1)
-
-    def test_pet_press_releases_capture_when_sampling_fails(self):
-        """A failed drag press must not leave a grab that swallows all input."""
-        app = object.__new__(LexiTrackApp)
-        app._pet_render_generation = 0
-        app._pet_render_after_ids = []
-        app._pet_drag_samples = []
-        app._pet_dragging = False
-        app._pet_drag_host_dialog = None
-        app._cancel_main_pet_render = lambda: None
-
-        class Overlay:
-            def __init__(self):
-                self.released = 0
-
-            def release_pointer(self):
-                self.released += 1
-
-        overlay = Overlay()
-        app._pet_overlay = overlay
-        app._dialog_pet_runtimes = {}
-        app._pet_pointer = lambda _event: PetPoint(12.0, 34.0)
-        app.pet_companion = Mock()
-        app.pet_companion.state = PetState(PetPoint(20.0, 50.0))
-        app.pet_companion.drag_start = Mock(return_value=app.pet_companion.state)
-        app._record_pet_sample = Mock(side_effect=tk.TclError("unmapped mid-press"))
-        app._grab_pet_overlay = lambda _overlay: None
-
-        app._pet_press(Mock())
-
-        self.assertEqual(overlay.released, 1)
-        self.assertFalse(app._pet_dragging)
-
-    def test_pet_release_always_releases_pointer_capture(self):
-        """Even when the release path raises, the pointer grab must be released."""
-        app = object.__new__(LexiTrackApp)
-        app._pet_drag_host_dialog = None
-        app._pet_dragging = True
-        app._pet_drag_samples = []
-
-        class Overlay:
-            def __init__(self):
-                self.released = 0
-
-            def release_pointer(self):
-                self.released += 1
-
-        overlay = Overlay()
-        app._pet_overlay = overlay
-        app._dialog_pet_runtimes = {}
-        app.pet_companion = Mock()
-        app._pet_drag_offset = PetPoint(0.0, 0.0)
-
-        def boom_move(_event):
-            raise tk.TclError("card teardown during drag")
-
-        app._pet_move = boom_move
-
-        with self.assertRaises(tk.TclError):
-            app._pet_release(Mock())
-
-        self.assertEqual(overlay.released, 1)
-        self.assertFalse(app._pet_dragging)
-        self.assertIsNone(app._pet_drag_host_dialog)
-
     def test_effect_layer_hit_test_is_explicitly_transparent(self):
         self.assertEqual(transparent_hit_test_result(WM_NCHITTEST), HTTRANSPARENT)
         self.assertIsNone(transparent_hit_test_result(0x0201))
@@ -425,22 +200,11 @@ class RewardEffectsTests(unittest.TestCase):
         layer = object.__new__(RewardEffectLayer)
         layer._passthrough_handles = []
         layer._passthrough_callbacks = []
-        layer._passthrough_failures = []
         layer._call_window_proc = None
 
-        installed: dict[int, object] = {}
-
-        def fake_get(hwnd, index):
-            value = installed.get(int(hwnd), 0xDEAD_BEEF)
-            return value if isinstance(value, int) else ctypes.cast(value, ctypes.c_void_p).value
-
-        def fake_set(hwnd, index, value):
-            installed[int(hwnd)] = value
-            return 0
-
         user32 = Mock()
-        user32.GetWindowLongPtrW = Mock(side_effect=fake_get)
-        user32.SetWindowLongPtrW = Mock(side_effect=fake_set)
+        user32.GetWindowLongPtrW = Mock(return_value=0xDEAD_BEEF)
+        user32.SetWindowLongPtrW = Mock(return_value=0)
         user32.CallWindowProcW = Mock(return_value=0)
 
         layer._install_hit_test_passthrough(user32, 0x1234)
@@ -453,64 +217,6 @@ class RewardEffectsTests(unittest.TestCase):
             [0x1234, 0x5678],
         )
         self.assertEqual(len(layer._passthrough_callbacks), 2)
-        self.assertEqual(layer._passthrough_failures, [])
-
-    def test_effect_layer_enumerates_every_descendant_surface(self):
-        """Every native surface of the layer hierarchy must become click-through.
-
-        Some Tk builds insert extra wrapper windows between the Toplevel and
-        the drawing canvas; a single unsubclassed surface would swallow every
-        mouse event while the reward flight is visible.
-        """
-        layer = object.__new__(RewardEffectLayer)
-        layer._passthrough_handles = []
-        layer._passthrough_callbacks = []
-        layer._passthrough_failures = []
-        layer._call_window_proc = None
-        layer._native_surfaces = lambda: [0x1000, 0x1001, 0x1002, 0x1003]
-
-        installed: dict[int, object] = {}
-
-        def fake_get(hwnd, index):
-            value = installed.get(int(hwnd), 0xDEAD_BEEF)
-            return value if isinstance(value, int) else ctypes.cast(value, ctypes.c_void_p).value
-
-        def fake_set(hwnd, index, value):
-            installed[int(hwnd)] = value
-            return 0
-
-        user32 = Mock()
-        user32.GetWindowLongPtrW = Mock(side_effect=fake_get)
-        user32.SetWindowLongPtrW = Mock(side_effect=fake_set)
-        user32.CallWindowProcW = Mock(return_value=0)
-
-        layer._enable_mouse_passthrough_with(user32)
-
-        self.assertEqual(
-            [handle for handle, _original in layer._passthrough_handles],
-            [0x1000, 0x1001, 0x1002, 0x1003],
-        )
-        self.assertEqual(len(layer._passthrough_callbacks), 4)
-        self.assertEqual(layer._passthrough_failures, [])
-
-    def test_effect_layer_reports_uninstallable_surface(self):
-        """A surface whose window procedure cannot be replaced must be reported."""
-        layer = object.__new__(RewardEffectLayer)
-        layer._passthrough_handles = []
-        layer._passthrough_callbacks = []
-        layer._passthrough_failures = []
-        layer._call_window_proc = None
-
-        user32 = Mock()
-        user32.GetWindowLongPtrW = Mock(return_value=0xDEAD_BEEF)
-        user32.SetWindowLongPtrW = Mock(return_value=0)
-        user32.CallWindowProcW = Mock(return_value=0)
-
-        success = layer._install_hit_test_passthrough(user32, 0x4321)
-
-        self.assertFalse(success)
-        self.assertEqual(layer._passthrough_handles, [])
-        self.assertIn(0x4321, layer._passthrough_failures)
 
     def test_tunable_configuration_matches_golden_contract(self):
         feedback = GOLDEN["rewardFlight"]

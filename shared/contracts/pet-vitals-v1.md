@@ -100,12 +100,9 @@ same-color trail. Contact uses the current pet half-size plus orb radius and
 emits a radial point burst at the contact location. A new accepted click never
 cancels an older flight or burst; all instances update and clean up
 independently. Each accepted zero-reward `again`/`hard` action still emits
-feedback. A single failed frame in the animation loop (for example a transient
-geometry error while sampling the pet target) must not cancel the loop or
-leave the overlay layer stranded: the frame is skipped, the flights keep
-aging, and they still clean up and hide the layer when finished. Animation
-state pauses while its host is not visible and is cancelled only when the host
-is destroyed or no active pet target exists for the configured timeout.
+feedback. Animation state pauses while its host is not visible and is cancelled
+only when the host is destroyed or no active pet target exists for the
+configured timeout.
 
 The physical `orbRadius` remains the contact radius. The shared `visual` tuning
 values in the golden contract make the transient feedback observable: the
