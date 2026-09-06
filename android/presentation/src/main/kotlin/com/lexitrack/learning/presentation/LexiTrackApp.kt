@@ -828,11 +828,15 @@ fun LexiTrackApp(
             LocalPetWindowStack provides petWindows,
             LocalPetWindowCoordinator provides petWindowCoordinator,
             LocalTriggerReward provides { mode, start ->
-                petWindowCoordinator.worldPosition()?.let { targetPoint ->
+                (rewardTargetOrViewportCenter(
+                    target = petWindowCoordinator.worldPosition(),
+                    viewportOrigin = petViewportOrigin,
+                    viewport = petViewport,
+                ) ?: start).let { targetPoint ->
                     val request = RewardEffectRequest(
                         id = ++rewardSequence,
                         start = start,
-                        target = Offset(targetPoint.x, targetPoint.y),
+                        target = targetPoint,
                         color = rewardColor(mode),
                     )
                     rewardRequests = (rewardRequests + request).takeLast(PET_ENERGY_BALL_MAX_CONCURRENT)

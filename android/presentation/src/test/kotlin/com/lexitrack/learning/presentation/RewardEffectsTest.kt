@@ -1,6 +1,8 @@
 package com.lexitrack.learning.presentation
 
 import androidx.compose.ui.geometry.Offset
+import com.lexitrack.learning.domain.PetPoint
+import com.lexitrack.learning.domain.PetRect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -44,5 +46,27 @@ class RewardEffectsTest {
         assertEquals(18, PET_ENERGY_BALL_PARTICLE_COUNT)
         assertEquals(260f, PET_ENERGY_BALL_BURST_DURATION_MS, 0.001f)
         assertEquals(3, PET_ENERGY_BALL_MAX_CONCURRENT)
+    }
+
+    @Test
+    fun `missing pet registration still gives a visible viewport destination`() {
+        val destination = rewardTargetOrViewportCenter(
+            target = null,
+            viewportOrigin = PetPoint(10f, 20f),
+            viewport = PetRect(0f, 0f, 300f, 500f),
+        )
+
+        assertEquals(Offset(160f, 270f), destination)
+    }
+
+    @Test
+    fun `registered pet destination wins over fallback`() {
+        val destination = rewardTargetOrViewportCenter(
+            target = PetPoint(42f, 84f),
+            viewportOrigin = PetPoint(10f, 20f),
+            viewport = PetRect(0f, 0f, 300f, 500f),
+        )
+
+        assertEquals(Offset(42f, 84f), destination)
     }
 }

@@ -889,6 +889,7 @@ class RewardEffectsController:
         self._destroyed = False
         self._animation_now_ms = _monotonic_ms()
         self._last_wall_ms = self._animation_now_ms
+        self._render_error: str | None = None
 
     def emit(self, source: RewardPoint | tuple[float, float], color: str) -> RewardFlight:
         if self._destroyed:
@@ -897,7 +898,13 @@ class RewardEffectsController:
         flight = self.model.emit(source, color, self._animation_now_ms)
         try:
             self.layer.show()
-        except tk.TclError:
+            # Paint the first frame synchronously.  Waiting for the first
+            # timer tick made short flights effectively invisible on Windows
+            # when a card reflow happened in the same event-loop turn.
+            self.layer.render(self.model, self._animation_now_ms)
+            self.layer.update_idletasks()
+        except Exception as error:
+            self._render_error = f"{type(error).__name__}: {error}"
             # A transient layer failure must not lose the flight or skip the
             # animation loop; the next tick retries showing the surface.
             pass
@@ -959,8 +966,12 @@ class RewardEffectsController:
                 self.layer.show()
                 self.layer.render(self.model, self._animation_now_ms)
                 self.layer.keep_above()
-            except Exception:
-                pass
+                self._render_error = None
+            except Exception as error:
+                # Keep the animation alive, but retain one diagnostic for the
+                # smoke/debug caller instead of silently hiding a bad Canvas
+                # option or native window state.
+                self._render_error = f"{type(error).__name__}: {error}"
         elif not self.model.active_count:
             # The layer must come down even when every earlier attempt to
             # hide it failed; a lingering full-screen surface would block

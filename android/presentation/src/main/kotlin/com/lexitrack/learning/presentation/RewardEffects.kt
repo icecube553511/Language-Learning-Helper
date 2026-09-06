@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.lexitrack.learning.domain.PetPoint
+import com.lexitrack.learning.domain.PetRect
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -50,6 +51,26 @@ internal fun rewardColor(mode: RewardEffectMode): Color = when (mode) {
     RewardEffectMode.STUDY -> StudyRewardGold
     RewardEffectMode.REVIEW -> ReviewRewardCyan
 }
+
+/**
+ * Resolve a screen-space destination even while the pet host is being
+ * registered.  The coordinator is normally ready before a rating button can
+ * be tapped, but Compose can deliver the first tap during that registration
+ * frame.  Dropping that tap makes the feature appear randomly disabled, so
+ * use the host centre as a short-lived destination and let the live target
+ * provider retarget the flight on the next frame.
+ */
+internal fun rewardTargetOrViewportCenter(
+    target: PetPoint?,
+    viewportOrigin: PetPoint,
+    viewport: PetRect,
+): Offset? = target?.let { Offset(it.x, it.y) }
+    ?: viewport.takeIf { it.valid }?.let {
+        Offset(
+            viewportOrigin.x + it.width / 2f,
+            viewportOrigin.y + it.height / 2f,
+        )
+    }
 
 internal fun rewardDurationMillis(distancePx: Float): Int =
     (360f + distancePx.coerceIn(0f, 1_600f) * 0.18f).toInt().coerceIn(360, 650)
