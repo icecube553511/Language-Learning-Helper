@@ -5,6 +5,7 @@
   "wordBubbleVersion": "word-bubble-v1",
   "petCompanionVersion": "pet-companion-v1",
   "petVitalsVersion": "pet-vitals-v1",
+  "petEnergyBallVersion": "pet-energy-ball-v1",
   "petAppearanceVersion": "pet-appearance-v1",
   "vocabularyGroupsVersion": "vocabulary-groups-v1",
   "contentVersion": "cet-2026.08-v2",
@@ -125,6 +126,17 @@
     "enabled": false,
     "disabledReason": "appearance PNG set is incomplete"
   },
+  "petEnergyBall": {
+    "studyColor": "#F5C451",
+    "reviewColor": "#39D9D0",
+    "maxSpeedLogicalPxPerSecond": 1800.0,
+    "hitRadiusLogicalPx": 36.0,
+    "trailLengthLogicalPx": [12.0, 96.0],
+    "burstParticleCount": 18,
+    "burstLifetimeMs": 260,
+    "maxConcurrentBalls": 3,
+    "transient": true
+  },
   "fontScale": {
     "minimum": 0.9,
     "maximum": 1.4,
@@ -171,6 +183,7 @@
     "petMotionContinuityDuringReflow": "ready",
     "petAnimationFrameResilience": "ready",
     "petVitalsAndRatingRewards": "ready",
+    "petEnergyBallEffect": "ready",
     "petAppearanceStates": "disabled",
     "dictationRandomSubsetSelection": "ready",
     "dictationRangeSelection": "ready",

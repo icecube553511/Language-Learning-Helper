@@ -92,6 +92,19 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(interpolate_pet_position(start, end, 20, 16), end)
         self.assertEqual(interpolate_pet_position(start, end, 8, 0), end)
 
+    def test_layout_invalidation_anchors_rendering_to_live_state(self):
+        """Queued frames from a replaced card must not restore stale coords."""
+        app = LexiTrackApp.__new__(LexiTrackApp)
+        app._pet_render_generation = 3
+        app._pet_render_after_ids = []
+        app._pet_last_rendered_position = PetPoint(5.0, 5.0)
+        app.pet_companion = PetCompanion(PetState(PetPoint(48.0, 72.0)))
+
+        app._invalidate_main_pet_render()
+
+        self.assertEqual(app._pet_render_generation, 4)
+        self.assertEqual(app._pet_last_rendered_position, PetPoint(48.0, 72.0))
+
     def test_semantic_widget_id_survives_virtualized_widget_recreation(self):
         class VirtualWidget:
             pet_target_id = "dictation-selection:entry-42"
@@ -1739,6 +1752,53 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(coordinator.state.idle_ticks_remaining, 0)
         self.assertIsNone(coordinator.state.avoid_target_id)
         self.assertIsNone(coordinator.state.curve_velocity)
+
+    def test_window_coordinator_keeps_falling_pet_outside_nonadjacent_fallback(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(120, 100),
+                PetMode.FALL,
+                vertical_velocity=125,
+            )
+        )
+        coordinator.register_window(
+            PetWindow("dialog", PetRect(900, -200, 400, 300)),
+            active=True,
+            pet_half_size=56,
+        )
+        coordinator.register_window(
+            PetWindow("main", PetRect(0, 0, 400, 300)),
+            active=False,
+            pet_half_size=56,
+        )
+
+        coordinator.unregister_window("dialog", pet_half_size=56)
+
+        self.assertEqual(coordinator.active_window_id, "main")
+        self.assertEqual(coordinator.state.mode, PetMode.FALL)
+        self.assertEqual(coordinator.state.position, PetPoint(344, -100))
+        self.assertEqual(coordinator.state.vertical_velocity, 125)
+
+    def test_window_coordinator_keeps_falling_pet_outside_nonadjacent_activation(self):
+        coordinator = PetWindowCoordinator(
+            PetState(
+                PetPoint(120, 100),
+                PetMode.FALL,
+                vertical_velocity=125,
+            )
+        )
+        coordinator.register_window(
+            PetWindow("main", PetRect(0, 0, 400, 300)),
+            active=True,
+            pet_half_size=56,
+        )
+        coordinator.register_window(PetWindow("dialog", PetRect(900, 500, 400, 300)))
+
+        self.assertTrue(coordinator.activate("dialog", pet_half_size=56))
+        self.assertEqual(coordinator.active_window_id, "dialog")
+        self.assertEqual(coordinator.state.mode, PetMode.FALL)
+        self.assertEqual(coordinator.state.position, PetPoint(56, -400))
+        self.assertEqual(coordinator.state.vertical_velocity, 125)
 
     def test_window_coordinator_migrates_fling_through_top_edge(self):
         coordinator = PetWindowCoordinator(

@@ -1713,7 +1713,7 @@ def verify_pet_vitals_contract() -> None:
         "not a vocabulary/catalog",
         "`FoodJar` domain value object",
         "cross-repository",
-        "does not expose rating reward animation",
+        "`pet-energy-ball-v1` interaction effect",
     ):
         if marker not in contract_text:
             fail(f"Pet vitals contract is missing {marker}")
@@ -1759,21 +1759,14 @@ def verify_pet_vitals_contract() -> None:
         if "rewardFlight" in manifest.get("petVitals", {}) or "ratingRewardFlightEffect" in manifest.get("capabilities", {}):
             fail(f"Removed reward-flight contract remains in {manifest_name}")
 
-    animation_paths = (
-        ROOT / "windows/presentation/reward_effects.py",
-        ROOT / "windows/tests/test_reward_effects.py",
-        ROOT / "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt",
-        ROOT / "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt",
-    )
-    for animation_path in animation_paths:
-        if animation_path.exists():
-            fail(f"Removed rating animation file still exists: {animation_path.relative_to(ROOT)}")
+    # The old reward-flight contract was removed.  The presentation-only
+    # pet-energy-ball-v1 effect is verified separately below.
     for source_path in (
         ROOT / "windows/presentation/app.py",
         ROOT / "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/LexiTrackApp.kt",
     ):
         source = source_path.read_text(encoding="utf-8")
-        if "RewardEffects" in source or "rewardFlight" in source or "resolveRatingOrigin" in source:
+        if "rewardFlight" in source or "resolveRatingOrigin" in source:
             fail(f"Rating UI still links removed animation code: {source_path.relative_to(ROOT)}")
     for capability in (
         "petVitalsAndRatingRewards",
@@ -1866,6 +1859,65 @@ def verify_pet_vitals_contract() -> None:
             if marker in source:
                 fail(f"Hidden pet state leaked into UI: {source_path.relative_to(ROOT)} has {marker}")
 
+
+def verify_pet_energy_ball_contract() -> None:
+    contract_path = CONTRACTS / "pet-energy-ball-v1.md"
+    golden_path = CONTRACTS / "pet-energy-ball-golden-v1.json"
+    if not contract_path.is_file() or "pet-energy-ball-v1" not in contract_path.read_text(encoding="utf-8"):
+        fail("Pet energy-ball contract is missing")
+    payload = json.loads(golden_path.read_text(encoding="utf-8"))
+    if payload.get("contractVersion") != "pet-energy-ball-v1":
+        fail("Unexpected pet energy-ball contract version")
+    phases = payload.get("phases", {})
+    if phases.get("study", {}).get("color") != "#F5C451" or phases.get("review", {}).get("color") != "#39D9D0":
+        fail("Pet energy-ball phase colors differ")
+    motion = payload.get("motion", {})
+    if motion.get("acceleration") != "continuous-toward-live-pet":
+        fail("Pet energy-ball must target the live pet")
+    if float(motion.get("maxSpeedLogicalPxPerSecond", 0)) != 1800.0 or float(motion.get("hitRadiusLogicalPx", 0)) != 36.0:
+        fail("Pet energy-ball motion limits differ")
+    if motion.get("trailLengthLogicalPx") != {"minimum": 12.0, "maximum": 96.0}:
+        fail("Pet energy-ball trail bounds differ")
+    burst = payload.get("burst", {})
+    if (
+        burst.get("particleCount") != 18
+        or burst.get("lifetimeMs") != 260
+        or burst.get("radialSpeedLogicalPxPerSecond") != {"minimum": 180.0, "maximum": 460.0}
+        or burst.get("inheritsPhaseColor") is not True
+    ):
+        fail("Pet energy-ball burst semantics differ")
+    if payload.get("maxConcurrentBalls") != 3 or payload.get("transient") is not True:
+        fail("Pet energy-ball lifecycle semantics differ")
+    parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
+    expected = {
+        "studyColor": "#F5C451",
+        "reviewColor": "#39D9D0",
+        "maxSpeedLogicalPxPerSecond": 1800.0,
+        "hitRadiusLogicalPx": 36.0,
+        "trailLengthLogicalPx": [12.0, 96.0],
+        "burstParticleCount": 18,
+        "burstLifetimeMs": 260,
+        "maxConcurrentBalls": 3,
+        "transient": True,
+    }
+    if parity.get("petEnergyBallVersion") != "pet-energy-ball-v1" or parity.get("petEnergyBall") != expected:
+        fail("Parity pet energy-ball projection differs")
+    if parity.get("capabilities", {}).get("petEnergyBallEffect") != "ready":
+        fail("Pet energy-ball capability is not ready")
+    implementation_markers = {
+        "windows/presentation/reward_effects.py": ("RewardFlight", "STUDY_REWARD_COLOR", "REVIEW_REWARD_COLOR"),
+        "windows/tests/test_reward_effects.py": ("RewardAnimationModel",),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": ("RewardEffectMode", "StudyRewardGold", "ReviewRewardCyan"),
+        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": ("rewardTrailLength",),
+    }
+    for relative_path, markers in implementation_markers.items():
+        source_path = ROOT / relative_path
+        if not source_path.is_file():
+            fail(f"Pet energy-ball implementation is missing {relative_path}")
+        source = source_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in source:
+                fail(f"Pet energy-ball implementation {relative_path} is missing {marker}")
 
 def normalize_group_membership(code: str) -> str:
     normalized = unicodedata.normalize("NFKC", code.strip()).upper()
@@ -2478,6 +2530,7 @@ def verify_platform_markers() -> None:
             "wordBubbleVersion",
             "petCompanionVersion",
             "petVitalsVersion",
+            "petEnergyBallVersion",
             "petAppearanceVersion",
             "vocabularyGroupsVersion",
             "contentVersion",
@@ -2488,6 +2541,7 @@ def verify_platform_markers() -> None:
             "branding",
             "petCompanion",
             "petVitals",
+            "petEnergyBall",
             "petAppearance",
             "fontScale",
             "popupGeometry",
@@ -2510,6 +2564,7 @@ def main() -> int:
     verify_pet_contract()
     verify_pet_appearance_contract()
     verify_pet_vitals_contract()
+    verify_pet_energy_ball_contract()
     verify_vocabulary_groups_contract()
     verify_font_scale_popup_contract()
     verify_catalog()
