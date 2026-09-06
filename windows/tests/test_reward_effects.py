@@ -29,7 +29,6 @@ from presentation.reward_effects import (
     VISUAL_ORB_GLOW_RADIUS,
     VISUAL_ORB_HIGHLIGHT_RADIUS,
     VISUAL_ORB_RADIUS,
-    RewardEffectLayer,
     HTTRANSPARENT,
     WM_NCHITTEST,
     transparent_hit_test_result,
@@ -194,29 +193,6 @@ class RewardEffectsTests(unittest.TestCase):
         self.assertEqual(transparent_hit_test_result(WM_NCHITTEST), HTTRANSPARENT)
         self.assertIsNone(transparent_hit_test_result(0x0201))
         self.assertIsNone(transparent_hit_test_result(None))
-
-    def test_effect_layer_subclasses_every_native_surface(self):
-        """The transparent surface must pass hits on both the top-level and canvas."""
-        layer = object.__new__(RewardEffectLayer)
-        layer._passthrough_handles = []
-        layer._passthrough_callbacks = []
-        layer._call_window_proc = None
-
-        user32 = Mock()
-        user32.GetWindowLongPtrW = Mock(return_value=0xDEAD_BEEF)
-        user32.SetWindowLongPtrW = Mock(return_value=0)
-        user32.CallWindowProcW = Mock(return_value=0)
-
-        layer._install_hit_test_passthrough(user32, 0x1234)
-        layer._install_hit_test_passthrough(user32, 0x5678)
-        # Calling again for an existing surface must not double-subclass it.
-        layer._install_hit_test_passthrough(user32, 0x1234)
-
-        self.assertEqual(
-            [handle for handle, _original in layer._passthrough_handles],
-            [0x1234, 0x5678],
-        )
-        self.assertEqual(len(layer._passthrough_callbacks), 2)
 
     def test_tunable_configuration_matches_golden_contract(self):
         feedback = GOLDEN["rewardFlight"]

@@ -442,15 +442,9 @@ def nearest_pet_target(
     valid_targets = tuple(target for target in targets if target.valid)
     if not valid_targets:
         return None
-    # Edge targets are presentation hints used to roam a window boundary or
-    # reach a portal.  When real content (control/surface/chart) is available,
-    # prefer it so a card rebuild can never strand the companion on a thin
-    # screen edge rolling in place.
-    content_targets = tuple(target for target in valid_targets if target.kind != PetTargetKind.EDGE)
-    candidates = content_targets if content_targets else valid_targets
     margin = max(0.0, pet_size)
     if viewport is None:
-        return min(candidates, key=lambda target: target.distance_to(position, margin))
+        return min(valid_targets, key=lambda target: target.distance_to(position, margin))
     centre = PetPoint(
         viewport.left + viewport.width / 2.0,
         viewport.top + viewport.height / 2.0,
@@ -465,7 +459,7 @@ def nearest_pet_target(
         edge_penalty = diagonal * EDGE_PENALTY_RATIO if target.kind == PetTargetKind.EDGE else 0.0
         return position_distance + CENTER_BIAS_WEIGHT * centre_distance + edge_penalty
 
-    return min(candidates, key=score)
+    return min(valid_targets, key=score)
 
 
 def on_navigation(state: PetState) -> PetState:

@@ -451,13 +451,9 @@ class RewardEffectLayer(tk.Toplevel):
         # Keep every native callback and API handle alive for as long as the
         # subclass is installed.  ctypes otherwise permits the callback
         # trampoline to be collected while Windows can still dispatch to it.
-        # ``Win32`` forwards hits through a transparent surface only when the
-        # window that actually receives ``WM_NCHITTEST`` returns ``HTTRANSPARENT``.
-        # Tk renders the orb on a child ``Canvas``, so both the top-level and
-        # that child are subclassed; keeping the callbacks referenced preserves
-        # the trampoline used by the native window procedure.
-        self._passthrough_handles: list[tuple[int, int]] = []
-        self._passthrough_callbacks: list = []
+        self._native_hwnd: int | None = None
+        self._original_wnd_proc: int | None = None
+        self._wnd_proc_callback = None
         self._call_window_proc = None
         self.withdraw()
         self.overrideredirect(True)
@@ -521,24 +517,12 @@ class RewardEffectLayer(tk.Toplevel):
                 extended_style | 0x00000020 | 0x00080000 | 0x08000000 | 0x00000080,
             )
             self._install_hit_test_passthrough(user32, hwnd)
-            # Some Tk builds expose an intermediate child HWND below the real
-            # top-level.  Make that window pass hits through as well so every
-            # native surface of the effect layer is click-transparent.
-            if widget_hwnd != hwnd:
-                self._install_hit_test_passthrough(user32, widget_hwnd)
-            # Tk places the drawing surface in a child window.  That child is
-            # the real hit-test target over most of the screen, so it must also
-            # pass hits through or it will swallow every mouse event while the
-            # reward flight is visible.
-            canvas_hwnd = int(self.canvas.winfo_id())
-            if canvas_hwnd and canvas_hwnd != hwnd:
-                self._install_hit_test_passthrough(user32, canvas_hwnd)
         except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
             pass
 
     def _install_hit_test_passthrough(self, user32, hwnd: int) -> None:
         """Subclass the native layer window so hit tests reach Tk controls."""
-        if any(existing == hwnd for existing, _original in self._passthrough_handles):
+        if self._native_hwnd == hwnd and self._wnd_proc_callback is not None:
             return
         get_proc = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
         set_proc = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
@@ -586,24 +570,27 @@ class RewardEffectLayer(tk.Toplevel):
                 return 0
 
         set_proc(hwnd, _GWL_WNDPROC, wnd_proc)
-        self._passthrough_handles.append((hwnd, original_pointer))
-        self._passthrough_callbacks.append(wnd_proc)
+        self._native_hwnd = hwnd
+        self._original_wnd_proc = original_pointer
+        self._wnd_proc_callback = wnd_proc
         self._call_window_proc = call_proc
 
     def _restore_hit_test_passthrough(self) -> None:
         """Restore Tk's original WNDPROC before the native window is freed."""
-        if sys.platform == "win32":
+        hwnd = self._native_hwnd
+        original = self._original_wnd_proc
+        if hwnd is not None and original is not None and sys.platform == "win32":
             try:
                 user32 = ctypes.windll.user32
                 set_proc = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
                 set_proc.restype = ctypes.c_void_p
                 set_proc.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-                for hwnd, original in self._passthrough_handles:
-                    set_proc(hwnd, _GWL_WNDPROC, original)
+                set_proc(hwnd, _GWL_WNDPROC, original)
             except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
                 pass
-        self._passthrough_handles.clear()
-        self._passthrough_callbacks.clear()
+        self._native_hwnd = None
+        self._original_wnd_proc = None
+        self._wnd_proc_callback = None
         self._call_window_proc = None
 
     def show(self) -> None:

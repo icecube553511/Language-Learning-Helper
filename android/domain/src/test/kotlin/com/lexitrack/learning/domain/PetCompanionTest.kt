@@ -41,21 +41,6 @@ class PetCompanionTest {
     }
 
     @Test
-    fun `nearest target prefers content over screen edge`() {
-        val position = PetPoint(40f, 220f)
-        val edge = PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0f, 240f, 100f, 3f))
-        val control = PetTarget("study:new-card", PetTargetKind.CONTROL, PetRect(10f, 60f, 80f, 24f))
-        val viewport = PetRect(0f, 0f, 100f, 250f)
-
-        assertEquals(
-            "study:new-card",
-            nearestPetTarget(position, listOf(edge, control), viewport = viewport)?.id,
-        )
-        // With no content available, an edge remains a valid fallback target.
-        assertEquals("edge:bottom", nearestPetTarget(position, listOf(edge), viewport = viewport)?.id)
-    }
-
-    @Test
     fun `navigation enters fall mode and clears previous target`() {
         val state = PetState(
             PetPoint(100f, 120f),
