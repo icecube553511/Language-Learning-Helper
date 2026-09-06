@@ -14,7 +14,6 @@ sys.path.insert(0, str(WINDOWS_DIR))
 
 from domain.dictation import (
     DictationField, DictationFormat, DictationOptions,
-    DictationDraft, dictation_range_ids, nearest_dictation_id,
     blank_count, build_document, cloze_example, parse_meaning, word_prompt,
 )
 from domain.models import ExampleSentence, VocabularyEntry
@@ -32,31 +31,6 @@ def entry(word="conduct"):
 
 
 class DictationDomainTests(unittest.TestCase):
-    def test_range_selection_is_inclusive_and_stable(self):
-        entries = [entry("Canada"), entry("apple"), entry("banana"), entry("dear")]
-        self.assertEqual(
-            dictation_range_ids(entries, "banana", "apple"),
-            frozenset({"apple", "banana"}),
-        )
-        self.assertEqual(dictation_range_ids(entries, "missing", "apple"), frozenset())
-
-    def test_nearest_selected_id_prefers_earlier_tie(self):
-        entries = [entry("a"), entry("b"), entry("c"), entry("d")]
-        self.assertEqual(nearest_dictation_id(entries, "c", {"b", "d"}), "b")
-
-    def test_draft_round_trip_is_versioned(self):
-        draft = DictationDraft(
-            mode="random", scope_group="cet4", count=3,
-            selected_ids=("apple", "banana"),
-            group_selected_ids={"cet4": ("apple", "banana")},
-            group_anchors={"cet4": "apple"},
-            group_endpoints={"cet4": "banana"},
-            group_scroll_positions={"cet4": 0.25},
-            expanded_groups=("cet4",),
-        )
-        restored = DictationDraft.from_dict(draft.to_dict())
-        self.assertEqual(restored, draft)
-        self.assertIsNone(DictationDraft.from_dict({"version": 999}))
     def test_blank_count_and_first_code_point(self):
         self.assertEqual(blank_count("abcd"), 8)
         self.assertEqual(word_prompt("😀ab"), "______")

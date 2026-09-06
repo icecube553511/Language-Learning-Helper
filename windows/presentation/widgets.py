@@ -79,43 +79,6 @@ def popup_position_with_escape_corridor(
     )
 
 
-def centered_window_position(
-    width: int,
-    height: int,
-    *,
-    owner_bounds: tuple[int, int, int, int] | None,
-    screen_width: int,
-    screen_height: int,
-    margin: int = 8,
-) -> tuple[int, int]:
-    """Return a clamped screen position centered on an owner window.
-
-    The calculation is deliberately independent of Tk so dialog placement can
-    be covered by unit tests. ``owner_bounds`` and the screen dimensions are in
-    absolute screen coordinates/pixels, matching ``winfo_root*`` values.
-    """
-    width = max(1, int(width))
-    height = max(1, int(height))
-    screen_width = max(width + 2, int(screen_width))
-    screen_height = max(height + 2, int(screen_height))
-    margin = max(0, int(margin))
-    if owner_bounds is None:
-        desired_x = (screen_width - width) // 2
-        desired_y = (screen_height - height) // 2
-    else:
-        owner_x, owner_y, owner_width, owner_height = (int(value) for value in owner_bounds)
-        desired_x = owner_x + (max(1, owner_width) - width) // 2
-        desired_y = owner_y + (max(1, owner_height) - height) // 2
-    minimum_x = margin
-    minimum_y = margin
-    maximum_x = max(minimum_x, screen_width - width - margin)
-    maximum_y = max(minimum_y, screen_height - height - margin)
-    return (
-        min(max(desired_x, minimum_x), maximum_x),
-        min(max(desired_y, minimum_y), maximum_y),
-    )
-
-
 def _wrapped_text_lines(text: str, max_width: int, measure: Callable[[str], int]) -> tuple[_TextLine, ...]:
     """Approximate Tk label word wrapping while retaining source offsets."""
     lines: list[_TextLine] = []
@@ -234,8 +197,8 @@ class Tooltip:
         x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
         y = self.widget.winfo_rooty() + 4
         self.window = tk.Toplevel(self.widget)
-        self.window.withdraw()
         self.window.overrideredirect(True)
+        self.window.geometry(f"+{x}+{y}")
         tk.Label(
             self.window,
             text=self.text,
@@ -245,11 +208,6 @@ class Tooltip:
             padx=9,
             pady=6,
         ).pack()
-        self.window.update_idletasks()
-        width = max(1, self.window.winfo_reqwidth())
-        height = max(1, self.window.winfo_reqheight())
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
-        self.window.deiconify()
 
     def _hide(self, _event=None):
         if self.pending:
@@ -563,7 +521,6 @@ class WordBubbleManager:
         # word-learning reminder card.
         owner_window = (owner or self.root).winfo_toplevel()
         popup = tk.Toplevel(owner_window)
-        popup.withdraw()
         popup.title("LexiTrack 词程 · 单词释义")
         popup.configure(bg="#F7F9FA")
         popup.transient(owner_window)
@@ -572,6 +529,7 @@ class WordBubbleManager:
         except tk.TclError:
             pass
         popup.minsize(360, 240)
+        popup.geometry("640x480")
 
         header = tk.Frame(popup, bg="#17212B")
         header.pack(fill=tk.X)
@@ -660,6 +618,9 @@ class WordBubbleManager:
         natural_height = popup.winfo_reqheight()
         width = max(360, min(natural_width, screen_width - 16))
         height = max(240, min(natural_height, screen_height - 60))
+        popup.geometry(f"{width}x{height}")
+        popup.update_idletasks()
+        width, height = popup.winfo_width(), popup.winfo_height()
         above = y_root - height - 8
         below = y_root + 22
         y = above if above >= 4 else min(below, screen_height - height - 4)
@@ -680,7 +641,7 @@ class WordBubbleManager:
             ),
             self._pet_half_size,
         )
-        popup.geometry(f"{width}x{height}+{x}+{y}")
+        popup.geometry(f"+{x}+{y}")
         popup.protocol("WM_DELETE_WINDOW", lambda d=depth: self._close_current(d))
         self._windows.append(popup)
         popup.bind(
@@ -688,11 +649,6 @@ class WordBubbleManager:
             lambda event, window=popup, d=depth: self._on_popup_destroyed(event, window, d),
             add="+",
         )
-        # Do not map the window until its content size and final screen
-        # position are both known; this prevents the WM default (often 0,0)
-        # frame from being painted for one event-loop turn.
-        popup.deiconify()
-        popup.lift()
         if self._on_popup_created is not None:
             self._on_popup_created(popup, f"word-bubble-{depth}")
 

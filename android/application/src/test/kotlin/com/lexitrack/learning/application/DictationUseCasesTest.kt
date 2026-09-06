@@ -4,13 +4,11 @@ import com.lexitrack.learning.domain.BilingualExample
 import com.lexitrack.learning.domain.MarkMode
 import com.lexitrack.learning.domain.VocabularyEntry
 import com.lexitrack.learning.domain.DictationDocumentOptions
-import com.lexitrack.learning.domain.DictationDraft
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
 
 class DictationUseCasesTest {
     private val entries = listOf(
@@ -31,16 +29,6 @@ class DictationUseCasesTest {
         assertEquals(setOf("z"), cet4.map { it.id }.toSet())
         val custom = SelectDictationCandidatesUseCase(vocab, randomUnit = { 0.0 }).random(20, "custom")
         assertEquals(setOf("w"), custom.map { it.id }.toSet())
-    }
-
-    @Test fun `random selection respects explicit cross-group candidate subset`() {
-        val vocab = FakeVocabulary(entries + entry("w", setOf("CUSTOM"), emptySet()))
-        val selected = SelectDictationCandidatesUseCase(vocab, randomUnit = { 0.0 })
-            .random(3, "all", candidateIds = setOf("b", "w"))
-        assertEquals(listOf("b", "w"), selected.map { it.id })
-        // An empty explicit subset is intentionally empty; callers can map an
-        // empty UI selection to null to request the legacy whole-pool fallback.
-        assertEquals(emptyList(), SelectDictationCandidatesUseCase(vocab).random(3, "all", candidateIds = emptySet()))
     }
 
     @Test fun `selected ids are sorted and can include evaluated`() {
@@ -75,24 +63,6 @@ class DictationUseCasesTest {
         assertEquals(listOf("Custom __"), row.examples)
         val fallback = BuildDictationDocumentUseCase()(listOf(entry), options.copy(customExamples = mapOf(entry.id to " "))).rows.single()
         assertEquals(listOf("A __ word"), fallback.examples)
-    }
-
-    @Test fun `pending local tombstone conflicts with remote draft`() {
-        val local = makeDictationDraftSyncEnvelope(
-            accountId = "user-1",
-            draft = null,
-            revision = "7",
-            updatedAtUtc = 8.0,
-        )
-        val remote = makeDictationDraftSyncEnvelope(
-            accountId = "user-1",
-            draft = DictationDraft(customExample = "remote"),
-            revision = "7",
-            updatedAtUtc = 7.0,
-        )
-        val result = reconcileDictationDraftSyncEnvelopes(local, remote)
-        assertEquals(DictationDraftSyncStatus.CONFLICT, result.status)
-        assertTrue(result.conflict?.local?.deleted == true)
     }
 
     private fun entry(id: String, levels: Set<String>, tags: Set<String>) = VocabularyEntry(

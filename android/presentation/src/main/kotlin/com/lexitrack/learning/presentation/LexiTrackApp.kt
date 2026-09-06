@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,7 +84,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -129,24 +127,13 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUp
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.activity.compose.BackHandler
 import com.lexitrack.learning.application.DashboardSnapshot
-import com.lexitrack.learning.application.MAX_FONT_SCALE
-import com.lexitrack.learning.application.MIN_FONT_SCALE
 import com.lexitrack.learning.application.ExportedDictation
 import com.lexitrack.learning.application.ForecastDay
 import com.lexitrack.learning.application.LibraryGroup
-import com.lexitrack.learning.application.sanitizeFontScale
 import com.lexitrack.learning.domain.DictationDocument
 import com.lexitrack.learning.domain.DictationDocumentOptions
 import com.lexitrack.learning.domain.DictationFormat
@@ -174,12 +161,8 @@ import com.lexitrack.learning.domain.onNavigation
 import com.lexitrack.learning.domain.releaseDrag
 import com.lexitrack.learning.domain.PET_CRUISE_SPEED
 import com.lexitrack.learning.domain.tokenizeEnglish
-import com.lexitrack.learning.domain.normalizeWordId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
-import androidx.compose.runtime.snapshotFlow
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
@@ -754,10 +737,6 @@ private fun PetAlertDialog(
                     onPointerActiveChange = {},
                     preferredActive = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
-                RewardEffectsCanvas(
-                    windowOrigin = viewportOrigin,
-                    modifier = Modifier.fillMaxSize(),
-                )
             }
         }
     }
@@ -783,11 +762,6 @@ fun LexiTrackApp(
     val hostView = LocalView.current
     val petWindowCoordinator = remember {
         PetWindowCoordinator()
-    }
-    val rewardEffectsController = remember { RewardEffectsController() }
-    val petHalfSizePx = with(LocalDensity.current) { PET_DISPLAY_SIZE_DP.dp.toPx() / 2f }
-    LaunchedEffect(viewModel, rewardEffectsController) {
-        viewModel.rewardEffects.collect(rewardEffectsController::emit)
     }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
@@ -821,7 +795,6 @@ fun LexiTrackApp(
             LocalRegisterPetWindow provides registerPetWindow,
             LocalPetWindowStack provides petWindows,
             LocalPetWindowCoordinator provides petWindowCoordinator,
-            LocalRewardEffectsController provides rewardEffectsController,
             LocalPetNavigationKey provides state.section,
         ) {
             Box(
@@ -869,7 +842,7 @@ fun LexiTrackApp(
                         card = state.currentCard,
                         revealed = state.answerRevealed,
                         onReveal = viewModel::revealAnswer,
-                        onRate = { rating, origin -> viewModel.rateCurrent(rating, origin) },
+                        onRate = viewModel::rateCurrent,
                         title = "学习卡",
                         emptyTitle = "新词学习已完成",
                         emptyMessage = "导入更多词条或前往复习巩固已学内容",
@@ -882,14 +855,10 @@ fun LexiTrackApp(
                         state = state,
                         onStart = viewModel::startReviewSession,
                         onReveal = viewModel::revealReviewAnswer,
-                        onRate = { rating, origin -> viewModel.rateReviewCurrent(rating, origin) },
+                        onRate = viewModel::rateReviewCurrent,
                         onLevelsChange = viewModel::setReviewLevels,
                     )
                     MainSection.DICTATION -> {
-                        BackHandler(enabled = true) {
-                            if (state.dictationDirty) viewModel.requestDictationLeave()
-                            else viewModel.selectSection(MainSection.DASHBOARD)
-                        }
                         if (state.dictationLoading) {
                             DictationLoadingOverlay()
                         } else {
@@ -897,14 +866,6 @@ fun LexiTrackApp(
                                 state = state,
                                 onToggleSelection = viewModel::toggleDictationSelection,
                                 onSetSelection = viewModel::setDictationSelection,
-                                onSetGroup = viewModel::setDictationGroup,
-                                onSetManualMode = viewModel::setDictationManualMode,
-                                onSelectRangeToHere = viewModel::selectDictationRangeToHere,
-                                onEndRange = viewModel::endDictationRange,
-                                onSetScrollPosition = viewModel::setDictationScrollPosition,
-                                onSaveDraft = viewModel::saveDictationDraft,
-                                onClearDraft = viewModel::clearDictationSelection,
-                                onConfigChange = viewModel::updateDictationConfig,
                                 onBuild = { options, count, group, includeEvaluated, manual, customExample ->
                                     viewModel.buildDictation(options, count, group, includeEvaluated, manual, customExample)
                                     dictationPreviewOpen = true
@@ -967,15 +928,6 @@ fun LexiTrackApp(
             onPointerActiveChange = { petPointerActive = it },
             preferredActive = isMainPetWindowVisible(petWindows),
         )
-        RewardEffectsCanvas(
-            windowOrigin = petViewportOrigin,
-            modifier = Modifier.fillMaxSize(),
-        )
-        RewardEffectsAnimator(
-            controller = rewardEffectsController,
-            coordinator = petWindowCoordinator,
-            petHalfSizePx = petHalfSizePx,
-        )
 
         state.importReport?.let { report ->
             ImportReportDialog(report, viewModel::dismissImportReport)
@@ -1020,50 +972,6 @@ fun LexiTrackApp(
                 onFinish = { mark, dontAskAgain ->
                     dictationMarkOpen = false
                     viewModel.finishDictationMark(mark, dontAskAgain)
-                },
-            )
-        }
-        if (state.dictationLeaveRequested) {
-            PetAlertDialog(
-                petId = "dictation-leave",
-                onDismissRequest = viewModel::dismissDictationLeavePrompt,
-                title = { Text("保存默写选择") },
-                text = { Text("默写纸有未保存的选择，是否保存？") },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.confirmDictationLeave(save = true) }) { Text("保存") }
-                },
-                dismissButton = {
-                    Row {
-                        TextButton(onClick = { viewModel.confirmDictationLeave(save = false) }) { Text("不保存") }
-                        TextButton(onClick = viewModel::dismissDictationLeavePrompt) { Text("继续编辑") }
-                    }
-                },
-            )
-        }
-        state.dictationSyncConflict?.let { conflict ->
-            PetAlertDialog(
-                petId = "dictation-sync-conflict",
-                onDismissRequest = viewModel::dismissDictationSyncConflict,
-                title = { Text("默写选择同步冲突") },
-                text = {
-                    val localCount = conflict.local.draft?.selectedIds?.size ?: 0
-                    val remoteCount = conflict.remote.draft?.selectedIds?.size ?: 0
-                    Text("本机有 $localCount 个已选词，远端有 $remoteCount 个已选词。请选择要保留的版本。")
-                },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.resolveDictationSyncConflict(useRemote = true) }) {
-                        Text("使用远端")
-                    }
-                },
-                dismissButton = {
-                    Row {
-                        TextButton(onClick = { viewModel.resolveDictationSyncConflict(useRemote = false) }) {
-                            Text("保留本机")
-                        }
-                        TextButton(onClick = viewModel::dismissDictationSyncConflict) {
-                            Text("稍后处理")
-                        }
-                    }
                 },
             )
         }
@@ -1547,7 +1455,7 @@ private fun StudyScreen(
     card: VocabularyEntry?,
     revealed: Boolean,
     onReveal: () -> Unit,
-    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
+    onRate: (ReviewRating) -> Unit,
     title: String,
     emptyTitle: String,
     emptyMessage: String,
@@ -1623,7 +1531,7 @@ private fun ReviewScreen(
     state: MainUiState,
     onStart: () -> Unit,
     onReveal: () -> Unit,
-    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
+    onRate: (ReviewRating) -> Unit,
     onLevelsChange: (Set<String>) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
@@ -1747,7 +1655,7 @@ private fun LevelFilterRow(
 @Composable
 private fun RevealedCardContent(
     card: VocabularyEntry,
-    onRate: (ReviewRating, RewardEffectOrigin) -> Unit,
+    onRate: (ReviewRating) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -1814,50 +1722,21 @@ private fun RevealedCardContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN, it) }
-            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD, it) }
-            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD, it) }
-            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY, it) }
+            RatingButton("忘记", BusinessRed, Modifier.weight(1f)) { onRate(ReviewRating.AGAIN) }
+            RatingButton("模糊", BusinessAmber, Modifier.weight(1f)) { onRate(ReviewRating.HARD) }
+            RatingButton("认识", BrandTeal, Modifier.weight(1f)) { onRate(ReviewRating.GOOD) }
+            RatingButton("很熟", BrandNavy, Modifier.weight(1f)) { onRate(ReviewRating.EASY) }
         }
     }
 }
 
 @Composable
-private fun RatingButton(
-    label: String,
-    color: Color,
-    modifier: Modifier,
-    onClick: (RewardEffectOrigin) -> Unit,
-) {
+private fun RatingButton(label: String, color: Color, modifier: Modifier, onClick: () -> Unit) {
     val registerPetTarget = LocalRegisterPetTarget.current
-    val hostView = LocalView.current
-    var bounds by remember { mutableStateOf(Rect.Zero) }
-    var pointerDown by remember { mutableStateOf<RatingPointerDown?>(null) }
     Button(
-        onClick = {
-            val now = SystemClock.uptimeMillis()
-            val origin = resolveRatingOrigin(pointerDown, bounds, now)
-            pointerDown = null
-            onClick(origin)
-        },
+        onClick = onClick,
         modifier = modifier
             .heightIn(min = 58.dp)
-            .onGloballyPositioned { coordinates -> bounds = coordinates.boundsOnScreen(hostView) }
-            .pointerInput(bounds) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(
-                        requireUnconsumed = false,
-                        pass = PointerEventPass.Initial,
-                    )
-                    pointerDown = RatingPointerDown(
-                        origin = RewardEffectOrigin(
-                            x = bounds.left + down.position.x,
-                            y = bounds.top + down.position.y,
-                        ),
-                        capturedAtUptimeMs = SystemClock.uptimeMillis(),
-                    )
-                }
-            }
             .petTarget(registerPetTarget, "rating-${label.hashCode()}", PetTargetKind.CONTROL),
         colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.White),
         shape = RoundedCornerShape(8.dp),
@@ -2001,14 +1880,6 @@ private fun DictationScreen(
     state: MainUiState,
     onToggleSelection: (String) -> Unit,
     onSetSelection: (Collection<String>, Boolean) -> Unit,
-    onSetGroup: (String, Boolean) -> Unit,
-    onSetManualMode: (Boolean) -> Unit,
-    onSelectRangeToHere: (String, String) -> Unit,
-    onEndRange: (String?) -> Unit,
-    onSetScrollPosition: (String, Float) -> Unit,
-    onSaveDraft: () -> Unit,
-    onClearDraft: () -> Unit,
-    onConfigChange: (Int, Boolean, Set<DictationFormat>, Int, Set<DictationMissingField>, Boolean, Boolean, Boolean, String) -> Unit,
     onBuild: (DictationDocumentOptions, Int, String, Boolean, Boolean, String) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
@@ -2021,70 +1892,9 @@ private fun DictationScreen(
     var customExample by remember { mutableStateOf("") }
     var includeEvaluated by remember { mutableStateOf(false) }
     var countText by remember { mutableStateOf("10") }
-    var groupNavigation by remember(state.dictationManualMode, state.dictationScopeGroup, state.dictationOpenGroup) {
-        mutableStateOf(
-            DictationGroupNavigation(
-                manual = state.dictationManualMode,
-                scopeGroup = state.dictationScopeGroup,
-                openGroup = state.dictationOpenGroup,
-            ),
-        )
-    }
+    var groupNavigation by remember { mutableStateOf(DictationGroupNavigation()) }
     var countError by remember { mutableStateOf(false) }
     var confirmationRequested by remember { mutableStateOf<Int?>(null) }
-    var configSyncReady by remember { mutableStateOf(false) }
-    var suppressConfigSync by remember { mutableStateOf(false) }
-
-    // Hydrate local Compose controls exactly once after the ViewModel has
-    // restored the persisted draft. Subsequent edits stay presentation-local
-    // until the effect below mirrors them into the ViewModel state.
-    LaunchedEffect(state.dictationDraftRestored, state.dictationDraftRestoreGeneration) {
-        if (state.dictationDraftRestored) {
-            suppressConfigSync = true
-            formats = state.dictationFormats
-            fontSizeText = state.dictationFontSizePt.toString()
-            missingFields = state.dictationMissingFields
-            showInitial = state.dictationShowInitial
-            includeExamples = state.dictationIncludeExamples
-            includeExampleChinese = state.dictationIncludeExampleChinese
-            customExample = state.dictationCustomExample
-            includeEvaluated = state.dictationIncludeEvaluated
-            countText = state.dictationCount.toString()
-            suppressConfigSync = false
-        }
-        configSyncReady = true
-    }
-    LaunchedEffect(formats, fontSizeText, missingFields, showInitial, includeExamples,
-        includeExampleChinese, customExample, includeEvaluated, countText) {
-        if (configSyncReady && !suppressConfigSync) {
-            onConfigChange(
-                countText.toIntOrNull() ?: 1,
-                includeEvaluated,
-                formats,
-                fontSizeText.toIntOrNull() ?: 12,
-                missingFields,
-                showInitial,
-                includeExamples,
-                includeExampleChinese,
-                customExample,
-            )
-        }
-    }
-
-    fun saveDraft() {
-        onConfigChange(
-            countText.toIntOrNull() ?: 1,
-            includeEvaluated,
-            formats,
-            fontSizeText.toIntOrNull() ?: 12,
-            missingFields,
-            showInitial,
-            includeExamples,
-            includeExampleChinese,
-            customExample,
-        )
-        onSaveDraft()
-    }
 
     val manual = groupNavigation.manual
     val dictationScope = groupNavigation.scopeGroup
@@ -2127,17 +1937,7 @@ private fun DictationScreen(
     }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown &&
-                    event.key == Key.S &&
-                    (event.isCtrlPressed || event.isMetaPressed)
-                ) {
-                    saveDraft()
-                    true
-                } else false
-            },
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -2164,10 +1964,7 @@ private fun DictationScreen(
                 onCountChange = { countText = it.filter(Char::isDigit); countError = false },
                 countError = countError,
                 manual = manual,
-                onManualChange = {
-                    groupNavigation = setDictationGroupMode(groupNavigation, it)
-                    onSetManualMode(it)
-                },
+                onManualChange = { groupNavigation = setDictationGroupMode(groupNavigation, it) },
                 preparing = state.dictationPreparing,
                 onSubmit = ::submit,
             )
@@ -2213,10 +2010,7 @@ private fun DictationScreen(
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(
-                                onClick = {
-                                    groupNavigation = closeDictationGroup(groupNavigation)
-                                    onSetGroup(activeGroup, false)
-                                },
+                                onClick = { groupNavigation = closeDictationGroup(groupNavigation) },
                             ) { Text("← 返回词书") }
                             Spacer(Modifier.width(8.dp))
                             Text(
@@ -2229,37 +2023,25 @@ private fun DictationScreen(
                                 Button(
                                     onClick = {
                                         groupNavigation = setDictationGroupMode(groupNavigation, manual = true)
-                                        onSetManualMode(true)
                                     },
                                 ) { Text("从该词书手选") }
                             }
                         }
                         if (!manual) {
                             Text(
-                                "当前为随机候选范围；可跨分组勾选词条，取样时无重复。",
+                                "当前为随机范围预览，词条表只读。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MutedInk,
                             )
                         }
                         Spacer(Modifier.height(4.dp))
-                        key(activeGroup, manual) {
-                            DictationSelectionTable(
-                                entries = dictationEntriesInGroup(candidateEntries, activeGroup).sortedBy { it.id },
-                                selectedIds = if (manual) selectedCandidateIds else (state.dictationRandomCandidateIds ?: emptySet())
-                                    .map(::normalizeWordId)
-                                    .toSet()
-                                    .intersect(candidateEntries.mapTo(mutableSetOf()) { normalizeWordId(it.id) }),
-                                selectionEnabled = true,
-                                anchorId = state.dictationGroupDrafts[activeGroup]?.anchorId,
-                                endpointId = state.dictationGroupDrafts[activeGroup]?.endpointId,
-                                scrollPosition = state.dictationGroupDrafts[activeGroup]?.scrollPosition ?: 0f,
-                                restoreScroll = state.dictationDraftRestored,
-                                onToggleSelection = onToggleSelection,
-                                onSetSelection = onSetSelection,
-                                onSelectRangeToHere = { onSelectRangeToHere(activeGroup, it) },
-                                onScrollPositionChange = { onSetScrollPosition(activeGroup, it) },
-                            )
-                        }
+                        DictationSelectionTable(
+                            entries = dictationEntriesInGroup(candidateEntries, activeGroup),
+                            selectedIds = if (manual) state.dictationSelectedIds else emptySet(),
+                            selectionEnabled = manual,
+                            onToggleSelection = onToggleSelection,
+                            onSetSelection = onSetSelection,
+                        )
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             groups.forEach { group ->
@@ -2268,36 +2050,10 @@ private fun DictationScreen(
                                     selected = !manual && group.key == dictationScope,
                                     onClick = {
                                         groupNavigation = openDictationGroup(groupNavigation, group.key)
-                                        onSetGroup(group.key, true)
-                                    },
-                                    selectedCount = state.dictationGroupDrafts[group.key]?.selectedIds?.size ?: 0,
-                                    unavailableCount = if (includeEvaluated) 0 else {
-                                        val groupSelected = state.dictationGroupDrafts[group.key]?.selectedIds.orEmpty()
-                                        val allGroupIds = dictationEntriesInGroup(state.dictationEntries, group.key).mapTo(mutableSetOf()) { it.id }
-                                        val availableGroupIds = dictationEntriesInGroup(candidateEntries, group.key).mapTo(mutableSetOf()) { it.id }
-                                        (groupSelected intersect allGroupIds subtract availableGroupIds).size
                                     },
                                 )
                             }
                         }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = ::saveDraft) { Text("保存选择") }
-                        TextButton(onClick = onClearDraft) { Text("清空本次选择") }
-                        if (state.dictationGroupDrafts[dictationGroup ?: dictationScope]?.anchorId != null) {
-                            TextButton(onClick = { onEndRange(dictationGroup ?: dictationScope) }) { Text("结束范围选择") }
-                        }
-                    }
-                    state.dictationSyncMessage?.let { message ->
-                        Text(
-                            message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (state.dictationSyncStatus == com.lexitrack.learning.application.DictationDraftSyncStatus.CONFLICT) {
-                                BusinessRed
-                            } else {
-                                MutedInk
-                            },
-                        )
                     }
                     if (candidateEntries.isEmpty()) {
                         Text("当前筛选没有可用词条。", style = MaterialTheme.typography.bodyMedium, color = BusinessAmber)
@@ -2347,35 +2103,11 @@ private fun DictationSelectionTable(
     entries: List<VocabularyEntry>,
     selectedIds: Set<String>,
     selectionEnabled: Boolean = true,
-    anchorId: String? = null,
-    endpointId: String? = null,
-    scrollPosition: Float = 0f,
-    restoreScroll: Boolean = false,
     onToggleSelection: (String) -> Unit,
     onSetSelection: (Collection<String>, Boolean) -> Unit,
-    onSelectRangeToHere: (String) -> Unit = {},
-    onScrollPositionChange: (Float) -> Unit = {},
 ) {
     val rows = remember(entries) { entries.map(VocabularyEntry::toDictationSelectionRow) }
     val tableScrollState = rememberScrollState()
-    val listState = rememberLazyListState(
-        initialFirstVisibleItemIndex = remember(entries, restoreScroll) {
-            ((scrollPosition.coerceIn(0f, 1f)) * (rows.size - 1).coerceAtLeast(0)).roundToInt()
-        },
-    )
-    LaunchedEffect(listState, rows.size) {
-        snapshotFlow {
-            val maxIndex = (rows.size - 1).coerceAtLeast(0)
-            if (maxIndex == 0) 0f else {
-                val index = listState.firstVisibleItemIndex.coerceIn(0, maxIndex)
-                (index.toFloat() / maxIndex).coerceIn(0f, 1f)
-            }
-        }
-            .distinctUntilChanged()
-            // The initial emission reflects restored state, not a user edit.
-            .drop(1)
-            .collect(onScrollPositionChange)
-    }
     val rowBounds = remember(entries) { mutableStateOf<Map<String, Rect>>(emptyMap()) }
     val containerTop = remember { mutableStateOf(0f) }
     Box(
@@ -2427,23 +2159,15 @@ private fun DictationSelectionTable(
                 HorizontalDivider()
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().heightIn(max = 330.dp),
-                    state = listState,
                 ) {
                     items(rows, key = { it.id }) { row ->
                         DictationSelectionTableRow(
                             row = row,
-                            selected = normalizeWordId(row.id) in selectedIds.map(::normalizeWordId).toSet(),
+                            selected = row.id in selectedIds,
                             selectionEnabled = selectionEnabled,
                             onToggleSelection = { onToggleSelection(row.id) },
-                            anchor = anchorId,
-                            endpoint = endpointId,
-                            onSelectRangeToHere = { onSelectRangeToHere(row.id) },
                             onBounds = { id, rect ->
-                                rowBounds.value = if (rect == null) {
-                                    rowBounds.value - id
-                                } else {
-                                    rowBounds.value + (id to rect)
-                                }
+                                rowBounds.value = rowBounds.value + (id to rect)
                             },
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -2477,68 +2201,41 @@ private fun DictationSelectionTableRow(
     selected: Boolean,
     selectionEnabled: Boolean,
     onToggleSelection: () -> Unit,
-    onBounds: (String, Rect?) -> Unit,
-    anchor: String? = null,
-    endpoint: String? = null,
-    onSelectRangeToHere: () -> Unit = {},
+    onBounds: (String, Rect) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
-    DisposableEffect(row.id) {
-        onDispose { onBounds(row.id, null) }
-    }
-    Column(modifier = Modifier.width(DictationTableWidth)) {
-        if (anchor != null) {
-            // The cyan guide is deliberately present only while a valid
-            // anchor exists; it remains available for off-screen rows as the
-            // full LazyColumn is the source of truth.
-            Row(
-                modifier = Modifier.fillMaxWidth().height(26.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HorizontalDivider(
-                    modifier = Modifier.weight(1f),
-                    color = if (endpoint?.let(::normalizeWordId) == normalizeWordId(row.id)) BrandTeal else BrandTeal.copy(alpha = 0.35f),
-                    thickness = 2.dp,
-                )
-                TextButton(
-                    onClick = onSelectRangeToHere,
-                    modifier = Modifier.height(28.dp),
-                ) { Text("→ 选取到这里", color = BrandTeal, style = MaterialTheme.typography.labelSmall) }
-            }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .toggleable(
-                    value = selected,
-                    enabled = selectionEnabled,
-                    role = Role.Checkbox,
-                    onValueChange = { onToggleSelection() },
-                )
-                .onGloballyPositioned { onBounds(row.id, it.boundsInWindow()) }
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DictationTableText(row.word, DictationWordColumnWidth, FontWeight.Medium)
-            DictationTableText(row.meaning, DictationMeaningColumnWidth)
-            DictationTableText(row.tagsText, DictationTagsColumnWidth, color = BrandTeal)
-            DictationTableText(
-                row.evaluationStatus,
-                DictationStatusColumnWidth,
-                color = if (row.isEvaluated) Color.Black else BusinessRed,
-                textAlign = TextAlign.Center,
+    Row(
+        modifier = Modifier
+            .width(DictationTableWidth)
+            .toggleable(
+                value = selected,
+                enabled = selectionEnabled,
+                role = Role.Checkbox,
+                onValueChange = { onToggleSelection() },
             )
-            Box(modifier = Modifier.width(DictationSelectionColumnWidth), contentAlignment = Alignment.Center) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    enabled = selectionEnabled,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .scale(1.25f)
-                        .petTarget(registerPetTarget, "dictation-select-${row.id}", PetTargetKind.CONTROL),
-                )
-            }
+            .onGloballyPositioned { onBounds(row.id, it.boundsInWindow()) }
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DictationTableText(row.word, DictationWordColumnWidth, FontWeight.Medium)
+        DictationTableText(row.meaning, DictationMeaningColumnWidth)
+        DictationTableText(row.tagsText, DictationTagsColumnWidth, color = BrandTeal)
+        DictationTableText(
+            row.evaluationStatus,
+            DictationStatusColumnWidth,
+            color = if (row.isEvaluated) Color.Black else BusinessRed,
+            textAlign = TextAlign.Center,
+        )
+        Box(modifier = Modifier.width(DictationSelectionColumnWidth), contentAlignment = Alignment.Center) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = null,
+                enabled = selectionEnabled,
+                modifier = Modifier
+                    .size(48.dp)
+                    .scale(1.25f)
+                    .petTarget(registerPetTarget, "dictation-select-${row.id}", PetTargetKind.CONTROL),
+            )
         }
     }
 }
@@ -2947,13 +2644,7 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun VocabularyGroupCard(
-    group: LibraryGroup,
-    selected: Boolean = false,
-    selectedCount: Int = 0,
-    unavailableCount: Int = 0,
-    onClick: () -> Unit,
-) {
+private fun VocabularyGroupCard(group: LibraryGroup, selected: Boolean = false, onClick: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
@@ -2967,10 +2658,7 @@ private fun VocabularyGroupCard(
         ) {
             Text(group.label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = Ink)
             Text(
-                "${group.count} 词" +
-                    (if (selected) " · 已选" else "") +
-                    (if (selectedCount > 0) " · 已选 $selectedCount" else "") +
-                    (if (unavailableCount > 0) " · 暂不可用 $unavailableCount" else ""),
+                "${group.count} 词" + if (selected) " · 已选" else "",
                 style = MaterialTheme.typography.labelMedium,
                 color = MutedInk,
             )
@@ -3238,7 +2926,6 @@ private fun SettingsScreen(
     markMode: MarkMode,
     onMarkModeChange: (MarkMode) -> Unit,
 ) {
-    val safeFontScale = sanitizeFontScale(fontScale)
     var reminderEnabledDraft by remember(reminderEnabled) { mutableStateOf(reminderEnabled) }
     val registerPetTarget = LocalRegisterPetTarget.current
     var reminderIntervalDraft by remember(reminderIntervalMinutes) {
@@ -3261,12 +2948,12 @@ private fun SettingsScreen(
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("界面字号", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    Text("${(safeFontScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium, color = BrandTeal)
+                    Text("${(fontScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium, color = BrandTeal)
                 }
                 Slider(
-                    value = safeFontScale,
-                    onValueChange = { onFontScaleChange(sanitizeFontScale(it)) },
-                    valueRange = MIN_FONT_SCALE..MAX_FONT_SCALE,
+                    value = fontScale,
+                    onValueChange = onFontScaleChange,
+                    valueRange = 0.9f..1.4f,
                     steps = 4,
                     modifier = Modifier.petTarget(registerPetTarget, "settings-font-slider", PetTargetKind.CONTROL),
                 )

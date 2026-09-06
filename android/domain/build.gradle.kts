@@ -7,7 +7,6 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 }
@@ -33,14 +32,6 @@ tasks.test {
     systemProperty(
         "pet.companion.golden.path",
         rootProject.file("../shared/contracts/pet-companion-golden-v1.json").absolutePath,
-    )
-    systemProperty(
-        "pet.vitals.golden.path",
-        rootProject.file("../shared/contracts/pet-vitals-golden-v1.json").absolutePath,
-    )
-    systemProperty(
-        "pet.appearance.golden.path",
-        rootProject.file("../shared/contracts/pet-appearance-golden-v1.json").absolutePath,
     )
     systemProperty(
         "vocabulary.groups.golden.path",

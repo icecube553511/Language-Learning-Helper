@@ -7,10 +7,9 @@ import tempfile
 import threading
 
 from domain.models import LearntWord
-from domain.pet_vitals import PetVitals
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 
 
 class JsonWordsLearntRepository:
@@ -20,7 +19,6 @@ class JsonWordsLearntRepository:
         self.state_path = self.data_dir / "Words_Learnt.json"
         self._lock = threading.RLock()
         self._words: dict[str, LearntWord] = {}
-        self._pet_vitals = PetVitals()
         self._load()
 
     def _load(self) -> None:
@@ -32,7 +30,6 @@ class JsonWordsLearntRepository:
             return
         if not isinstance(payload, dict):
             return
-        self._pet_vitals = PetVitals.from_dict(payload.get("petVitals"))
         raw_words = payload.get("wordsLearnt", {})
         if isinstance(raw_words, list):
             raw_words = {
@@ -41,7 +38,7 @@ class JsonWordsLearntRepository:
                 if isinstance(item, dict) and item.get("wordId")
             }
         if not isinstance(raw_words, dict):
-            raw_words = {}
+            return
         for word_id, raw in raw_words.items():
             if not word_id or not isinstance(raw, dict):
                 continue
@@ -57,7 +54,6 @@ class JsonWordsLearntRepository:
                 word_id: word.to_dict()
                 for word_id, word in sorted(self._words.items())
             },
-            "petVitals": self._pet_vitals.to_dict(),
         }
 
     def _save_locked(self) -> None:
@@ -99,39 +95,3 @@ class JsonWordsLearntRepository:
             if added:
                 self._save_locked()
         return added
-
-    def pet_vitals(self) -> PetVitals:
-        with self._lock:
-            return self._pet_vitals
-
-    def get_pet_vitals(self) -> PetVitals:
-        return self.pet_vitals()
-
-    def save_pet_vitals(self, vitals: PetVitals) -> None:
-        with self._lock:
-            previous = self._pet_vitals
-            self._pet_vitals = vitals
-            try:
-                self._save_locked()
-            except BaseException:
-                self._pet_vitals = previous
-                raise
-
-    def save_learning_outcome(self, word: LearntWord, vitals: PetVitals) -> None:
-        """Atomically replace one marker-bearing learnt word and global vitals."""
-        with self._lock:
-            previous_word = self._words.get(word.word_id)
-            previous_vitals = self._pet_vitals
-            self._words[word.word_id] = word
-            self._pet_vitals = vitals
-            try:
-                # One payload, one temporary file and one os.replace make the
-                # marker/vitals outcome indivisible across process restarts.
-                self._save_locked()
-            except BaseException:
-                if previous_word is None:
-                    self._words.pop(word.word_id, None)
-                else:
-                    self._words[word.word_id] = previous_word
-                self._pet_vitals = previous_vitals
-                raise

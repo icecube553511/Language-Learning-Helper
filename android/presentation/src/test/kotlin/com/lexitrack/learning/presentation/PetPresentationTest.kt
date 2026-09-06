@@ -350,52 +350,6 @@ class PetPresentationTest {
     }
 
     @Test
-    fun `same-window target refresh clears stale references without resetting motion`() {
-        val initial = com.lexitrack.learning.domain.PetState(
-            position = PetPoint(180f, 90f),
-            mode = PetMode.ROLL,
-            targetId = "study-card",
-            idleTicksRemaining = 7,
-            pathIndex = 3,
-            pathDirection = -1,
-            rollCorners = 1,
-            avoidTargetId = "old-target",
-            movementSpeed = 6.5f,
-            verticalVelocity = 12f,
-            facing = PetFacing.LEFT,
-            horizontalVelocity = 44f,
-            curveVelocity = 2.25f,
-            bouncesRemaining = 2,
-        )
-        val coordinator = PetWindowCoordinator(initial)
-        coordinator.registerWindow(
-            PetWindow("main", PetRect(0f, 0f, 400f, 300f)),
-            active = true,
-        )
-
-        coordinator.updateTargets(
-            "main",
-            listOf(PetTarget("replacement", PetTargetKind.CONTROL, PetRect(40f, 40f, 120f, 48f))),
-        )
-
-        val updated = coordinator.state
-        assertEquals(initial.position, updated.position)
-        assertEquals(initial.mode, updated.mode)
-        assertEquals(initial.movementSpeed, updated.movementSpeed, 0f)
-        assertEquals(initial.verticalVelocity, updated.verticalVelocity, 0f)
-        assertEquals(initial.horizontalVelocity, updated.horizontalVelocity, 0f)
-        assertEquals(initial.bouncesRemaining, updated.bouncesRemaining)
-        assertEquals(initial.facing, updated.facing)
-        assertNull(updated.targetId)
-        assertEquals(initial.idleTicksRemaining, updated.idleTicksRemaining)
-        assertEquals(0, updated.pathIndex)
-        assertEquals(1, updated.pathDirection)
-        assertEquals(0, updated.rollCorners)
-        assertNull(updated.avoidTargetId)
-        assertNull(updated.curveVelocity)
-    }
-
-    @Test
     fun `window coordinator predicts a fast fling before local wall reflection`() {
         val coordinator = PetWindowCoordinator(
             com.lexitrack.learning.domain.PetState(

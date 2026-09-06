@@ -5,9 +5,6 @@
 `pet_image.png` 是冰子（Bingzi）的 canonical 多姿态源图；透明运行姿态由
 `python tools/prepare_pet_asset.py` 生成到 `shared/assets/pets/bingzi.png`，并将
 逐像素水平镜像生成到 `shared/assets/pets/bingzi-left.png`。
-冰子新增状态图只放在 `shared/assets/branding/pet_states/`，由
-`python tools/prepare_pet_appearance_assets.py` 校验并生成到
-`shared/assets/pets/states/`；当前状态资源缺失，功能保持 disabled。
 平台 UI 只加载运行资源，宠物位置和动画不进入 domain/application 或持久化。
 
 平台图标应在各自最外层资源目录中由该文件生成，避免 `domain`、`application` 或词库内容依赖品牌图片。生成 Android adaptive icon 或 Windows ICO 时需保留此源文件，不得反向用低分辨率派生图覆盖。

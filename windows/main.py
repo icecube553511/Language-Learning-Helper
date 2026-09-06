@@ -14,11 +14,6 @@ from infrastructure.csv_importer import CsvVocabularyImporter
 from infrastructure.dictation_exporter import DictationDocumentExporter
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
-from infrastructure.dictation_draft_sync import (
-    DictationDraftSyncConfig,
-    DisabledDictationDraftSync,
-    HttpDictationDraftSync,
-)
 from presentation.app import LexiTrackApp, run_gui_smoke
 
 
@@ -59,24 +54,11 @@ def build_app(data_dir: Path) -> LexiTrackApp:
     catalog = loader.load()
     repository = JsonLearningRepository(data_dir, catalog)
     words_learnt_repository = JsonWordsLearntRepository(data_dir)
-    sync_config = DictationDraftSyncConfig(
-        endpoint=os.environ.get("LEXITRACK_SYNC_ENDPOINT"),
-        account_id=os.environ.get("LEXITRACK_SYNC_ACCOUNT_ID"),
-        bearer_token=os.environ.get("LEXITRACK_SYNC_TOKEN"),
-    )
-    # Online transport is opt-in.  Incomplete or non-HTTPS environment
-    # configuration stays a no-network local-only adapter.
-    sync_adapter = (
-        HttpDictationDraftSync(sync_config)
-        if sync_config.configured
-        else DisabledDictationDraftSync(sync_config)
-    )
     service = LearningService(
         repository,
         CsvVocabularyImporter(),
         words_learnt_repository,
         DictationDocumentExporter(),
-        dictation_draft_sync=sync_adapter,
     )
     return LexiTrackApp(
         service=service,
@@ -86,7 +68,6 @@ def build_app(data_dir: Path) -> LexiTrackApp:
         catalog_error=loader.error,
         pet_asset_path=resources / "shared" / "assets" / "pets" / "bingzi.png",
         pet_asset_left_path=resources / "shared" / "assets" / "pets" / "bingzi-left.png",
-        dictation_sync_account_id=sync_config.account_id if sync_config.configured else None,
     )
 
 

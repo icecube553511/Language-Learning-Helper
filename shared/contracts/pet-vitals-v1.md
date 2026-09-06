@@ -23,10 +23,6 @@ their presentation.
 Balance values are centralized constants because they are expected to be
 tuned later. Satiety and food reserve are finite floating-point values. The
 canonical defaults are satiety `50.0`, food reserve `0.0`, and mood `calm`.
-Food reserve is owned by an explicit immutable `FoodJar` domain value object;
-`PetVitals` composes that object rather than treating the jar as presentation
-or persistence state. The persisted `foodReserve` scalar remains the stable
-wire shape so existing stores migrate without a nested-schema rewrite.
 
 - Satiety is clamped to `0.0..100.0`.
 - Food reserve is clamped to `0.0..200.0`.
@@ -47,17 +43,6 @@ from food reserve toward satiety `50.0`. The transfer is
 `min(50.0 - satiety, foodReserve)`. If reserve is insufficient, all remaining
 reserve is consumed and satiety may remain below `50.0`. At exactly `30.0`, no
 automatic transfer occurs.
-
-The existing scheduler/history repository and the learnt-word repository are
-separate persistence boundaries. One learnt-word marker and `PetVitals`
-(including its `FoodJar`) are committed together; this contract does not claim
-that scheduler/history and learnt-word files form one cross-repository
-transaction. Within a running process, adapters must not expose cancellation
-between a successful durable commit and the matching in-memory publication;
-the review savepoint must remain available so the application can compensate a
-failed second write. This does not add crash atomicity across stores.
-Presentation emits feedback and advances the card only after the application
-call has returned successfully.
 
 ## Temporary review marker
 
@@ -103,14 +88,3 @@ independently. Each accepted zero-reward `again`/`hard` action still emits
 feedback. Animation state pauses while its host is not visible and is cancelled
 only when the host is destroyed or no active pet target exists for the
 configured timeout.
-
-The physical `orbRadius` remains the contact radius. The shared `visual` tuning
-values in the golden contract make the transient feedback observable: the
-visible orb uses radius `16`, its glow reaches `34`, the trail core is `5..12`
-wide and scales with speed, and burst particles use radius `4` with a `10`-pixel
-glow. These are presentation constants deliberately kept centralized for later
-tuning; they do not alter the trajectory or persistence rules.
-
-The shared trajectory vectors fix the end of the 180 ms spiral at `(18, 0)`
-relative to the activation point and require interpolation at the oldest trail
-boundary, so the rendered polyline does not exceed the speed-derived length.

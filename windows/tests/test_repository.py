@@ -1,23 +1,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 
 WINDOWS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WINDOWS_DIR))
 
-from domain.dictation import DictationDraft, DictationDraftSyncMetadata, MarkMode
-from domain.dictation_sync import make_sync_envelope
+from domain.dictation import MarkMode
 from domain.models import ExampleSentence, LearntWord, ReviewState, VocabularyEntry
-from domain.pet_vitals import Mood, PetVitals, ReviewRecoveryTag
 from infrastructure.catalog import CatalogLoader
-from infrastructure.draft_cipher import DraftCipherError
 from infrastructure.repository import JsonLearningRepository
 from infrastructure.words_learnt_repository import JsonWordsLearntRepository
 
@@ -66,50 +61,6 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(loaded.get_reminder_interval_minutes(), 2.75)
         self.assertEqual(sum(len(v) for v in loaded._activity.values()), 1)
 
-    def test_review_outcome_and_activity_share_one_replace_and_savepoint_restores(self):
-        directory = Path(self.temp.name)
-        repo = JsonLearningRepository(directory, [sample_entry()])
-        state = ReviewState(
-            "serene",
-            state="review",
-            interval_days=3,
-            due_at_utc=10_000,
-            last_reviewed_at_utc=1_000,
-        )
-        reviewed_at = 1704067200.0
-        local_day = datetime.fromtimestamp(reviewed_at).strftime("%Y-%m-%d")
-        real_replace = __import__("os").replace
-
-        with mock.patch(
-            "infrastructure.repository.os.replace",
-            wraps=real_replace,
-        ) as replace:
-            savepoint = repo.save_review_outcome(state, reviewed_at)
-
-        self.assertEqual(replace.call_count, 1)
-        loaded = JsonLearningRepository(directory, [sample_entry()])
-        self.assertEqual(loaded.review_state("serene"), state)
-        self.assertEqual(loaded.reviewed_count_for_local_day(local_day), 1)
-
-        repo.restore_review_savepoint(savepoint)
-        restored = JsonLearningRepository(directory, [sample_entry()])
-        self.assertEqual(restored.review_state("serene"), ReviewState("serene"))
-        self.assertEqual(restored.reviewed_count_for_local_day(local_day), 0)
-
-    def test_stale_review_savepoint_cannot_overwrite_a_newer_rating(self):
-        directory = Path(self.temp.name)
-        repo = JsonLearningRepository(directory, [sample_entry()])
-        first = ReviewState("serene", state="review", repetitions=1)
-        second = ReviewState("serene", state="review", repetitions=2)
-        stale = repo.save_review_outcome(first, 1704067200.0)
-        repo.save_review_outcome(second, 1704153600.0)
-
-        with self.assertRaises(RuntimeError):
-            repo.restore_review_savepoint(stale)
-
-        reloaded = JsonLearningRepository(directory, [sample_entry()])
-        self.assertEqual(reloaded.review_state("serene"), second)
-
     def test_reminder_interval_falls_back_and_is_bounded(self):
         directory = Path(self.temp.name)
         repo = JsonLearningRepository(directory)
@@ -117,23 +68,6 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(repo.get_reminder_interval_minutes(), 0.5)
         repo.set_reminder_interval_minutes(999)
         self.assertEqual(repo.get_reminder_interval_minutes(), 120.0)
-
-    def test_font_scale_falls_back_for_corrupt_and_non_finite_values(self):
-        directory = Path(self.temp.name) / "font-scale"
-        directory.mkdir()
-        (directory / "learning-state.json").write_text(
-            json.dumps({"settings": {"fontScale": "not-a-number"}}),
-            encoding="utf-8",
-        )
-        repo = JsonLearningRepository(directory)
-        self.assertEqual(repo.get_font_scale(), 1.0)
-
-        repo.set_font_scale(float("nan"))
-        self.assertEqual(repo.get_font_scale(), 1.0)
-        repo.set_font_scale(float("inf"))
-        self.assertEqual(repo.get_font_scale(), 1.0)
-        repo.set_font_scale(float("-inf"))
-        self.assertEqual(repo.get_font_scale(), 1.0)
 
     def test_catalog_gracefully_handles_missing_file(self):
         loader = CatalogLoader(Path(self.temp.name) / "missing.json")
@@ -179,15 +113,9 @@ class RepositoryTests(unittest.TestCase):
         loaded = JsonWordsLearntRepository(directory)
         self.assertEqual(loaded.learnt_word("serene"), LearntWord("serene", 0.8, 1000, 1000))
         payload = json.loads((directory / "Words_Learnt.json").read_text(encoding="utf-8"))
-        self.assertEqual(payload["schemaVersion"], 2)
+        self.assertEqual(payload["schemaVersion"], 1)
         self.assertIn("serene", payload["wordsLearnt"])
         self.assertEqual(payload["wordsLearnt"]["serene"]["reviewCount"], 0)
-        self.assertIsNone(payload["wordsLearnt"]["serene"]["reviewMarker"])
-        self.assertEqual(payload["petVitals"], {
-            "satiety": 50.0,
-            "foodReserve": 0.0,
-            "mood": "calm",
-        })
         learning_payload = json.loads((directory / "learning-state.json").read_text(encoding="utf-8"))
         self.assertNotIn("wordsLearnt", learning_payload)
 
@@ -209,90 +137,6 @@ class RepositoryTests(unittest.TestCase):
 
         self.assertEqual(JsonWordsLearntRepository(directory).learnt_word("serene").weight, 0.2)
 
-    def test_words_learnt_migrates_defaults_and_forgot_wins_marker_conflict(self):
-        directory = Path(self.temp.name)
-        path = directory / "Words_Learnt.json"
-        path.write_text(json.dumps({
-            "schemaVersion": 1,
-            "wordsLearnt": {
-                "serene": {
-                    "wordId": "serene",
-                    "weight": 0.8,
-                    "learntAtUtc": 1000,
-                    "lastReviewedAtUtc": 1000,
-                    "reviewMarkers": [
-                        ReviewRecoveryTag.VAGUE.value,
-                        ReviewRecoveryTag.FORGOT.value,
-                    ],
-                },
-            },
-        }), encoding="utf-8")
-
-        repository = JsonWordsLearntRepository(directory)
-
-        self.assertEqual(repository.pet_vitals(), PetVitals())
-        self.assertEqual(
-            repository.learnt_word("serene").review_marker,
-            ReviewRecoveryTag.FORGOT,
-        )
-        repository.save_learning_outcome(
-            repository.learnt_word("serene"),
-            PetVitals(82.5, 17.25, Mood.HAPPY),
-        )
-        persisted = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(
-            persisted["wordsLearnt"]["serene"]["reviewMarker"],
-            ReviewRecoveryTag.FORGOT.value,
-        )
-        self.assertNotIn("reviewMarkers", persisted["wordsLearnt"]["serene"])
-
-    def test_learning_outcome_uses_one_replace_and_survives_restart(self):
-        directory = Path(self.temp.name)
-        repository = JsonWordsLearntRepository(directory)
-        word = LearntWord(
-            "serene",
-            0.8,
-            1000,
-            1000,
-            review_marker=ReviewRecoveryTag.VAGUE,
-        )
-        real_replace = __import__("os").replace
-        with mock.patch(
-            "infrastructure.words_learnt_repository.os.replace",
-            wraps=real_replace,
-        ) as replace:
-            repository.save_learning_outcome(
-                word,
-                PetVitals(64.5, 12.75, Mood.EXCITED),
-            )
-
-        self.assertEqual(replace.call_count, 1)
-        loaded = JsonWordsLearntRepository(directory)
-        self.assertEqual(loaded.learnt_word("serene"), word)
-        self.assertEqual(loaded.pet_vitals(), PetVitals(64.5, 12.75, Mood.EXCITED))
-
-    def test_failed_learning_outcome_restores_in_memory_state(self):
-        directory = Path(self.temp.name)
-        repository = JsonWordsLearntRepository(directory)
-        original = LearntWord("serene", 0.8, 1000, 1000)
-        repository.save_learnt_word(original)
-
-        with mock.patch(
-            "infrastructure.words_learnt_repository.os.replace",
-            side_effect=OSError("replace failed"),
-        ):
-            with self.assertRaises(OSError):
-                repository.save_learning_outcome(
-                    original.with_review_marker(ReviewRecoveryTag.FORGOT),
-                    PetVitals(90.0, 10.0, Mood.HAPPY),
-                )
-
-        self.assertEqual(repository.learnt_word("serene"), original)
-        self.assertEqual(repository.pet_vitals(), PetVitals())
-        loaded = JsonWordsLearntRepository(directory)
-        self.assertEqual(loaded.learnt_word("serene"), original)
-        self.assertEqual(loaded.pet_vitals(), PetVitals())
-
     def test_tag_override_and_mark_mode_survive_restart_without_changing_catalog_entry(self):
         directory = Path(self.temp.name)
         built_in = sample_entry("serene")
@@ -306,224 +150,6 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(loaded.get_mark_mode(), MarkMode.NEVER)
         payload = json.loads((directory / "learning-state.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["tagOverrides"]["serene"], ["evaluated", "zk"])
-
-    def test_dictation_draft_survives_restart(self):
-        directory = Path(self.temp.name)
-        repo = JsonLearningRepository(directory)
-        draft = DictationDraft(
-            mode="random", scope_group="cet4", count=3,
-            selected_ids=("apple",),
-            group_anchors={"cet4": "apple"},
-            group_endpoints={"cet4": "banana"},
-            group_scroll_positions={"cet4": 0.4},
-        )
-        repo.save_dictation_draft(draft)
-        loaded = JsonLearningRepository(directory)
-        self.assertEqual(loaded.get_dictation_draft(), draft)
-        loaded.clear_dictation_draft()
-        self.assertIsNone(JsonLearningRepository(directory).get_dictation_draft())
-
-    def test_dictation_sync_metadata_survives_restart_after_draft_clear(self):
-        directory = Path(self.temp.name)
-        metadata = DictationDraftSyncMetadata("user-1", "opaque-9", 9)
-        repo = JsonLearningRepository(directory, draft_cipher=None)
-        repo.save_dictation_sync_metadata(metadata)
-        repo.clear_dictation_draft()
-        loaded = JsonLearningRepository(directory, draft_cipher=None)
-        self.assertEqual(loaded.get_dictation_draft(), None)
-        self.assertEqual(loaded.get_dictation_sync_metadata(), metadata)
-
-    def test_synced_snapshot_and_three_conflict_backups_are_encrypted_and_bounded(self):
-        class XorCipher:
-            def encrypt(self, value):
-                return bytes(byte ^ 0x3C for byte in value)
-
-            def decrypt(self, value):
-                return bytes(byte ^ 0x3C for byte in value)
-
-        directory = Path(self.temp.name)
-        repository = JsonLearningRepository(directory, draft_cipher=XorCipher())
-        synced = make_sync_envelope(
-            "user-1",
-            DictationDraft(custom_example="last-synced-secret"),
-            revision="synced-7",
-            updated_at_utc=7,
-        )
-        repository.save_last_synced_dictation_envelope(synced)
-        for revision in range(5):
-            repository.add_dictation_conflict_backup(make_sync_envelope(
-                "user-1",
-                DictationDraft(custom_example=f"conflict-secret-{revision}"),
-                revision=str(revision),
-                updated_at_utc=revision,
-            ))
-        repository.add_dictation_conflict_backup(make_sync_envelope(
-            "user-1",
-            DictationDraft(custom_example="conflict-secret-4"),
-            revision="4",
-            updated_at_utc=4,
-        ))
-
-        restarted = JsonLearningRepository(directory, draft_cipher=XorCipher())
-        self.assertEqual(
-            restarted.get_last_synced_dictation_envelope().canonical_json(),
-            synced.canonical_json(),
-        )
-        self.assertEqual(
-            [item.revision for item in restarted.get_dictation_conflict_backups()],
-            ["4", "3", "2"],
-        )
-        raw = (directory / "learning-state.json").read_text(encoding="utf-8")
-        self.assertNotIn("last-synced-secret", raw)
-        self.assertNotIn("conflict-secret", raw)
-
-    def test_dictation_draft_uses_injected_cipher_and_never_writes_plaintext(self):
-        class XorCipher:
-            def encrypt(self, value):
-                return bytes(byte ^ 0xA5 for byte in value)
-
-            def decrypt(self, value):
-                return bytes(byte ^ 0xA5 for byte in value)
-
-        directory = Path(self.temp.name)
-        draft = DictationDraft(custom_example="unique-draft-marker-7f3a")
-        repo = JsonLearningRepository(directory, draft_cipher=XorCipher())
-        repo.save_dictation_draft(draft)
-        raw = (directory / "learning-state.json").read_text(encoding="utf-8")
-        self.assertNotIn("unique-draft-marker-7f3a", raw)
-        payload = json.loads(raw)
-        stored = payload["settings"]["dictationDraft"]
-        self.assertEqual(stored["format"], "dpapi-v1")
-        self.assertIsInstance(stored["ciphertext"], str)
-        restored = JsonLearningRepository(directory, draft_cipher=XorCipher())
-        self.assertEqual(restored.get_dictation_draft(), draft)
-
-    def test_legacy_plaintext_draft_is_migrated_on_load(self):
-        class XorCipher:
-            def encrypt(self, value):
-                return bytes(byte ^ 0x5A for byte in value)
-
-            def decrypt(self, value):
-                return bytes(byte ^ 0x5A for byte in value)
-
-        directory = Path(self.temp.name)
-        draft = DictationDraft(custom_example="legacy-marker-92c1")
-        path = directory / "learning-state.json"
-        path.write_text(
-            json.dumps({
-                "schemaVersion": 1,
-                "settings": {"dictationDraft": draft.to_dict()},
-            }),
-            encoding="utf-8",
-        )
-        repository = JsonLearningRepository(directory, draft_cipher=XorCipher())
-        self.assertEqual(repository.get_dictation_draft(), draft)
-        migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["settings"]["dictationDraft"]["format"], "dpapi-v1")
-        self.assertNotIn("legacy-marker-92c1", path.read_text(encoding="utf-8"))
-
-    def test_plaintext_migration_preserves_other_loaded_state(self):
-        class XorCipher:
-            def encrypt(self, value):
-                return bytes(byte ^ 0x5A for byte in value)
-
-            def decrypt(self, value):
-                return bytes(byte ^ 0x5A for byte in value)
-
-        directory = Path(self.temp.name)
-        draft = DictationDraft(custom_example="legacy-with-tags")
-        path = directory / "learning-state.json"
-        path.write_text(
-            json.dumps({
-                "schemaVersion": 1,
-                "tagOverrides": {"serene": ["evaluated"]},
-                "settings": {"dictationDraft": draft.to_dict()},
-            }),
-            encoding="utf-8",
-        )
-        built_in = sample_entry("serene")
-        repository = JsonLearningRepository(directory, [built_in], draft_cipher=XorCipher())
-        self.assertEqual(repository.get_dictation_draft(), draft)
-        self.assertEqual(repository.all_entries()[0].tags, ("evaluated",))
-
-    def test_corrupt_ciphertext_is_ignored_without_crashing(self):
-        class RejectingCipher:
-            def encrypt(self, value):
-                raise DraftCipherError("test")
-
-            def decrypt(self, value):
-                raise DraftCipherError("test")
-
-        directory = Path(self.temp.name)
-        path = directory / "learning-state.json"
-        path.write_text(
-            json.dumps({
-                "schemaVersion": 1,
-                "settings": {
-                    "dictationDraft": {
-                        "format": "dpapi-v1",
-                        "ciphertext": "%%%not-base64%%",
-                    },
-                },
-            }),
-            encoding="utf-8",
-        )
-        repository = JsonLearningRepository(directory, draft_cipher=RejectingCipher())
-        self.assertIsNone(repository.get_dictation_draft())
-
-    def test_generic_cipher_failure_is_fail_closed(self):
-        class ExplodingCipher:
-            def encrypt(self, value):
-                raise RuntimeError("provider details must not escape")
-
-            def decrypt(self, value):
-                raise RuntimeError("provider details must not escape")
-
-        directory = Path(self.temp.name)
-        path = directory / "learning-state.json"
-        path.write_text(
-            json.dumps({
-                "schemaVersion": 1,
-                "settings": {
-                    "dictationDraft": {
-                        "format": "dpapi-v1",
-                        "ciphertext": "AA==",
-                    },
-                },
-            }),
-            encoding="utf-8",
-        )
-        repository = JsonLearningRepository(directory, draft_cipher=ExplodingCipher())
-        self.assertIsNone(repository.get_dictation_draft())
-
-    def test_failed_legacy_migration_cannot_rewrite_plaintext_on_later_save(self):
-        class UnavailableCipher:
-            def encrypt(self, value):
-                raise RuntimeError("DPAPI unavailable")
-
-            def decrypt(self, value):
-                raise RuntimeError("DPAPI unavailable")
-
-        directory = Path(self.temp.name)
-        draft = DictationDraft(
-            selected_ids=("secret-word-id",),
-            custom_example="legacy-only-marker",
-        )
-        path = directory / "learning-state.json"
-        path.write_text(
-            json.dumps({
-                "schemaVersion": 1,
-                "settings": {"dictationDraft": draft.to_dict()},
-            }),
-            encoding="utf-8",
-        )
-        repository = JsonLearningRepository(directory, draft_cipher=UnavailableCipher())
-        self.assertEqual(repository.get_dictation_draft(), draft)
-        repository.set_font_scale(1.1)
-        rewritten = path.read_text(encoding="utf-8")
-        self.assertNotIn("legacy-only-marker", rewritten)
-        self.assertNotIn("secret-word-id", rewritten)
-        self.assertIsNone(json.loads(rewritten)["settings"]["dictationDraft"])
 
 
 if __name__ == "__main__":

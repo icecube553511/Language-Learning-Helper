@@ -6,16 +6,15 @@ can run them, in parallel; they never touch overlapping files.
 
 | Role | Scope | Owns |
 |---|---|---|
-| `windows_implementation` | Windows | Audit and own Windows domain/application/infrastructure/presentation changes and tests. |
-| `android_implementation` | Android | Audit and own Android domain/application/infrastructure/presentation changes and tests. |
-| `contract_delivery` | Parity & delivery | Audit manifests, sync automation, Git state, GitHub PR overlap, and CI evidence. |
-| `grilling_review` | Requirements | Challenge ambiguous boundaries, defaults, ordering, persistence, failures, and interaction details before implementation. |
+| `architecture_audit` | Architecture, challenge & Windows | Challenge assumptions, enforce onion dependencies, and own Windows implementation/tests. |
+| `pet_integration` | Android | Own Android domain/presentation integration and Android tests. |
+| `sync_ci_audit` | Parity & delivery | Audit manifests, sync automation, Git state, GitHub PR overlap, and CI evidence. |
 | root agent (orchestrator) | Cross-cutting | Own shared contracts/assets, resolve audit findings, run full verification, commit, push, and maintain the GitHub pull request. |
 
-The team owns `petCompanionInteraction`, `petVitalsAndRatingRewards`, and the
-`petAppearanceStates` scaffold. Platform roles register UI bounds, render
-Bingzi, and implement their client; the orchestrator keeps contracts,
-source/derived assets, parity markers, and delivery evidence synchronized.
+The team also owns the `petCompanionInteraction` capability. `architecture_audit` and
+`pet_integration` may register platform UI bounds and render Bingzi, while the
+orchestrator keeps the pet contract, source/derived assets, and parity markers
+in sync.
 
 ## Rules
 
@@ -30,23 +29,6 @@ source/derived assets, parity markers, and delivery evidence synchronized.
 - Before handoff run, in order: `python tools/verify_sync.py`, Windows unit
   tests and the smoke test, and Android `test lintDebug assembleDebug` with
   JDK 17. Then commit and open the GitHub pull request so the work is traceable.
-- Appearance source PNGs belong only in `shared/assets/branding/pet_states/`.
-  Run `python tools/prepare_pet_appearance_assets.py`; never hand-edit the
-  generated `shared/assets/pets/states/` directory. While the generated
-  manifest is incomplete, both platforms must keep `petAppearanceStates` as
-  `disabled` and render the existing normal sprite.
-
-For `pet-vitals-v1`, movement `PetState` remains transient while vitals and the
-single recovery marker are persisted through inner ports. `PetVitals` composes
-an explicit immutable `FoodJar` value object while infrastructure keeps the
-compatible `foodReserve` scalar wire shape. The marker is never a vocabulary
-tag. Reward-flight instances, trails, and burst particles remain presentation-only
-and each accepted activation creates an independent instance. Review savepoints
-compensate a rejected second store write in-process; they are not presented as a
-cross-file crash-atomic transaction. Android keeps each successful synchronous
-preferences commit, matching flow publication, and review savepoint creation in
-one non-cancellable critical section so coroutine cancellation cannot split the
-in-process outcome.
 
 ## Confirmed cross-platform behaviors
 
@@ -63,16 +45,6 @@ the sample scope and inspect its words read-only, with an explicit handoff to
 manual selection) and 从词库选择 (open a group to tick its words, persisting
 selections across groups). Both platforms also render the transient dictation
 entry loader as a visibly turning book page rather than a spinner or static icon.
-
-## Current pet-appearance contract
-
-`pet-appearance-v1` defines `pain.png`, `scared.png`, `sleep.png`, `hungry.png`,
-and the numerically sorted `happy/happy<number>.png` group. The selector consumes
-only injected facts and applies the recommended order
-`pain > scared > hungry > sleep > happy > normal`. The user has not yet confirmed
-the `pain` versus `scared` ordering, so the recommendation is recorded as an
-open question in `docs/grill-qna-pet-appearance.md`; no real state trigger may
-be enabled until that question and the asset completeness gate are resolved.
 
 ## Current word-bubble cross-platform contract
 

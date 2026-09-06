@@ -28,39 +28,19 @@ import com.lexitrack.learning.application.BuildDictationDocumentUseCase
 import com.lexitrack.learning.application.ExportDictationDocumentUseCase
 import com.lexitrack.learning.application.UpdateProgramTagsUseCase
 import com.lexitrack.learning.application.UpdateMarkModeUseCase
-import com.lexitrack.learning.application.DictationDraftUseCase
 import com.lexitrack.learning.infrastructure.AndroidLearntWordsRepository
 import com.lexitrack.learning.infrastructure.AndroidReviewRepository
 import com.lexitrack.learning.infrastructure.AndroidSettingsRepository
 import com.lexitrack.learning.infrastructure.AndroidVocabularyRepository
 import com.lexitrack.learning.infrastructure.AndroidDictationExporter
-import com.lexitrack.learning.infrastructure.AndroidDictationDraftRepository
-import com.lexitrack.learning.infrastructure.AndroidDictationDraftSync
-import com.lexitrack.learning.infrastructure.AndroidDictationDraftSyncConfig
-import com.lexitrack.learning.infrastructure.DisabledAndroidDictationDraftSync
 import com.lexitrack.learning.infrastructure.SystemTimeProvider
 
-/**
- * Android composition root.  Sync credentials are supplied by the caller
- * (for example a future secure account provider); they are never read by the
- * presentation layer or persisted in ordinary preferences.  The default
- * constructor deliberately creates a no-network adapter.
- */
-class AppContainer(
-    context: Context,
-    syncConfig: AndroidDictationDraftSyncConfig = AndroidDictationDraftSyncConfig(),
-) {
+class AppContainer(context: Context) {
     private val vocabulary = AndroidVocabularyRepository(context)
     private val reviews = AndroidReviewRepository(context)
     private val learntWords = AndroidLearntWordsRepository(context)
     private val settings = AndroidSettingsRepository(context)
     private val time = SystemTimeProvider()
-    private val dictationDrafts = AndroidDictationDraftRepository(context)
-    private val dictationDraftSync = if (syncConfig.configured) {
-        AndroidDictationDraftSync(syncConfig)
-    } else {
-        DisabledAndroidDictationDraftSync(syncConfig)
-    }
 
     val useCases = AppUseCases(
         initialize = InitializeAppUseCase(vocabulary, reviews, learntWords),
@@ -95,9 +75,5 @@ class AppContainer(
         history = reviews.history,
         learntWords = learntWords.learntWords,
         settings = settings.settings,
-        dictationDraft = DictationDraftUseCase(dictationDrafts),
-        dictationDraftSync = dictationDraftSync,
-        dictationDraftSyncAccountId = syncConfig.accountId?.trim().orEmpty(),
-        timeProvider = time,
     )
 }

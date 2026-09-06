@@ -1,16 +1,12 @@
 package com.lexitrack.learning.application
 
 import com.lexitrack.learning.domain.BilingualExample
-import com.lexitrack.learning.domain.FoodJar
 import com.lexitrack.learning.domain.ImportReport
 import com.lexitrack.learning.domain.LearntWord
-import com.lexitrack.learning.domain.LexiSm2Scheduler
 import com.lexitrack.learning.domain.ReviewEvent
 import com.lexitrack.learning.domain.ReviewRating
 import com.lexitrack.learning.domain.ScheduleState
 import com.lexitrack.learning.domain.VocabularyEntry
-import com.lexitrack.learning.domain.PetVitals
-import com.lexitrack.learning.domain.ReviewRecoveryTag
 import java.io.InputStream
 import java.time.Instant
 import java.time.LocalDate
@@ -30,25 +26,6 @@ class LearningUseCasesTest {
     private val reviews = FakeReviewRepository()
     private val learntWords = FakeLearntWordsRepository()
     private val time = FixedTimeProvider(now)
-
-    @Test
-    fun `font scale sanitization rejects non finite values and clamps bounds`() {
-        assertEquals(DEFAULT_FONT_SCALE, sanitizeFontScale(Float.NaN))
-        assertEquals(DEFAULT_FONT_SCALE, sanitizeFontScale(Float.POSITIVE_INFINITY))
-        assertEquals(DEFAULT_FONT_SCALE, sanitizeFontScale(Float.NEGATIVE_INFINITY))
-        assertEquals(MIN_FONT_SCALE, sanitizeFontScale(0f))
-        assertEquals(MAX_FONT_SCALE, sanitizeFontScale(2f))
-        assertEquals(1.2f, sanitizeFontScale(1.2f))
-    }
-
-    @Test
-    fun `font scale use case persists a safe value for non finite input`() = runTest {
-        val settings = FakeSettingsRepository()
-
-        UpdateFontScaleUseCase(settings)(Float.NaN)
-
-        assertEquals(DEFAULT_FONT_SCALE, settings.settings.value.fontScale)
-    }
 
     @Test
     fun `dashboard separates new words from due reviews`() {
@@ -96,23 +73,6 @@ class LearningUseCasesTest {
         assertEquals(now, saved.learntAtUtc)
         assertEquals(now, saved.lastReviewedAtUtc)
         assertEquals(0, saved.reviewCount)
-        assertEquals(ReviewRecoveryTag.VAGUE, saved.reviewRecoveryTag)
-        assertEquals(PetVitals.Default, learntWords.petVitals.value)
-    }
-
-    @Test
-    fun `study success rewards satiety while failure markers remain mutually exclusive`() = runTest {
-        val useCase = RateWordUseCase(reviews, learntWords, time)
-
-        useCase(words[0].id, ReviewRating.AGAIN)
-        assertEquals(ReviewRecoveryTag.FORGOT, learntWords.learntWords.value.getValue(words[0].id).reviewRecoveryTag)
-
-        useCase(words[1].id, ReviewRating.HARD)
-        assertEquals(ReviewRecoveryTag.VAGUE, learntWords.learntWords.value.getValue(words[1].id).reviewRecoveryTag)
-
-        useCase(words[2].id, ReviewRating.GOOD)
-        assertEquals(52.0, learntWords.petVitals.value.satiety, 0.0)
-        assertEquals(null, learntWords.learntWords.value.getValue(words[2].id).reviewRecoveryTag)
     }
 
     @Test
@@ -131,64 +91,6 @@ class LearningUseCasesTest {
         useCase(wordId, ReviewRating.EASY)
         assertEquals(0.05, learntWords.learntWords.value.getValue(wordId).weight)
         assertEquals(3, learntWords.learntWords.value.getValue(wordId).reviewCount)
-    }
-
-    @Test
-    fun `review reward uses prior marker then clears it and converts overflow`() = runTest {
-        val wordId = words.first().id
-        val useCase = RateReviewWordUseCase(reviews, learntWords, time)
-        learntWords.wordsFlow.value = mapOf(
-            wordId to learnt(wordId, 0.8).copy(reviewRecoveryTag = ReviewRecoveryTag.FORGOT),
-        )
-        learntWords.vitalsFlow.value = PetVitals.restore(
-            satiety = 99.0,
-            foodJar = FoodJar.restore(10.0),
-        )
-
-        useCase(wordId, ReviewRating.EASY)
-
-        val saved = learntWords.learntWords.value.getValue(wordId)
-        assertEquals(null, saved.reviewRecoveryTag)
-        assertEquals(100.0, learntWords.petVitals.value.satiety, 0.0)
-        assertEquals(11.6, learntWords.petVitals.value.foodReserve, 1e-9)
-        assertEquals(11.6, learntWords.petVitals.value.foodJar.storedSatiety, 1e-9)
-    }
-
-    @Test
-    fun `learning outcome failure rolls schedule and history back before retry`() = runTest {
-        val wordId = words.first().id
-        val localReviews = FakeReviewRepository()
-        val localLearntWords = FakeLearntWordsRepository()
-        val baselineSchedule = ScheduleState(
-            intervalDays = 3.0,
-            repetitions = 2,
-            dueAtUtc = now - 1.0,
-            lastReviewedAtUtc = now - 86_400.0,
-        )
-        val baselineHistory = listOf(
-            ReviewEvent(wordId, now - 86_400.0, ReviewRating.GOOD, 3.0),
-        )
-        val baselineWord = learnt(wordId, 0.8)
-        localReviews.scheduleFlow.value = mapOf(wordId to baselineSchedule)
-        localReviews.history.value = baselineHistory
-        localLearntWords.wordsFlow.value = mapOf(wordId to baselineWord)
-        localLearntWords.failNextLearningOutcome = true
-        val useCase = RateReviewWordUseCase(localReviews, localLearntWords, time)
-
-        assertFailsWith<IllegalStateException> {
-            useCase(wordId, ReviewRating.GOOD)
-        }
-
-        assertEquals(mapOf(wordId to baselineSchedule), localReviews.schedules.value)
-        assertEquals(baselineHistory, localReviews.history.value)
-        assertEquals(baselineWord, localLearntWords.learntWords.value.getValue(wordId))
-        assertEquals(PetVitals.Default, localLearntWords.petVitals.value)
-
-        val expected = LexiSm2Scheduler.review(baselineSchedule, ReviewRating.GOOD, now)
-        assertEquals(expected, useCase(wordId, ReviewRating.GOOD))
-        assertEquals(expected, localReviews.schedules.value.getValue(wordId))
-        assertEquals(baselineHistory.size + 1, localReviews.history.value.size)
-        assertEquals(1, localLearntWords.learntWords.value.getValue(wordId).reviewCount)
     }
 
     @Test
@@ -422,47 +324,18 @@ private class FakeReviewRepository : ReviewRepository {
     val scheduleFlow = MutableStateFlow<Map<String, ScheduleState>>(emptyMap())
     override val schedules: StateFlow<Map<String, ScheduleState>> = scheduleFlow
     override val history = MutableStateFlow<List<ReviewEvent>>(emptyList())
-    override suspend fun saveReview(
-        wordId: String,
-        state: ScheduleState,
-        event: ReviewEvent,
-    ): ReviewSavepoint {
-        val savepoint = FakeReviewSavepoint(scheduleFlow.value, history.value)
+    override suspend fun saveReview(wordId: String, state: ScheduleState, event: ReviewEvent) {
         scheduleFlow.value = scheduleFlow.value + (wordId to state)
         history.value = history.value + event
-        return savepoint
-    }
-
-    override suspend fun rollbackReview(savepoint: ReviewSavepoint) {
-        val state = savepoint as FakeReviewSavepoint
-        scheduleFlow.value = state.schedules
-        history.value = state.history
     }
 }
 
-private data class FakeReviewSavepoint(
-    val schedules: Map<String, ScheduleState>,
-    val history: List<ReviewEvent>,
-) : ReviewSavepoint
-
 private class FakeLearntWordsRepository : LearntWordsRepository {
     val wordsFlow = MutableStateFlow<Map<String, LearntWord>>(emptyMap())
-    val vitalsFlow = MutableStateFlow(PetVitals.Default)
     override val learntWords: StateFlow<Map<String, LearntWord>> = wordsFlow
-    override val petVitals: StateFlow<PetVitals> = vitalsFlow
-    var failNextLearningOutcome = false
 
     override suspend fun saveLearntWords(words: Collection<LearntWord>) {
         wordsFlow.value = wordsFlow.value + words.associateBy { it.wordId }
-    }
-
-    override suspend fun saveLearningOutcome(word: LearntWord, vitals: PetVitals) {
-        if (failNextLearningOutcome) {
-            failNextLearningOutcome = false
-            error("Injected learning outcome failure")
-        }
-        wordsFlow.value = wordsFlow.value + (word.wordId to word)
-        vitalsFlow.value = vitals
     }
 }
 
