@@ -2,221 +2,164 @@ package com.lexitrack.learning.presentation
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.lexitrack.learning.domain.PetPoint
-import com.lexitrack.learning.domain.PetRect
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
-
-/** The rating effect is presentation-only and is never persisted with learning data. */
-internal enum class RewardEffectMode {
-    STUDY,
-    REVIEW,
-}
-
-/** Contract marker: pet-energy-ball-v1. */
-internal const val PET_ENERGY_BALL_CONTRACT = "pet-energy-ball-v1"
-internal const val PET_ENERGY_BALL_MAX_SPEED_PX_PER_SECOND = 1_800f
-internal const val PET_ENERGY_BALL_HIT_RADIUS_PX = 36f
-internal const val PET_ENERGY_BALL_MIN_TRAIL_PX = 12f
-internal const val PET_ENERGY_BALL_MAX_TRAIL_PX = 96f
-internal const val PET_ENERGY_BALL_PARTICLE_COUNT = 18
-internal const val PET_ENERGY_BALL_BURST_DURATION_MS = 260f
-internal const val PET_ENERGY_BALL_MAX_CONCURRENT = 3
-
-internal val StudyRewardGold = Color(0xFFF5C451)
-internal val ReviewRewardCyan = Color(0xFF39D9D0)
-
-internal data class RewardEffectRequest(
-    val id: Long,
-    val start: Offset,
-    val target: Offset,
-    val color: Color,
-    val durationMillis: Int = rewardDurationMillis((target - start).getDistance()),
-)
 
 internal fun rewardColor(mode: RewardEffectMode): Color = when (mode) {
     RewardEffectMode.STUDY -> StudyRewardGold
     RewardEffectMode.REVIEW -> ReviewRewardCyan
 }
 
-/**
- * Resolve a screen-space destination even while the pet host is being
- * registered.  The coordinator is normally ready before a rating button can
- * be tapped, but Compose can deliver the first tap during that registration
- * frame.  Dropping that tap makes the feature appear randomly disabled, so
- * use the host centre as a short-lived destination and let the live target
- * provider retarget the flight on the next frame.
- */
-internal fun rewardTargetOrViewportCenter(
-    target: PetPoint?,
-    viewportOrigin: PetPoint,
-    viewport: PetRect,
-): Offset? = target?.let { Offset(it.x, it.y) }
-    ?: viewport.takeIf { it.valid }?.let {
-        Offset(
-            viewportOrigin.x + it.width / 2f,
-            viewportOrigin.y + it.height / 2f,
-        )
+internal val StudyRewardGold = Color(0xFFF5C451)
+internal val ReviewRewardCyan = Color(0xFF39D9D0)
+
+internal fun rewardPointFromScreen(point: Offset, density: Float): RewardPoint =
+    RewardPoint(point.x / density.toDouble(), point.y / density.toDouble())
+
+internal fun rewardPointOnHost(point: RewardPoint, origin: PetPoint, density: Float): Offset =
+    Offset((point.x * density - origin.x).toFloat(), (point.y * density - origin.y).toFloat())
+
+/** All input methods use Button.onClick; a rejected rating emits nothing. */
+internal fun activateRewardRating(
+    bounds: Rect,
+    mode: RewardEffectMode,
+    onRate: () -> Boolean,
+    emit: (RewardEffectMode, Offset) -> Unit,
+) {
+    val center = bounds.takeIf { it.width > 0f && it.height > 0f }?.center
+    if (onRate() && center != null) emit(mode, center)
+}
+
+/** One app-level model/clock; each native host draws the same immutable frame. */
+internal class RewardEffectsController {
+    val pursuit = RewardPursuit()
+    var snapshot by mutableStateOf(RewardSnapshot())
+        private set
+    private val targets = mutableMapOf<String, RewardTarget>()
+
+    fun emit(mode: RewardEffectMode, screenPoint: Offset, density: Float) {
+        pursuit.spawn(rewardPointFromScreen(screenPoint, density), mode)
+        snapshot = pursuit.snapshot()
     }
 
-internal fun rewardDurationMillis(distancePx: Float): Int =
-    (360f + distancePx.coerceIn(0f, 1_600f) * 0.18f).toInt().coerceIn(360, 650)
+    fun updateTarget(target: RewardTarget) {
+        targets[target.hostId] = target
+    }
 
-/** Quadratic ease-in gives the orb a visible acceleration toward Bingzi. */
-internal fun rewardProgress(elapsedMillis: Float, durationMillis: Int): Float {
-    if (durationMillis <= 0) return 1f
-    return (elapsedMillis / durationMillis).coerceIn(0f, 1f).let { it * it }
+    fun removeTarget(hostId: String) {
+        targets.remove(hostId)
+    }
+
+    fun targetFor(hostId: String?): RewardTarget? = hostId?.let(targets::get)
+
+    fun frame(timeNanos: Long, hostId: String?, foreground: Boolean) {
+        pursuit.frame(timeNanos, targetFor(hostId), foreground)
+        snapshot = pursuit.snapshot()
+    }
+
+    fun pause() = pursuit.pause()
+
+    fun clear() {
+        targets.clear()
+        pursuit.clear()
+        snapshot = RewardSnapshot()
+    }
 }
 
-internal fun rewardOrbPosition(request: RewardEffectRequest, progress: Float): Offset =
-    request.start + (request.target - request.start) * progress.coerceIn(0f, 1f)
-
-internal fun rewardSpeedPxPerSecond(
-    distancePx: Float,
-    elapsedMillis: Float,
-    durationMillis: Int,
-): Float {
-    if (durationMillis <= 0) return 0f
-    val normalizedTime = (elapsedMillis / durationMillis).coerceIn(0f, 1f)
-    return (distancePx * 2f * normalizedTime / (durationMillis / 1_000f))
-        .coerceAtMost(PET_ENERGY_BALL_MAX_SPEED_PX_PER_SECOND)
+@Composable
+internal fun rememberRewardEffectsController(activeHost: () -> String?): RewardEffectsController {
+    val controller = remember { RewardEffectsController() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val latestActiveHost by rememberUpdatedState(activeHost)
+    var foreground by remember(lifecycle) { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    DisposableEffect(lifecycle, controller) {
+        val observer = LifecycleEventObserver { _, _ ->
+            foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            // withFrameNanos may itself stop in the background, so reset here.
+            if (!foreground) controller.pause()
+        }
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+            controller.clear()
+        }
+    }
+    LaunchedEffect(controller) {
+        while (true) {
+            withFrameNanos { time -> controller.frame(time, latestActiveHost(), foreground) }
+        }
+    }
+    return controller
 }
-
-internal fun rewardTrailLength(speedPxPerSecond: Float): Float =
-    (PET_ENERGY_BALL_MIN_TRAIL_PX + speedPxPerSecond * 0.047f)
-        .coerceIn(PET_ENERGY_BALL_MIN_TRAIL_PX, PET_ENERGY_BALL_MAX_TRAIL_PX)
 
 @Composable
 internal fun RewardEffectsHost(
-    request: RewardEffectRequest?,
+    controller: RewardEffectsController,
     hostOrigin: PetPoint,
-    onFinished: (Long) -> Unit,
     modifier: Modifier = Modifier,
-    targetProvider: () -> Offset? = { null },
 ) {
-    var orbProgress by remember { mutableStateOf(0f) }
-    var burstProgress by remember { mutableStateOf(0f) }
-    var flowPhase by remember { mutableStateOf(0f) }
-    var burstStarted by remember { mutableStateOf(false) }
-    var collisionTarget by remember { mutableStateOf<Offset?>(null) }
-    var liveTarget by remember { mutableStateOf<Offset?>(null) }
-
-    LaunchedEffect(request?.id) {
-        val current = request ?: run {
-            orbProgress = 0f
-            burstProgress = 0f
-            return@LaunchedEffect
-        }
-        val flightDuration = current.durationMillis.toFloat()
-        val burstDuration = PET_ENERGY_BALL_BURST_DURATION_MS
-        liveTarget = current.target
-        burstStarted = false
-        burstProgress = 0f
-        collisionTarget = null
-        val startedAt = withFrameNanos { it }
-        var burstStartedAt: Float? = null
-        while (true) {
-            val elapsed = (withFrameNanos { it } - startedAt) / 1_000_000f
-            targetProvider()?.let { liveTarget = it }
-            val frameRequest = current.copy(target = liveTarget ?: current.target)
-            val nextProgress = rewardProgress(elapsed, current.durationMillis)
-            val framePosition = rewardOrbPosition(frameRequest, nextProgress)
-            val targetDistance = (frameRequest.target - framePosition).getDistance()
-            if (burstStartedAt == null && (targetDistance <= PET_ENERGY_BALL_HIT_RADIUS_PX || elapsed >= flightDuration)) {
-                burstStartedAt = elapsed
-                burstStarted = true
-                collisionTarget = frameRequest.target
-                orbProgress = 1f
-            } else if (burstStartedAt == null) {
-                orbProgress = nextProgress
-            }
-            flowPhase = (elapsed / 140f) % 1f
-            burstProgress = burstStartedAt?.let { (elapsed - it) / burstDuration }?.coerceIn(0f, 1f) ?: 0f
-            if (burstStartedAt != null && elapsed >= burstStartedAt + burstDuration) {
-                orbProgress = 0f
-                burstProgress = 0f
-                burstStarted = false
-                collisionTarget = null
-                onFinished(current.id)
-                break
-            }
-        }
-    }
-
-    val active = request ?: return
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val orbRadius = with(density) { 6.dp.toPx() }
-    val localOrigin = Offset(hostOrigin.x, hostOrigin.y)
-    val liveRequest = active.copy(target = liveTarget ?: active.target)
-    val start = liveRequest.start - localOrigin
-    val target = (collisionTarget ?: liveRequest.target) - localOrigin
-    val position = rewardOrbPosition(liveRequest, orbProgress) - localOrigin
-    val direction = (target - start).let { vector ->
-        val length = vector.getDistance()
-        if (length > 0.5f) vector / length else Offset(0f, -1f)
-    }
-    val distance = (target - start).getDistance()
-    val elapsedForSpeed = active.durationMillis * kotlin.math.sqrt(orbProgress)
-    val trail = rewardTrailLength(
-        rewardSpeedPxPerSecond(distance, elapsedForSpeed, active.durationMillis),
-    )
-
+    val snapshot = controller.snapshot
+    val density = LocalDensity.current.density
     Canvas(modifier = modifier.zIndex(30f)) {
-        if (!burstStarted) {
-            // Layered lines and circles produce a soft halo without a platform-specific blur.
-            for (index in 0 until 6) {
-                val fraction = index / 6f
-                val tail = position - direction * (trail * fraction)
+        snapshot.orbs.forEach { orb ->
+            val color = rewardColor(orb.mode)
+            val points = orb.trail.filterIndexed { index, _ -> index % PET_ENERGY_BALL_TRAIL_SAMPLE_STRIDE == 0 }
+            for (index in 1 until points.size) {
+                val strength = index.toFloat() / points.size
                 drawLine(
-                    color = active.color.copy(alpha = 0.05f + (1f - fraction) * 0.12f),
-                    start = tail,
-                    end = position,
-                    strokeWidth = orbRadius * (2.2f - fraction),
+                    color = color.copy(alpha = PET_ENERGY_BALL_TRAIL_HEAD_OPACITY * strength),
+                    start = rewardPointOnHost(points[index - 1], hostOrigin, density),
+                    end = rewardPointOnHost(points[index], hostOrigin, density),
+                    strokeWidth = (PET_ENERGY_BALL_TRAIL_WIDTH_PX.toFloat() * strength).coerceAtLeast(1f) * density,
                     cap = StrokeCap.Round,
                 )
             }
-            repeat(3) { index ->
-                val fraction = (flowPhase + index * 0.31f) % 1f
-                val flowPoint = position - direction * (trail * fraction)
-                drawCircle(active.color.copy(alpha = (1f - fraction) * 0.36f), orbRadius * (0.3f + 0.14f * (1f - fraction)), flowPoint)
-            }
-            drawCircle(active.color.copy(alpha = 0.09f), orbRadius * 4.2f, position)
-            drawCircle(active.color.copy(alpha = 0.18f), orbRadius * 2.4f, position)
-            drawCircle(Color.White.copy(alpha = 0.92f), orbRadius * 0.72f, position)
-            drawCircle(active.color, orbRadius, position, style = androidx.compose.ui.graphics.drawscope.Fill)
-        }
-        if (burstStarted) {
-            val fade = 1f - burstProgress
-            drawCircle(active.color.copy(alpha = 0.18f * fade), orbRadius * (2f + 8f * burstProgress), target)
-            repeat(PET_ENERGY_BALL_PARTICLE_COUNT) { index ->
-                val angle = (2.0 * PI * index / PET_ENERGY_BALL_PARTICLE_COUNT).toFloat()
-                val rayDirection = Offset(cos(angle), sin(angle))
-                val inner = target + rayDirection * (orbRadius * (0.5f + burstProgress * 2f))
-                val outer = target + rayDirection * (orbRadius * (1.5f + burstProgress * 10f))
-                drawLine(
-                    color = active.color.copy(alpha = fade * 0.72f),
-                    start = inner,
-                    end = outer,
-                    strokeWidth = orbRadius * fade.coerceAtLeast(0.18f) * 0.55f,
-                    cap = StrokeCap.Round,
-                )
+            val position = rewardPointOnHost(orb.position, hostOrigin, density)
+            // Annuli preserve the prototype's alpha profile without additive stacking.
+            for (radius in PET_ENERGY_BALL_GLOW_RADIUS_PX.toInt() downTo 1) {
+                val strength = 1f - radius / PET_ENERGY_BALL_GLOW_RADIUS_PX.toFloat()
                 drawCircle(
-                    color = Color.White.copy(alpha = fade * 0.8f),
-                    radius = orbRadius * fade * 0.42f,
-                    center = outer,
+                    color.copy(alpha = PET_ENERGY_BALL_GLOW_PEAK_ALPHA / 255f * strength * strength),
+                    (radius - 0.5f) * density,
+                    position,
+                    style = Stroke(density),
+                )
+            }
+            drawCircle(color, PET_ENERGY_BALL_ORB_RADIUS_PX.toFloat() * density, position)
+            drawCircle(Color(0xFFFFFAE4), PET_ENERGY_BALL_CORE_RADIUS_PX.toFloat() * density, position)
+        }
+        snapshot.impacts.forEach { impact ->
+            val progress = (impact.ageSeconds / PET_ENERGY_BALL_BURST_DURATION_SECONDS).toFloat()
+            val color = rewardColor(impact.mode).copy(alpha = (1f - progress).coerceIn(0f, 1f))
+            val position = rewardPointOnHost(impact.position, hostOrigin, density)
+            drawCircle(color, (20f + 38f * progress) * density, position, style = Stroke(2f * density))
+            repeat(PET_ENERGY_BALL_PARTICLE_COUNT) { index ->
+                val angle = (2 * PI * index / PET_ENERGY_BALL_PARTICLE_COUNT).toFloat()
+                drawCircle(
+                    color,
+                    2f * density,
+                    position + Offset(cos(angle), sin(angle)) * ((22f + 44f * progress) * density),
                 )
             }
         }

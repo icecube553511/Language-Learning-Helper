@@ -1,24 +1,65 @@
 # 冰子能量光球特效契约 v1
 
-`pet-energy-ball-v1` 定义学习与复习页面交互控件触发的瞬态能量光球。
-它属于 presentation 状态，不写入词条、复习排期、宠物位置或任何持久化存储。
+`pet-energy-ball-v1` revision `2` migrates pursuit and visuals from the sibling
+`gpt6_test` prototype into both native clients. All effects are transient
+presentation state and never persisted.
 
-## 语义
+## Trigger and coordinates
 
-- 光球在用户点击的交互控件中心生成，并追踪冰子的**实时屏幕位置**。
-- 学习阶段使用金色 `#F5C451`，复习阶段使用青色 `#39D9D0`。
-- 光球向冰子移动时持续加速，速度上限为 `1800` logical px/s；每帧使用平滑插值，
-  不因评分卡重排而重置目标。
-- 拖尾长度随当前速度线性增加，范围为 `12..96` logical px；拖尾透明度从球体到尾端
-  由 `0.72` 平滑衰减到 `0`。
-- 光球中心进入冰子命中半径 `36` logical px 后立即消失，并在原碰撞点生成一次
-  烟花式爆发：`18` 个粒子、`260` ms 生命周期、径向速度 `180..460` logical px/s，
-  粒子颜色继承阶段颜色并逐帧降低透明度。
-- 同时存在的光球数量最多为 `3`；超过上限时丢弃最旧实例。动画取消或页面离开时，
-  所有实例与帧回调立即销毁。
+- Every valid activation of any of the four Study/Review rating buttons emits
+  one independent orb from the button's screen-space center. Mouse, touch,
+  keyboard and accessibility share that command; cancelled gestures emit
+  nothing. Study is gold `#F5C451`; Review is cyan `#39D9D0`. Existing rating
+  and vitals settlement never waits for collision.
+- Dimensions use logical pixels (Android dp and Windows pet coordinate scale),
+  independently of text scale. Follow the active Bingzi's live screen position,
+  including application-owned dialogs. Never replace an unavailable target
+  with the viewport center or a stale position.
 
-## 分层边界
+## Pursuit and collision
 
-domain/application 只处理评分与宠物状态；光球、拖尾、粒子、计时器和屏幕坐标均由
-平台 presentation 创建和销毁。平台实现可以使用 Tk Canvas 或 Compose Canvas，但必须
-保持上述阶段颜色、加速、速度相关拖尾、碰撞消失和爆发语义一致。
+- Immediately pursue with scalar speed `65` logical px/s and acceleration
+  `230` logical px/s squared. Each step turns directly toward the target at
+  that step's start. Travel is `speed*dt + 0.5*acceleration*dt*dt`, then speed
+  increases by `acceleration*dt`. No spiral, speed cap, age limit, boundary
+  deletion or concurrency eviction is permitted.
+- Use fixed `1/120` second steps and retain the accumulator remainder. Accept
+  at most `0.1` seconds of a render frame to avoid large catch-up jumps.
+  Interpolate continuous target movement over accepted substeps. Reset target
+  history on host changes and resume so relocations do not sweep across space.
+- Use swept relative motion of both circles, with combined radius
+  `Bingzi displayed half-size + orb radius (7)`. Initial overlap hits at once;
+  neither a fast orb nor moving Bingzi can tunnel through the other. Only
+  contact ends flight. Anchor the impact to Bingzi's interpolated center at
+  contact, then keep it fixed. Rendering and collision use the same sample.
+
+## Visuals
+
+- Port the radius `7` colored orb, radius `4` pale core and radius `46` soft
+  glow, with opacity `105/255 * (1-r/46)^2` and the phase color.
+- Keep `42` fixed-step trail samples; render every third sample as a tapering,
+  fading path with head width `7` and opacity up to `0.55`. Its length grows
+  naturally with speed and has no fixed length cap. Pause freezes the trail.
+- Contact removes the orb/trail and emits one `420` ms effect: a ring with
+  radius `20+38*p`, width `2`, and eight dots at radial distance `22+44*p`, dot
+  radius `2`. Here `p` is impact progress; all use phase color and fade `1-p`.
+
+## Lifetime
+
+- Preserve every instance through card rebuilds, navigation and pet host changes.
+- Minimized/background applications and unavailable targets pause all effect
+  state, including trails, speed and impacts. Resume with a fresh clock and
+  target baseline; paused wall time never advances motion or acceleration.
+- Exit/disposal clears all instances and callbacks; the next process starts
+  empty. There is no maximum concurrent count or timeout.
+
+## Onion boundary and verification
+
+Domain/application retain rating and pet-state rules. Pure transient pursuit
+state lives with presentation without storage access. Tk/Win32 and Compose
+adapters own clocks, density and window APIs. Windows native effect surfaces
+remain pointer-transparent with pointer-safe callback signatures/lifetimes.
+
+`pet-energy-ball-golden-v1.json` supplies shared parameters, motion samples and
+relative swept-contact vectors for both platforms. Parity manifests and
+`tools/verify_sync.py` enforce the same revision and parameters.

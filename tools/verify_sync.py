@@ -1866,38 +1866,92 @@ def verify_pet_energy_ball_contract() -> None:
     if not contract_path.is_file() or "pet-energy-ball-v1" not in contract_path.read_text(encoding="utf-8"):
         fail("Pet energy-ball contract is missing")
     payload = json.loads(golden_path.read_text(encoding="utf-8"))
-    if payload.get("contractVersion") != "pet-energy-ball-v1":
+    if payload.get("contractVersion") != "pet-energy-ball-v1" or payload.get("behaviorRevision") != 2:
         fail("Unexpected pet energy-ball contract version")
     phases = payload.get("phases", {})
     if phases.get("study", {}).get("color") != "#F5C451" or phases.get("review", {}).get("color") != "#39D9D0":
         fail("Pet energy-ball phase colors differ")
     motion = payload.get("motion", {})
-    if motion.get("acceleration") != "continuous-toward-live-pet":
-        fail("Pet energy-ball must target the live pet")
-    if float(motion.get("maxSpeedLogicalPxPerSecond", 0)) != 1800.0 or float(motion.get("hitRadiusLogicalPx", 0)) != 36.0:
-        fail("Pet energy-ball motion limits differ")
-    if motion.get("trailLengthLogicalPx") != {"minimum": 12.0, "maximum": 96.0}:
-        fail("Pet energy-ball trail bounds differ")
+    if motion != {
+        "model": "accelerating-direct-pursuit",
+        "initialSpeedLogicalPxPerSecond": 65.0,
+        "accelerationLogicalPxPerSecondSquared": 230.0,
+        "maxSpeedLogicalPxPerSecond": None,
+        "fixedStepSeconds": 1 / 120,
+        "maximumFrameSeconds": 0.1,
+        "orbRadiusLogicalPx": 7.0,
+        "targetRadius": "displayed-pet-half-size",
+        "collision": "relative-swept-circles",
+        "targetDiscontinuity": "reset-history-on-host-change-or-resume",
+    }:
+        fail("Pet energy-ball pursuit or collision differs")
+    if payload.get("trigger") != {
+        "source": "button-center", "activation": "valid-rating-command",
+        "ratings": ["again", "hard", "good", "easy"],
+    }:
+        fail("Pet energy-ball activation differs")
+    if payload.get("visual") != {
+        "coreRadiusLogicalPx": 4.0, "glowRadiusLogicalPx": 46.0,
+        "glowPeakAlpha": 105, "trailSamples": 42, "trailSampleStride": 3,
+        "trailWidthLogicalPx": 7.0, "trailHeadOpacity": 0.55,
+    }:
+        fail("Pet energy-ball prototype visuals differ")
     burst = payload.get("burst", {})
     if (
-        burst.get("particleCount") != 18
-        or burst.get("lifetimeMs") != 260
-        or burst.get("radialSpeedLogicalPxPerSecond") != {"minimum": 180.0, "maximum": 460.0}
+        burst.get("particleCount") != 8
+        or burst.get("lifetimeMs") != 420
+        or burst.get("ringRadiusLogicalPx") != [20.0, 58.0]
+        or burst.get("particleDistanceLogicalPx") != [22.0, 66.0]
+        or burst.get("particleRadiusLogicalPx") != 2.0
+        or burst.get("ringWidthLogicalPx") != 2.0
         or burst.get("inheritsPhaseColor") is not True
     ):
         fail("Pet energy-ball burst semantics differ")
-    if payload.get("maxConcurrentBalls") != 3 or payload.get("transient") is not True:
+    if (
+        payload.get("maxConcurrentBalls", 0) is not None
+        or payload.get("maximumLifetimeMs", 0) is not None
+        or payload.get("transient") is not True
+        or payload.get("lifecycle") != {
+            "navigation": "preserve", "hostChange": "preserve-and-retarget",
+            "background": "pause", "missingTarget": "pause",
+            "resume": "fresh-clock-and-target-baseline", "exit": "clear",
+        }
+    ):
         fail("Pet energy-ball lifecycle semantics differ")
+    vectors = payload.get("motionVectors", [])
+    if len(vectors) < 4 or max(vector["seconds"] for vector in vectors) < 10:
+        fail("Pet energy-ball motion samples must cover former speed/time limits")
+    for vector in vectors:
+        elapsed = float(vector["seconds"])
+        if not math.isclose(vector["speed"], 65 + 230 * elapsed) or not math.isclose(
+            vector["distance"], 65 * elapsed + 0.5 * 230 * elapsed * elapsed,
+        ):
+            fail(f"Invalid energy-ball motion sample {vector['name']}")
+    if len(payload.get("collisionVectors", [])) < 4:
+        fail("Pet energy-ball swept-contact samples are missing")
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     expected = {
         "studyColor": "#F5C451",
         "reviewColor": "#39D9D0",
-        "maxSpeedLogicalPxPerSecond": 1800.0,
-        "hitRadiusLogicalPx": 36.0,
-        "trailLengthLogicalPx": [12.0, 96.0],
-        "burstParticleCount": 18,
-        "burstLifetimeMs": 260,
-        "maxConcurrentBalls": 3,
+        "behaviorRevision": 2,
+        "initialSpeedLogicalPxPerSecond": 65.0,
+        "accelerationLogicalPxPerSecondSquared": 230.0,
+        "maxSpeedLogicalPxPerSecond": None,
+        "fixedStepSeconds": 1 / 120,
+        "maximumFrameSeconds": 0.1,
+        "orbRadiusLogicalPx": 7.0,
+        "targetRadius": "displayed-pet-half-size",
+        "collision": "relative-swept-circles",
+        "trailSamples": 42,
+        "glowRadiusLogicalPx": 46.0,
+        "burstParticleCount": 8,
+        "burstLifetimeMs": 420,
+        "maxConcurrentBalls": None,
+        "maximumLifetimeMs": None,
+        "trigger": "valid-rating-command-button-center",
+        "navigation": "preserve",
+        "background": "pause",
+        "missingTarget": "pause",
         "transient": True,
     }
     if parity.get("petEnergyBallVersion") != "pet-energy-ball-v1" or parity.get("petEnergyBall") != expected:
@@ -1907,8 +1961,9 @@ def verify_pet_energy_ball_contract() -> None:
     implementation_markers = {
         "windows/presentation/reward_effects.py": ("RewardFlight", "STUDY_REWARD_COLOR", "REVIEW_REWARD_COLOR"),
         "windows/tests/test_reward_effects.py": ("RewardAnimationModel",),
-        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": ("RewardEffectMode", "StudyRewardGold", "ReviewRewardCyan"),
-        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": ("rewardTrailLength",),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardEffects.kt": ("StudyRewardGold", "ReviewRewardCyan"),
+        "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardPursuit.kt": ("RewardEffectMode", "RewardPursuit", "rewardCollisionFraction"),
+        "android/presentation/src/test/kotlin/com/lexitrack/learning/presentation/RewardEffectsTest.kt": ("motionVectors", "collisionVectors"),
     }
     for relative_path, markers in implementation_markers.items():
         source_path = ROOT / relative_path
@@ -1918,6 +1973,51 @@ def verify_pet_energy_ball_contract() -> None:
         for marker in markers:
             if marker not in source:
                 fail(f"Pet energy-ball implementation {relative_path} is missing {marker}")
+
+    windows_source = (ROOT / "windows/presentation/reward_effects.py").read_text(encoding="utf-8")
+    windows_constants = {
+        node.targets[0].id: node.value.value
+        for node in ast.parse(windows_source).body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)
+    }
+    for name, expected_value in {
+        "STUDY_REWARD_COLOR": phases["study"]["color"],
+        "REVIEW_REWARD_COLOR": phases["review"]["color"],
+        "HOMING_INITIAL_SPEED": motion["initialSpeedLogicalPxPerSecond"],
+        "HOMING_ACCELERATION": motion["accelerationLogicalPxPerSecondSquared"],
+        "ORB_RADIUS": motion["orbRadiusLogicalPx"],
+        "VISUAL_ORB_GLOW_RADIUS": payload["visual"]["glowRadiusLogicalPx"],
+        "TRAIL_MAXIMUM_POINTS": payload["visual"]["trailSamples"],
+        "TRAIL_SAMPLE_STRIDE": payload["visual"]["trailSampleStride"],
+        "BURST_PARTICLE_COUNT": burst["particleCount"],
+        "BURST_DURATION_MS": burst["lifetimeMs"],
+    }.items():
+        if windows_constants.get(name) != expected_value:
+            fail(f"Windows energy-ball constant {name} differs from the shared contract")
+
+    android_source = (
+        ROOT / "android/presentation/src/main/kotlin/com/lexitrack/learning/presentation/RewardPursuit.kt"
+    ).read_text(encoding="utf-8")
+    for name, expected_value in {
+        "BEHAVIOR_REVISION": payload["behaviorRevision"],
+        "INITIAL_SPEED_PX_PER_SECOND": motion["initialSpeedLogicalPxPerSecond"],
+        "ACCELERATION_PX_PER_SECOND_SQUARED": motion["accelerationLogicalPxPerSecondSquared"],
+        "MAXIMUM_FRAME_SECONDS": motion["maximumFrameSeconds"],
+        "ORB_RADIUS_PX": motion["orbRadiusLogicalPx"],
+        "CORE_RADIUS_PX": payload["visual"]["coreRadiusLogicalPx"],
+        "GLOW_RADIUS_PX": payload["visual"]["glowRadiusLogicalPx"],
+        "GLOW_PEAK_ALPHA": payload["visual"]["glowPeakAlpha"],
+        "TRAIL_SAMPLES": payload["visual"]["trailSamples"],
+        "TRAIL_SAMPLE_STRIDE": payload["visual"]["trailSampleStride"],
+        "TRAIL_WIDTH_PX": payload["visual"]["trailWidthLogicalPx"],
+        "TRAIL_HEAD_OPACITY": payload["visual"]["trailHeadOpacity"],
+        "PARTICLE_COUNT": burst["particleCount"],
+        "BURST_DURATION_SECONDS": burst["lifetimeMs"] / 1000.0,
+    }.items():
+        match = re.search(rf"const val PET_ENERGY_BALL_{name}\s*=\s*([0-9.]+)[fF]?\s*(?:\n|$)", android_source)
+        if match is None or not math.isclose(float(match.group(1)), expected_value, abs_tol=1e-9):
+            fail(f"Android energy-ball constant {name} differs from the shared contract")
 
 def normalize_group_membership(code: str) -> str:
     normalized = unicodedata.normalize("NFKC", code.strip()).upper()
