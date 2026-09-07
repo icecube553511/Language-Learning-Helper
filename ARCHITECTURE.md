@@ -1,74 +1,244 @@
-# 架构说明
+# LexiTrack 架构设计（Agent 必读）
 
-## 决策
+> 本文件是仓库的权威架构说明。任何 agent 在检查、修改、生成、测试或提交
+> 仓库内容之前，都必须完整阅读本文件；随后再阅读任务涉及的
+> `shared/contracts/` 契约与存在的 golden vectors。`CODEBASE_ONBOARDING.md` 只
+> 负责导航，不能替代本文件。
 
-LexiTrack 使用单一 monorepo 维护两个离线客户端。Windows 与 Android 可以使用各自最稳定的平台 UI 技术，但必须服从版本化的共享契约、品牌资产和 golden tests。
+## 1. 系统边界
+
+LexiTrack 是一个离线优先的 monorepo，同时交付 Windows 桌面端与 Android
+客户端。两个客户端不共享运行时代码，而是分别实现同一组版本化行为。仓库中的
+`shared/` 提供契约、测试向量、只读内容与源资产，不是第三个平台实现。
 
 ```text
-Presentation  --->  Application  --->  Domain
-       |                  |              ^
-       +------------------+--------------|
-                          Infrastructure -+
+shared/{contracts, content, assets}
+                 |
+                 +--------------------> Windows
+                 |
+                 +--------------------> Android
 ```
 
-- `Domain`：词条、复习状态、已学词权重、评分与 `lexi-sm2-v1` 调度；不引用平台 API。
-- `Application`：总览、学习抽卡、加权复习会话、评分、导入、搜索、预测复习量等用例和端口。
-- `Infrastructure`：JSON/SharedPreferences 持久化、独立 `Words_Learnt`、内置词库、CSV 解析、默写 worksheet exporter、DOCX/PDF writer。
-- `Presentation`：Tkinter 或 Compose 页面、状态与无障碍语义。
-- Composition Root：唯一负责组装具体实现的最外层入口；Windows file dialog 与 Android SAF/file picker 也必须留在此边界。
+其中 contracts 提供行为/wire format/测试向量，content 提供生成的只读 catalog，
+assets 提供 canonical 源资产与生成的运行资源；两端都会消费这三类输入。
 
-跨端品牌源资产位于 `shared/assets/branding/`。平台最外层的图标资源由此派生，不得由 `domain` 或 `application` 直接引用。
+核心学习默认完全离线。唯一可选的网络边界是默写草稿同步；只有组合入口收到完整
+HTTPS endpoint、账号标识与 bearer token 时才启用，否则必须装配 no-network
+adapter。词库、学习进度和导出文件不得进入该同步端口。
 
-冰子陪伴宠物遵循同一边界：`shared/contracts/pet-companion-v1.md` 定义目标
-区域、状态转换和拖放语义；两端 domain 只实现几何/状态纯函数，presentation
-采集当前页面的控件、面板、图表曲线和窗口边界并负责动画、手势与资源渲染。
-宠物位置、速度、目标与特效实例是瞬态状态，切页由 presentation 触发
-`drop-to-nearest`，不得持久化。`pet-vitals-v1` 另行定义持久化的饱食度、
-`FoodJar` 储食罐值对象、心情和单词恢复标记；这些规则位于 domain，经
-application 端口保存，不能混入
-运动 `PetState`，也不能复用会进入搜索、分组和默写的 `VocabularyEntry.tags`。
-储食罐在平台存储中继续使用 `foodReserve` 标量 wire shape。评分排期与已学词
-存储仍是两个物理边界；application 在第二次写入失败时用 review savepoint
-补偿本次排期/活动写入，但不得将其描述为跨文件的 crash-atomic 事务。
+## 2. 事实来源
 
-`pet-appearance-v1` 与运动、成长契约分离：domain 只接收落地冲击速度、滞空/静止
-时长、运动状态、可选饱食度和已判定的双击事件，返回形象 key；资源工具在
-`shared/assets/branding/pet_states/` 发现并校验源 PNG，生成到
-`shared/assets/pets/states/`。当前资源集为空，presentation 继续渲染 normal 冰子；
-未来启用必须先确认 `pain > scared`，并同时更新两端资源映射、测试和 capability。
+发生冲突时，按以下顺序修正外层工件，而不是让两端各自定义行为：
 
-## 一致性边界
+1. `shared/contracts/*-v1.md` 定义详细语义；存在配套 `*-golden-v1.json` 时，它提供
+   可执行测试向量。CSV 目前只有 fixtures，learning reminder 与 dictation draft
+   没有独立 golden 文件。
+2. `shared/contracts/parity.json` 汇总发布、schema、算法、内容版本、共享参数和
+   capability 状态。它不是所有行为细节的替代品。
+3. `windows/platform-contract.json` 与 `android/platform-contract.json` 镜像共享
+   parity 清单。
+4. 两端实现、平台测试和 `tools/verify_sync.py` 共同提供其覆盖范围内的实现证据。
 
-双端必须共享以下语义：
+`schemaVersion` 当前只是三份聚合清单中的同步字段，尚未自动绑定每个 Windows
+存储常量或 Android wire schema；变更存储格式时仍需逐个检查迁移与兼容测试。
 
-- `VocabularyEntry` 的规范化 ID、词书 membership、中文释义及至少三组双语例句。
-- `ReviewState` 的 UTC 时间、评分枚举、间隔、熟练度、复习次数和遗忘次数。
-- CSV v1 的列、编码、校验、重复处理和逐行错误代码。
-- `lexi-sm2-v1` 的四档评分计算及 golden vectors。
-- `weighted-review-v1` 的初始/更新权重、无放回会话、批次数量和旧数据迁移语义。
-- 学习、复习与弹窗提醒分别持久化互不影响的多选词汇组筛选。
-- 字体缩放范围 `0.9..1.4`、每日新词/复习上限及版本字段。
-- `dictation-export-v1` 的 A4 portrait worksheet、字段挖空、词性 extraction、例句替换、候选选择、evaluated tag override 和 DOCX/PDF 输出语义。
-- `word-bubble-v1` 的英文 token、词性/中文解析、20 层递归栈、双语例句展示、弹窗尺寸与关闭语义。
-- `pet-vitals-v1` 的数值边界、派生饥饿状态、恢复标记互斥、评分奖励矩阵和溢出/自动补食顺序。
-- `pet-appearance-v1` 的状态阈值、资源命名、happy 数字排序、缺失资源回退、推荐优先级和 disabled 门槛。
-- `vocabulary-groups-v1` 的词书分组推导（词书 code 归一化、标签/词书判组、自定义来源）、既定顺序（全部、CET-4、CET-6、中考/zk、高考/gk、自定义）、显示标签与词库分组浏览器；进入词库先展示分组，点击分组后查看该组单词并保留现有词库全部功能。默写纸不再使用顶部“四级/六级/自定义”勾选行，分组浏览器成为随机与手选两种模式的统一范围选择器：随机模式点击分组（或“全部”）设置取样范围并进入只读词条表，可从当前词书切换为手选；手选模式在该组内勾选且已勾选跨分组保留。
+新增或修改跨端行为时，先改契约，再改三份清单、双端实现和双端测试。只有两端
+完成且门禁通过后，capability 才能标记为 `ready`。
 
-默写导出必须先生成平台无关的 `Document` 模型；preview 与 DOCX/PDF 输出共享该模型，不能由各 writer 重复实现业务规则。内置 catalog 只读，evaluated 只能写入本地 tag override。
+## 3. 分层与依赖方向
 
-进入默写纸的短暂加载层属于 presentation 瞬态状态。两端都必须绘制可观察的翻书页动画，离开页面时取消计时与帧回调，不得写入任何持久化状态。
+每个平台都使用向内依赖的分层结构。Presentation 与 Infrastructure 是并列外层；
+Infrastructure 实现内层声明的端口，组合入口负责选择具体适配器。
 
-例句词语气泡是临时 presentation 状态；application 只提供规范化 token 的查词结果，domain 保存无平台依赖的 token 与栈 reducer。Windows 与 Android 的气泡必须消费同一 `word-bubble-v1` 契约：已知词必须同时展示中文释义与至少三组双语例句，例句必须是“英文+简体中文”双语搭配，缺少简体中文时以“（暂无中文释义）”占位补全；弹窗尺寸必须恰好足以完整展示单词信息（不得过大或裁剪）；20 层上限、显式关闭（当前气泡及其子级）与外部点击关闭规则不得由单端自行变更。
+```text
+                         +-------------------+
+                         | Composition roots |
+                         +---------+---------+
+                                   |
+                    +--------------+--------------+
+                    v                             v
+             Presentation                 Infrastructure
+                    |                        |          |
+                    +----------+-------------+          |
+                               v                        |
+                         Application <------------------+
+                               |
+                               v
+                            Domain
+```
 
-## 数据与隐私
+允许外层直接消费更内层的不可变值类型，但禁止任何向外反向依赖。
 
-核心学习完全离线，无广告或默认后台上传。Windows 数据保存在用户应用数据目录，Android 数据保存在应用私有目录。可选的默写草稿同步端口仅在组合根提供 HTTPS 服务地址、账号标识和安全存储凭据后启用，只传输版本化草稿、revision 和删除墓碑；词库、学习进度与导出文件始终不进入该端口。两端在本机加密保存当前草稿、最后同步信封及最多三份冲突备份。Android CSV 选择使用 Storage Access Framework，不申请广泛存储权限。
+| 层 | 负责 | 禁止 |
+|---|---|---|
+| Domain | 词条与复习模型、规范化、调度、默写文档、气泡栈、分组、宠物运动/成长/形象纯规则 | UI toolkit、Android SDK、文件系统、具体仓储、平台资源句柄 |
+| Application | 用例编排、端口、查询结果、跨仓储补偿、导入/导出/同步流程 | Tkinter、Android SDK、具体 JSON/SharedPreferences 类 |
+| Infrastructure | catalog/CSV adapter、本地存储、加密、DOCX/PDF writer、可选 HTTPS transport、Android 通知适配器 | 页面状态和交互规则 |
+| Presentation | Tkinter/Compose 页面、ViewModel/UI state、预览渲染、动画、手势、无障碍语义 | 直接读取 catalog/持久化文件、创建具体仓储、复制领域规则 |
+| Composition root | 进程入口、平台生命周期、权限/文件选择、具体依赖装配 | 业务规则 |
 
-## 内容门禁
+### Windows
 
-内置词库发布前必须验证：稳定 ID 唯一、中文释义非空、CET membership 合法、至少三条不同的英文例句且每条中文翻译非空、来源和内容版本存在。导入词条使用同一套最小内容规则。
+```text
+windows/main.py
+  -> CatalogLoader + JSON repositories + CSV/export/sync adapters
+  -> LearningService
+  -> LexiTrackApp
+```
 
-默写契约见 `shared/contracts/dictation-export-v1.md`，golden vectors 见 `shared/contracts/dictation-export-golden-v1.json`。该功能的 Windows/Android 实现和测试必须在同一提交中完成，并通过 CI，在 GitHub PR 中留下可追踪记录。
+- `windows/main.py` 是 GUI/CLI 入口、主要组合根和 DPI 平台边界。
+- `windows/application/services.py` 中的 `LearningService` 是主要用例门面。
+- `windows/domain/ports.py` 与 `windows/application/ports.py` 声明内层端口。
+- `windows/infrastructure/` 实现 catalog、CSV、JSON 存储、DPAPI 加密、导出和
+  可选 HTTPS 草稿同步。
+- `windows/presentation/` 实现 Tkinter 页面、词语气泡、冰子窗口协调和评分特效。
 
-冰子形象状态的完整自问自答、锁定范围和唯一开放优先级问题见
-`docs/grill-qna-pet-appearance.md`；开发者添加素材前必须阅读该清单。
+### Android
+
+```text
+:app (MainActivity + AppContainer)
+  +-> :presentation -> :application -> :domain
+  +-> :infrastructure -> :application -> :domain
+
+ReminderReceiver (headless platform entry)
+  -> repositories + GetReminderCardUseCase + notification adapter
+```
+
+- `:domain` 与 `:application` 是纯 JVM 模块；不得引用 Android SDK。
+- `:presentation` 与 `:infrastructure` 是 Android library；`:app` 是前台组合模块。
+- `MainActivity` 处理生命周期、通知权限、SAF 输入/输出、提醒调度和 deep link；
+  `AppContainer` 装配前台用例。
+- `ReminderReceiver` 是后台通知的第二个、无界面的平台入口，不是页面层。
+
+## 4. 状态所有权
+
+| 状态 | Windows | Android | 规则 |
+|---|---|---|---|
+| 内置 catalog | 打包的 `shared/content/catalog.json` | 构建期并入 assets | 只读，只能由生成器更新 |
+| 用户词条、排期、活动、设置、tag override | `learning-state.json` | 多组私有 SharedPreferences | 只经 repository 端口访问 |
+| 已学词权重、恢复标记、宠物成长 | `Words_Learnt.json` | `Words_Learnt` SharedPreferences | 与排期存储保持物理隔离 |
+| 默写草稿、同步元数据、最后同步 envelope、冲突备份 | DPAPI 加密后写入本地状态 | Android Keystore AES-GCM 后写入专用 preferences | 禁止明文降级；最多三份冲突备份 |
+| 导航/搜索、未保存的页面选择、气泡栈、宠物位置/速度/目标、翻页帧、光球/拖尾/爆点 | Presentation 内存 | Presentation 内存 | 瞬态，不得持久化；可恢复的默写选择只能进入上方版本化草稿 |
+
+一次评分会同时更新复习排期和已学词/成长状态。Application 在第二次写入失败时
+使用 review savepoint 补偿第一次写入；这只是进程内补偿，不是跨文件、跨
+SharedPreferences 或跨崩溃的原子事务。
+
+## 5. 关键数据流
+
+### 学习与评分
+
+```text
+UI -> Service/UseCase -> repository ports -> domain scheduler/reward reducer
+   -> review store -> learnt-word/vitals store -> refreshed UI state
+```
+
+时间统一使用 UTC epoch seconds。调度计算必须接收显式时间；新增领域规则不得直接
+读取系统时钟。
+
+### 冰子运动与评分光球
+
+`pet-companion-v1` 的运动、接触和弹跳由 domain 纯 reducer 计算，presentation
+注册可见目标并负责窗口迁移、手势、时钟和渲染。运动状态不进入持久化。
+`pet-vitals-v1` 的成长值与恢复标记经 application 端口保存；`FoodJar` 是领域值
+对象，存储仍使用兼容的 `foodReserve` 标量，恢复标记不得成为词条标签。
+
+`pet-energy-ball-v1` 独立定义评分光球：每次有效评分创建独立的瞬态追踪实例，
+命中只控制视觉效果，不延迟或重复结算评分与成长。光球、拖尾和爆点位于
+presentation；原生窗口、透明命中和绘图资源由平台适配器管理。Windows 专用
+尺寸配置由该契约和三份 manifest 声明，不能扩散到共享运动参数。
+
+可选形象由 `pet-appearance-v1` 约束。素材缺失或优先级尚未确认时维持 disabled，
+两端使用现有 normal 资源；不得通过合并或构建自动启用状态。
+
+### CSV 导入
+
+```text
+platform picker -> bytes/path -> UI boundary -> application import use case
+  -> CSV/repository ports -> infrastructure parser/storage -> import report -> UI
+```
+
+UTF-8、RFC 4180、字段长度、membership、三组双语例句、重复与错误码由
+`csv-import-v1.md` 定义。导入不得覆盖已有词条或学习进度。
+
+### 默写预览与导出
+
+```text
+UI selection -> application -> domain DictationDocument
+  +-> presentation preview
+  +-> infrastructure DOCX/PDF bytes -> platform save picker -> user file
+```
+
+Preview 与 writer 消费同一个平台无关 `Document`；preview 属于 Presentation，
+DOCX/PDF 编码属于 Infrastructure，文件选择和最终写出应属于平台边界。Windows
+当前仍在 presentation 完成 picker/最终写出，属于第 8 节记录的历史例外。至少一个
+格式成功写出后，才能按设置写入本地 `evaluated` tag override。
+
+## 6. 契约索引
+
+| 领域 | 必读契约 | 自动化载体 |
+|---|---|---|
+| 调度与复习 | `scheduler-v1.md`、`weighted-review-v1.md` | 两份同名 golden JSON |
+| 导入、词书与提醒 | `csv-import-v1.md`、`vocabulary-groups-v1.md`、`learning-reminder-v1.md` | CSV fixtures；groups golden；reminder 无独立 golden |
+| 默写 | `dictation-export-v1.md`、`dictation-draft-v1.md` | export golden；draft 无独立 golden |
+| 递归词语气泡 | `word-bubble-v1.md` | 同名 golden JSON |
+| 冰子运动、成长与形象 | `pet-companion-v1.md`、`pet-vitals-v1.md`、`pet-appearance-v1.md` | 三份同名 golden JSON |
+| 评分光球 | `pet-energy-ball-v1.md` | 同名 golden JSON；含显式平台尺寸配置 |
+
+契约中已有的阈值、排序、文案和交互语义不要复制到本文件；修改时直接更新契约和
+golden vectors，避免架构文档随功能细节漂移。
+
+## 7. 生成物边界
+
+以下文件不得手工编辑：
+
+- `shared/content/catalog.json` 与 `catalog-manifest.json`：由
+  `python tools/build_catalog.py` 生成。默认输入是 `.cache/ecdict.csv` 和仓库同级
+  `../单词记忆1/data/cet4_words.json`，因此默认生成流程不是完全自包含的。
+- `shared/assets/pets/bingzi.png` 与 `bingzi-left.png`：由
+  `python tools/prepare_pet_asset.py` 从 canonical `pet_image.png` 生成。
+- `shared/assets/pets/states/` 中的状态 PNG 与 `manifest.json`：由
+  `python tools/prepare_pet_appearance_assets.py` 从
+  `shared/assets/branding/pet_states/` 生成。目录中的 `README.md` 仍由人工维护。
+
+`shared/assets/branding/app_image.png` 是 canonical 应用图源。目前仓库尚无统一的
+平台图标生成工具；新增平台图标流水线时应补可重现性校验。
+
+## 8. 已知架构债务
+
+这些是现状说明，不是可复制的先例：
+
+- Windows `presentation/app.py` 仍直接打开导入/保存对话框、写导出文件，并有两处
+  通过 `LearningService.repository` 查询状态。新代码应补 application query/use
+  case，不得增加 presentation 到存储的直连。
+- Android 默写草稿同步仍有部分编排位于 `MainViewModel`。新流程应下沉到
+  application use case。
+- Windows `domain/dictation_sync.py` 的兼容 helper 在未传时间时会读取系统时钟。
+  新领域 API 必须显式注入时间。
+- `windows/presentation/app.py` 和 `windows/application/services.py` 是大型热点文件；
+  修改应局部、配套测试，避免继续扩大跨层职责。
+- `tools/verify_sync.py` 是契约/内容/资产/parity 门禁，不是完整架构 linter；脚本
+  通过不代表分层必然合规。
+- Android 当前没有 Activity、Receiver、真实 Compose 交互或设备级 SAF 自动化
+  测试；相关改动需要额外人工/设备验证。
+
+## 9. 交付门禁
+
+从仓库根目录执行：
+
+```powershell
+python -m pip install -r .\tools\requirements-content.txt
+python .\tools\verify_sync.py
+python -m pip install -r .\windows\requirements-build.txt
+python -m unittest discover -s .\windows\tests -v
+python .\windows\main.py --smoke-test --data-dir .\windows\.smoke-data
+.\android\gradlew.bat -p .\android test lintDebug assembleDebug
+```
+
+Android 必须使用 JDK 17 与 SDK 35。CI 还会打包并 smoke-test Windows EXE、构建
+debug APK、生成 SHA-256 并上传 Actions artifacts。`verify_sync.py` 不能替代双端
+测试、lint、build 或 smoke test。
+
+每项行为变更都必须在同一 branch/PR 中包含 Windows、Android、共享契约、三份
+清单和风险相称的双端测试，除非请求明确声明单平台例外。交付前保留无关工作区
+修改，提交并推送分支，创建 GitHub pull request，并记录实际执行的验证命令。
