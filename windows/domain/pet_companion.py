@@ -40,9 +40,11 @@ MINIMUM_FLING_SPEED = 90.0
 MAX_FLING_SPEED = 1800.0
 MAX_FALL_SPEED = None
 HARD_LANDING_SPEED = 437.5
-BOUNCE_COUNT = 2
-FIRST_BOUNCE_SPEED = 312.5
-BOUNCE_DECAY = 0.55
+BOUNCE_COUNT = 5
+MAX_BOUNCE_SPEED = 1250.0
+MIN_BOUNCE_SPEED = 120.0
+BOUNCE_DECAY = 0.78
+BOUNCE_TOP_RESTITUTION = 0.5
 CENTER_BIAS_WEIGHT = 0.65
 EDGE_PENALTY_RATIO = 0.15
 IDLE_TICKS = 24
@@ -1213,44 +1215,68 @@ def _advance_bounce_at(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    displacement, velocity = _gravity_step(state.vertical_velocity, allow_upward=True)
-    next_y = state.position.y + displacement
-    if velocity > 0.0 and next_y >= landing.y:
-        position = viewport.clamp(PetPoint(state.position.x, landing.y), pet_size)
-        if state.bounces_remaining > 1:
-            return replace(
-                state,
-                position=position,
-                target_id=bounce_target_id,
-                vertical_velocity=-(FIRST_BOUNCE_SPEED * BOUNCE_DECAY),
-                bounces_remaining=state.bounces_remaining - 1,
-                movement_speed=0.0,
-                horizontal_velocity=0.0,
-                curve_velocity=None,
-            )
-        return replace(
-            state,
-            position=position,
-            mode=PetMode.IDLE,
-            target_id=resting_target_id,
-            idle_ticks_remaining=IDLE_TICKS,
-            movement_speed=0.0,
-            vertical_velocity=0.0,
-            bounces_remaining=0,
-            horizontal_velocity=0.0,
-            curve_velocity=None,
+    top = viewport.top + pet_size
+    y = state.position.y
+    velocity = state.vertical_velocity
+    remaining = FALL_TIME_STEP_SECONDS
+    bounces_remaining = state.bounces_remaining
+    settled = landing.y <= top + 1e-6
+    for _ in range(MAX_SUBSTEPS_PER_TICK):
+        if settled or remaining <= 1e-9:
+            break
+        contacts: list[tuple[float, str]] = []
+        ground_time = _quadratic_descending_root(
+            0.5 * FALL_GRAVITY, velocity, y - landing.y, remaining,
         )
-    position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
+        if ground_time is not None:
+            contacts.append((ground_time, "ground"))
+        elif y >= landing.y - 1e-6 and velocity >= 0.0:
+            contacts.append((0.0, "ground"))
+        top_time = _quadratic_positive_root(
+            0.5 * FALL_GRAVITY, velocity, y - top, remaining,
+        )
+        if top_time is not None and velocity + FALL_GRAVITY * top_time < -1e-6:
+            contacts.append((top_time, "top"))
+        elif y <= top + 1e-6 and velocity < 0.0:
+            contacts.append((0.0, "top"))
+        if not contacts:
+            y += velocity * remaining + 0.5 * FALL_GRAVITY * remaining * remaining
+            velocity += FALL_GRAVITY * remaining
+            remaining = 0.0
+            break
+        elapsed, boundary = min(contacts, key=lambda item: item[0])
+        velocity += FALL_GRAVITY * elapsed
+        remaining -= elapsed
+        if boundary == "top":
+            y = top
+            velocity = abs(velocity) * BOUNCE_TOP_RESTITUTION
+            continue
+        y = landing.y
+        rebound_speed = _rebound_speed(velocity)
+        if bounces_remaining <= 1 or rebound_speed < MIN_BOUNCE_SPEED:
+            settled = True
+            break
+        velocity = -rebound_speed
+        bounces_remaining -= 1
+    if settled:
+        y = landing.y
+        velocity = 0.0
     return replace(
         state,
-        position=position,
-        mode=PetMode.BOUNCE,
-        target_id=bounce_target_id,
+        position=PetPoint(state.position.x, y),
+        mode=PetMode.IDLE if settled else PetMode.BOUNCE,
+        target_id=resting_target_id if settled else bounce_target_id,
+        idle_ticks_remaining=IDLE_TICKS if settled else 0,
         vertical_velocity=velocity,
+        bounces_remaining=0 if settled else bounces_remaining,
         movement_speed=0.0,
         horizontal_velocity=0.0,
         curve_velocity=None,
     )
+
+
+def _rebound_speed(impact_velocity: float) -> float:
+    return min(MAX_BOUNCE_SPEED, max(0.0, impact_velocity) * BOUNCE_DECAY)
 
 
 def _land_at_viewport_bottom(
@@ -1266,7 +1292,7 @@ def _land_at_viewport_bottom(
             target_id=_VIEWPORT_BOTTOM_TARGET_ID,
             idle_ticks_remaining=0,
             movement_speed=0.0,
-            vertical_velocity=-FIRST_BOUNCE_SPEED,
+            vertical_velocity=-_rebound_speed(impact_velocity),
             bounces_remaining=BOUNCE_COUNT,
             horizontal_velocity=0.0,
             curve_velocity=None,
@@ -1376,7 +1402,7 @@ def _advance_fall(
             mode=PetMode.BOUNCE,
             target_id=target.id,
             movement_speed=0.0,
-            vertical_velocity=-FIRST_BOUNCE_SPEED,
+            vertical_velocity=-_rebound_speed(impact_velocity),
             bounces_remaining=BOUNCE_COUNT,
             horizontal_velocity=0.0,
             curve_velocity=None,
@@ -1724,7 +1750,7 @@ def _advance_fling_substep(
                     mode=PetMode.BOUNCE,
                     target_id=target.id,
                     movement_speed=0.0,
-                    vertical_velocity=-FIRST_BOUNCE_SPEED,
+                    vertical_velocity=-_rebound_speed(abs(vy_at_contact)),
                     bounces_remaining=BOUNCE_COUNT,
                     horizontal_velocity=0.0,
                     curve_velocity=None,

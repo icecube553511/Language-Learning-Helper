@@ -485,8 +485,11 @@ class PetCompanionTest {
         assertEquals("null", motion.getValue("maxFallSpeed").toString())
         assertEquals(PET_HARD_LANDING_SPEED, motion.getValue("hardLandingSpeed").jsonPrimitive.float)
         assertEquals(PET_BOUNCE_COUNT, motion.getValue("bounceCount").jsonPrimitive.content.toInt())
-        assertEquals(PET_FIRST_BOUNCE_SPEED, motion.getValue("firstBounceSpeed").jsonPrimitive.float)
+        assertEquals(PET_MAX_BOUNCE_SPEED, motion.getValue("maxBounceSpeed").jsonPrimitive.float)
+        assertEquals(PET_MIN_BOUNCE_SPEED, motion.getValue("minBounceSpeed").jsonPrimitive.float)
         assertEquals(PET_BOUNCE_DECAY, motion.getValue("bounceDecay").jsonPrimitive.float)
+        assertEquals(PET_BOUNCE_TOP_RESTITUTION, motion.getValue("bounceTopRestitution").jsonPrimitive.float)
+        assertEquals("impact-speed-with-restitution", motion.getValue("bounceSpeedPolicy").jsonPrimitive.content)
         assertEquals(PET_CENTER_BIAS_WEIGHT, motion.getValue("centerBiasWeight").jsonPrimitive.float)
         assertEquals(PET_EDGE_PENALTY_RATIO, motion.getValue("edgePenaltyRatio").jsonPrimitive.float)
 
@@ -627,7 +630,7 @@ class PetCompanionTest {
         assertEquals(fall.getValue("expectedVerticalVelocity").jsonPrimitive.float, fallResult.verticalVelocity, 1e-4f)
         assertEquals(PetMode.valueOf(fall.getValue("expectedMode").jsonPrimitive.content.uppercase()), fallResult.mode)
 
-        val hardLanding = vectors.getValue("hard-landing-bounces-twice").jsonObject
+        val hardLanding = vectors.getValue("hard-landing-elastic-bounces").jsonObject
         val hardLandingResult = advancePet(
             PetState(
                 point(hardLanding.getValue("position")),
@@ -648,6 +651,7 @@ class PetCompanionTest {
         assertEquals(
             hardLanding.getValue("expectedBounceVerticalVelocity").jsonPrimitive.float,
             hardLandingResult.verticalVelocity,
+            1e-4f,
         )
 
         val offsetFall = vectors.getValue("fall-skips-horizontally-offset-support").jsonObject
@@ -705,7 +709,7 @@ class PetCompanionTest {
         )
         assertEquals(touching.getValue("expectedVerticalVelocity").jsonPrimitive.float, touchingResult.verticalVelocity)
 
-        val synthetic = vectors.getValue("synthetic-bottom-hard-landing-bounces-twice").jsonObject
+        val synthetic = vectors.getValue("synthetic-bottom-elastic-bounces").jsonObject
         val syntheticViewport = synthetic.getValue("viewport").jsonArray.map { it.jsonPrimitive.float }
         val syntheticResult = advancePet(
             PetState(
@@ -719,7 +723,7 @@ class PetCompanionTest {
         )
         assertPointClose(point(synthetic.getValue("expectedPosition")), syntheticResult.position)
         assertEquals(PetMode.BOUNCE, syntheticResult.mode)
-        assertEquals(synthetic.getValue("expectedBounceVerticalVelocity").jsonPrimitive.float, syntheticResult.verticalVelocity)
+        assertEquals(synthetic.getValue("expectedBounceVerticalVelocity").jsonPrimitive.float, syntheticResult.verticalVelocity, 1e-4f)
         assertEquals(
             synthetic.getValue("expectedBouncesRemaining").jsonPrimitive.content.toInt(),
             syntheticResult.bouncesRemaining,
@@ -1339,7 +1343,7 @@ class PetCompanionTest {
     }
 
     @Test
-    fun `hard landing performs two decaying vertical bounces without horizontal drift`() {
+    fun `hard landing performs up to five decaying vertical bounces without horizontal drift`() {
         val target = PetTarget("landing", PetTargetKind.SURFACE, PetRect(20f, 80f, 60f, 20f))
         var state = advancePet(
             PetState(PetPoint(50f, 75f), PetMode.FALL, verticalVelocity = 500f),
@@ -1357,8 +1361,7 @@ class PetCompanionTest {
             }
         }
 
-        assertTrue(2 in remainingCounts)
-        assertTrue(1 in remainingCounts)
+        assertEquals((0..PET_BOUNCE_COUNT).toSet(), remainingCounts)
         assertEquals(PetMode.IDLE, state.mode)
         assertEquals(0, state.bouncesRemaining)
         assertEquals(PetPoint(50f, 80f), state.position)
@@ -2055,5 +2058,137 @@ class PetCompanionTest {
         assertEquals(PetMode.FALL, next.mode)
         assertEquals(null, next.targetId)
         assertTrue(next.position.y < 0f)
+    }
+
+    @Test
+    fun `bottom landing stays continuous through every bounce and recovery toward upper content`() {
+        val vector = sharedVector("bounceStabilityVectors", "bottom-bounce-retains-anchor-before-upper-content-return")
+        val size = sharedPoint(vector.getValue("viewport"))
+        val viewport = PetRect(0f, 0f, size.x, size.y)
+        fun target(key: String): PetTarget {
+            val item = vector.getValue(key).jsonObject
+            val rect = item.getValue("rect").jsonArray.map { it.jsonPrimitive.float }
+            return PetTarget(item.getValue("id").jsonPrimitive.content,
+                PetTargetKind.valueOf(item.getValue("kind").jsonPrimitive.content.uppercase()),
+                PetRect(rect[0], rect[1], rect[2], rect[3]))
+        }
+        val upper = target("upperTarget")
+        val bottom = target("bottomTarget")
+        val initialPosition = sharedPoint(vector.getValue("position"))
+        val targets = listOf(upper, bottom)
+        var state = PetState(initialPosition, PetMode.FALL)
+        var landed = false
+        var recovered = false
+        val bounceCounts = mutableSetOf<Int>()
+        repeat(vector.getValue("ticks").jsonPrimitive.content.toInt()) {
+            val next = advancePet(state, targets, viewport, halfSize = vector.getValue("petHalfSize").jsonPrimitive.float)
+            if (next.position.y < state.position.y) {
+                assertTrue(state.position.y - next.position.y <= vector.getValue("maxUpwardStep").jsonPrimitive.float)
+            }
+            if (next.mode == PetMode.BOUNCE) {
+                landed = true
+                bounceCounts += next.bouncesRemaining
+                assertEquals(bottom.id, next.targetId)
+                assertEquals(initialPosition.x, next.position.x)
+                assertTrue(next.position.y <= vector.getValue("expectedBottomY").jsonPrimitive.float + 1e-3f)
+            }
+            if (landed && next.mode == PetMode.FLY && next.targetId == upper.id) recovered = true
+            state = next
+        }
+        assertTrue(landed)
+        assertEquals((1..vector.getValue("expectedRebounds").jsonPrimitive.content.toInt()).toSet(), bounceCounts)
+        assertTrue(recovered)
+    }
+
+    @Test
+    fun `faster impacts create taller rebounds with a bounded maximum speed`() {
+        val viewport = PetRect(0f, 0f, 800f, 2000f)
+        fun firstArc(impact: Float): Pair<Float, Float> {
+            var state = advancePet(PetState(PetPoint(400f, 1999f), PetMode.FALL, verticalVelocity = impact),
+                emptyList(), viewport, halfSize = 0f)
+            val firstSpeed = -state.verticalVelocity
+            var highestY = state.position.y
+            repeat(100) {
+                if (state.verticalVelocity < 0f) {
+                    state = advancePet(state, emptyList(), viewport, halfSize = 0f)
+                    highestY = minOf(highestY, state.position.y)
+                }
+            }
+            return firstSpeed to (viewport.bottom - highestY)
+        }
+        val slower = firstArc(500f)
+        val faster = firstArc(1500f)
+        val capped = firstArc(5000f)
+        assertTrue(faster.first > slower.first)
+        assertTrue(faster.second > slower.second * 4f)
+        assertEquals(PET_MAX_BOUNCE_SPEED, capped.first)
+        assertTrue(capped.second <= PET_MAX_BOUNCE_SPEED * PET_MAX_BOUNCE_SPEED / (2f * PET_FALL_GRAVITY) + 1e-3f)
+        val vector = sharedVector("bounceStabilityVectors", "rebound-speed-follows-impact-with-cap")
+        val expected = vector.getValue("expectedReboundSpeeds").jsonArray
+        vector.getValue("impactSpeeds").jsonArray.forEachIndexed { index, value ->
+            val landed = advancePet(
+                PetState(PetPoint(400f, 2000f), PetMode.FALL, verticalVelocity = value.jsonPrimitive.float),
+                emptyList(), viewport, halfSize = 0f,
+            )
+            assertEquals(expected[index].jsonPrimitive.float, -landed.verticalVelocity, 1e-4f)
+        }
+    }
+
+    @Test
+    fun `successive rebound contacts dissipate energy and stop within five arcs`() {
+        val viewport = PetRect(0f, 0f, 800f, 2000f)
+        var state = advancePet(PetState(PetPoint(400f, 1999f), PetMode.FALL, verticalVelocity = 2000f),
+            emptyList(), viewport, halfSize = 0f)
+        fun energy(value: PetState) = 0.5f * value.verticalVelocity * value.verticalVelocity +
+            PET_FALL_GRAVITY * (viewport.bottom - value.position.y)
+        var previousEnergy = energy(state)
+        val counts = mutableSetOf(state.bouncesRemaining)
+        repeat(250) {
+            if (state.mode == PetMode.BOUNCE) {
+                val next = advancePet(state, emptyList(), viewport, halfSize = 0f)
+                val nextEnergy = energy(next)
+                assertTrue(nextEnergy <= previousEnergy + 2f)
+                if (next.mode == PetMode.BOUNCE && next.bouncesRemaining < state.bouncesRemaining) {
+                    assertEquals(previousEnergy * PET_BOUNCE_DECAY * PET_BOUNCE_DECAY, nextEnergy, 2f)
+                }
+                counts += next.bouncesRemaining
+                previousEnergy = nextEnergy
+                state = next
+            }
+        }
+        assertEquals(PetMode.IDLE, state.mode)
+        assertEquals((0..PET_BOUNCE_COUNT).toSet(), counts)
+        assertPointClose(PetPoint(400f, 2000f), state.position)
+    }
+
+    @Test
+    fun `bounce reflects at the ceiling and advances the remaining frame time`() {
+        val viewport = PetRect(0f, 0f, 400f, 300f)
+        val initial = PetState(PetPoint(200f, 10f), PetMode.BOUNCE, "__viewport-bottom__",
+            verticalVelocity = -1000f, bouncesRemaining = 5)
+        val next = advancePet(initial, emptyList(), viewport, halfSize = 0f)
+        val contactTime = (1000f - kotlin.math.sqrt(1000f * 1000f - 2f * PET_FALL_GRAVITY * 10f)) / PET_FALL_GRAVITY
+        val reflectedVelocity = (1000f - PET_FALL_GRAVITY * contactTime) * PET_BOUNCE_TOP_RESTITUTION
+        val remaining = PET_FALL_TIME_STEP_SECONDS - contactTime
+        assertEquals(PetMode.BOUNCE, next.mode)
+        assertEquals(5, next.bouncesRemaining)
+        assertEquals(reflectedVelocity * remaining + 0.5f * PET_FALL_GRAVITY * remaining * remaining, next.position.y, 1e-4f)
+        assertEquals(reflectedVelocity + PET_FALL_GRAVITY * remaining, next.verticalVelocity, 1e-3f)
+        assertTrue(next.position.y > 0f)
+    }
+
+    @Test
+    fun `elastic bounce scales consistently with display density`() {
+        val logicalViewport = PetRect(0f, 0f, 400f, 300f)
+        var logical = PetState(PetPoint(200f, 299f), PetMode.FALL, verticalVelocity = 1500f)
+        var scaled = logical.copy(position = PetPoint(400f, 598f), verticalVelocity = 3000f)
+        repeat(150) {
+            logical = advancePet(logical, emptyList(), logicalViewport, halfSize = 0f)
+            scaled = advancePet(scaled, emptyList(), PetRect(0f, 0f, 800f, 600f), halfSize = 0f, fallUnitScale = 2f)
+            assertEquals(logical.mode, scaled.mode)
+            assertEquals(logical.bouncesRemaining, scaled.bouncesRemaining)
+            assertEquals(logical.position.y * 2f, scaled.position.y, 1e-3f)
+            assertEquals(logical.verticalVelocity * 2f, scaled.verticalVelocity, 1e-3f)
+        }
     }
 }

@@ -21,7 +21,9 @@ from domain.pet_companion import (
     FLING_HORIZONTAL_RESTITUTION,
     FALL_GRAVITY,
     FALL_TIME_STEP_SECONDS,
-    FIRST_BOUNCE_SPEED,
+    MAX_BOUNCE_SPEED,
+    MIN_BOUNCE_SPEED,
+    BOUNCE_TOP_RESTITUTION,
     HARD_LANDING_SPEED,
     IDLE_TICKS,
     MAX_FALL_SPEED,
@@ -137,6 +139,9 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(motion["fallIntegration"], "closed-form-constant-acceleration")
         self.assertEqual(motion["bounceCount"], BOUNCE_COUNT)
         self.assertEqual(motion["bounceDecay"], BOUNCE_DECAY)
+        self.assertEqual(motion["maxBounceSpeed"], MAX_BOUNCE_SPEED)
+        self.assertEqual(motion["minBounceSpeed"], MIN_BOUNCE_SPEED)
+        self.assertEqual(motion["bounceTopRestitution"], BOUNCE_TOP_RESTITUTION)
         self.assertEqual(motion["idleTicks"], IDLE_TICKS)
         self.assertEqual(motion["supportSide"], "upper")
         self.assertTrue(motion["horizontalFlip"])
@@ -188,11 +193,11 @@ class PetCompanionTests(unittest.TestCase):
                 "navigation-prefers-below",
                 "fall-without-below-target-uses-viewport-bottom",
                 "fall-accelerates",
-                "hard-landing-bounces-twice",
+                "hard-landing-elastic-bounces",
                 "fall-skips-horizontally-offset-support",
                 "fall-retargets-new-nearest-support-every-tick",
                 "fall-already-touching-support-lands",
-                "synthetic-bottom-hard-landing-bounces-twice",
+                "synthetic-bottom-elastic-bounces",
                 "suspended-drag-release-enters-fall",
                 "center-bias-prefers-interior",
                 "center-bias-measures-nearest-support",
@@ -321,7 +326,7 @@ class PetCompanionTests(unittest.TestCase):
         self.assertAlmostEqual(falling_result.vertical_velocity, falling["expectedVerticalVelocity"])
         self.assertEqual(falling_result.mode.value, falling["expectedMode"])
 
-        hard = behaviors["hard-landing-bounces-twice"]
+        hard = behaviors["hard-landing-elastic-bounces"]
         hard_target = self.target_from(hard["target"])
         hard_result = advance_pet(
             PetState(
@@ -393,7 +398,7 @@ class PetCompanionTests(unittest.TestCase):
             touching["expectedVerticalVelocity"],
         )
 
-        synthetic = behaviors["synthetic-bottom-hard-landing-bounces-twice"]
+        synthetic = behaviors["synthetic-bottom-elastic-bounces"]
         synthetic_result = advance_pet(
             PetState(
                 PetPoint(*synthetic["position"]),
@@ -885,7 +890,7 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(state.position.y, 56)
         self.assertEqual(state.mode, PetMode.IDLE)
 
-    def test_fall_has_no_speed_cap_and_hard_landing_completes_two_bounces_without_drift(self):
+    def test_fall_has_no_speed_cap_and_hard_landing_completes_elastic_bounces_without_drift(self):
         target = PetTarget("landing", PetTargetKind.SURFACE, PetRect(20, 80, 60, 20))
         uncapped = advance_pet(
             PetState(PetPoint(50, 10), PetMode.FALL, vertical_velocity=1_000),
@@ -909,7 +914,7 @@ class PetCompanionTests(unittest.TestCase):
                 bounce_counts.append(state.bounces_remaining)
             if state.mode == PetMode.IDLE:
                 break
-        self.assertEqual(bounce_counts, [2, 1, 0])
+        self.assertEqual(bounce_counts, [5, 4, 3, 2, 1, 0])
         self.assertEqual(state.mode, PetMode.IDLE)
 
     def test_fall_matches_shared_closed_form_samples(self):
@@ -946,7 +951,7 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(state.mode, PetMode.IDLE)
         self.assertEqual(state.bounces_remaining, 0)
 
-    def test_synthetic_bottom_hard_landing_completes_two_bounces(self):
+    def test_synthetic_bottom_hard_landing_completes_elastic_bounces(self):
         viewport = PetRect(0, 0, 800, 700)
         state = advance_pet(
             PetState(PetPoint(100, 643), PetMode.FALL, vertical_velocity=500),
@@ -962,7 +967,7 @@ class PetCompanionTests(unittest.TestCase):
             if state.mode == PetMode.IDLE:
                 break
 
-        self.assertEqual(bounce_counts, [2, 1, 0])
+        self.assertEqual(bounce_counts, [5, 4, 3, 2, 1, 0])
         self.assertEqual(state.mode, PetMode.IDLE)
         self.assertIsNone(state.target_id)
         self.assertEqual(state.position, PetPoint(100, 644))
@@ -1031,7 +1036,7 @@ class PetCompanionTests(unittest.TestCase):
         )
         self.assertEqual(bounced.position, PetPoint(60, 100))
         self.assertEqual(bounced.mode, PetMode.BOUNCE)
-        self.assertEqual(bounced.vertical_velocity, -FIRST_BOUNCE_SPEED)
+        self.assertEqual(bounced.vertical_velocity, -500.0 * BOUNCE_DECAY)
         self.assertEqual(bounced.bounces_remaining, BOUNCE_COUNT)
 
     def test_navigation_uses_strict_landing_distance_without_center_bias(self):

@@ -10,6 +10,25 @@
   "petSizeMeaning": "half-size",
   "targetKinds": ["control", "surface", "chart", "edge"],
   "modes": ["idle", "slide", "roll", "fly", "fall", "bounce", "dragging", "fling"],
+  "bounceStabilityVectors": [
+    {
+      "name": "bottom-bounce-retains-anchor-before-upper-content-return",
+      "viewport": [900, 700],
+      "petHalfSize": 56,
+      "position": [450, 200],
+      "upperTarget": { "id": "upper", "kind": "control", "rect": [300, 80, 300, 40] },
+      "bottomTarget": { "id": "edge:bottom", "kind": "edge", "rect": [0, 697, 900, 3] },
+      "expectedBottomY": 641,
+      "expectedRebounds": 5,
+      "maxUpwardStep": 20.000001,
+      "ticks": 420
+    },
+    {
+      "name": "rebound-speed-follows-impact-with-cap",
+      "impactSpeeds": [500.0, 1000.0, 2000.0],
+      "expectedReboundSpeeds": [390.0, 780.0, 1250.0]
+    }
+  ],
   "facings": ["left", "right"],
   "navigationTransition": "drop-to-nearest",
   "windowScope": "application-owned-window",
@@ -67,9 +86,12 @@
     "fallIntegration": "closed-form-constant-acceleration",
     "maxFallSpeed": null,
     "hardLandingSpeed": 437.5,
-    "bounceCount": 2,
-    "firstBounceSpeed": 312.5,
-    "bounceDecay": 0.55,
+    "bounceCount": 5,
+    "maxBounceSpeed": 1250.0,
+    "minBounceSpeed": 120.0,
+    "bounceDecay": 0.78,
+    "bounceTopRestitution": 0.5,
+    "bounceSpeedPolicy": "impact-speed-with-restitution",
     "centerBiasWeight": 0.65,
     "edgePenaltyRatio": 0.15,
     "supportSide": "upper",
@@ -258,7 +280,7 @@
       "expectedMode": "fall"
     },
     {
-      "name": "hard-landing-bounces-twice",
+      "name": "hard-landing-elastic-bounces",
       "position": [50, 75],
       "mode": "fall",
       "verticalVelocity": 500.0,
@@ -268,8 +290,8 @@
       "expectedMode": "bounce",
       "expectedImpactTimeSeconds": 0.009678029146920314,
       "expectedImpactVerticalVelocity": 533.2682251925386,
-      "expectedBounceVerticalVelocity": -312.5,
-      "expectedBouncesRemaining": 2
+      "expectedBounceVerticalVelocity": -415.94921565018013,
+      "expectedBouncesRemaining": 5
     },
     {
       "name": "fall-skips-horizontally-offset-support",
@@ -317,7 +339,7 @@
       "expectedVerticalVelocity": 0.0
     },
     {
-      "name": "synthetic-bottom-hard-landing-bounces-twice",
+      "name": "synthetic-bottom-elastic-bounces",
       "position": [100, 643],
       "verticalVelocity": 500.0,
       "viewport": [800, 700],
@@ -329,8 +351,8 @@
       "expectedImpactTimeSeconds": 0.0019864358742784877,
       "expectedImpactVerticalVelocity": 506.8283733178323,
       "expectedMode": "bounce",
-      "expectedBounceVerticalVelocity": -312.5,
-      "expectedBouncesRemaining": 2
+      "expectedBounceVerticalVelocity": -395.3261311879092,
+      "expectedBouncesRemaining": 5
     },
     {
       "name": "suspended-drag-release-enters-fall",

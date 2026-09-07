@@ -51,9 +51,11 @@ const val PET_RELEASE_VELOCITY_SAMPLE_WINDOW_MS = 120L
 const val PET_MINIMUM_FLING_SPEED = 90f
 const val PET_MAX_FLING_SPEED = 1800f
 const val PET_HARD_LANDING_SPEED = 437.5f
-const val PET_BOUNCE_COUNT = 2
-const val PET_FIRST_BOUNCE_SPEED = 312.5f
-const val PET_BOUNCE_DECAY = 0.55f
+const val PET_BOUNCE_COUNT = 5
+const val PET_MAX_BOUNCE_SPEED = 1250f
+const val PET_MIN_BOUNCE_SPEED = 120f
+const val PET_BOUNCE_DECAY = 0.78f
+const val PET_BOUNCE_TOP_RESTITUTION = 0.5f
 const val PET_CENTER_BIAS_WEIGHT = 0.65f
 const val PET_EDGE_PENALTY_RATIO = 0.15f
 const val PET_IDLE_TICKS = 24
@@ -1630,7 +1632,7 @@ private fun landAtViewportBottom(
         targetId = PET_VIEWPORT_BOTTOM_TARGET_ID,
         idleTicksRemaining = 0,
         movementSpeed = 0f,
-        verticalVelocity = -PET_FIRST_BOUNCE_SPEED * fallUnitScale,
+        verticalVelocity = -min(impactVelocity * PET_BOUNCE_DECAY, PET_MAX_BOUNCE_SPEED * fallUnitScale),
         bouncesRemaining = PET_BOUNCE_COUNT,
         horizontalVelocity = 0f,
         curveVelocity = null,
@@ -1689,7 +1691,7 @@ private fun landedState(
         targetId = targetId,
         idleTicksRemaining = 0,
         movementSpeed = 0f,
-        verticalVelocity = -PET_FIRST_BOUNCE_SPEED * fallUnitScale,
+        verticalVelocity = -min(impactVelocity * PET_BOUNCE_DECAY, PET_MAX_BOUNCE_SPEED * fallUnitScale),
         bouncesRemaining = PET_BOUNCE_COUNT,
         horizontalVelocity = 0f,
         curveVelocity = null,
@@ -1759,45 +1761,79 @@ private fun advanceBounceAt(
     halfSize: Float,
     fallUnitScale: Float,
 ): PetState {
-    val initialVelocity = state.verticalVelocity
     val scaledGravity = PET_FALL_GRAVITY * fallUnitScale
-    val velocity = initialVelocity + scaledGravity * PET_FALL_TIME_STEP_SECONDS
-    val rawY = state.position.y + initialVelocity * PET_FALL_TIME_STEP_SECONDS +
-        0.5f * scaledGravity * PET_FALL_TIME_STEP_SECONDS * PET_FALL_TIME_STEP_SECONDS
-    if (velocity >= 0f && rawY >= landing.y) {
-        val landedPosition = viewport.clamp(PetPoint(state.position.x, landing.y), halfSize)
-        if (state.bouncesRemaining <= 1) {
-            return state.copy(
-                position = landedPosition,
-                mode = PetMode.IDLE,
-                targetId = restingTargetId,
-                idleTicksRemaining = PET_IDLE_TICKS,
-                movementSpeed = 0f,
-                verticalVelocity = 0f,
-                bouncesRemaining = 0,
-                horizontalVelocity = 0f,
-                curveVelocity = null,
-            )
-        }
-        val completedBounce = PET_BOUNCE_COUNT - state.bouncesRemaining + 1
-        val reboundSpeed = PET_FIRST_BOUNCE_SPEED * fallUnitScale * PET_BOUNCE_DECAY.pow(completedBounce)
+    var velocity = state.verticalVelocity
+    var y = state.position.y
+    var remaining = PET_FALL_TIME_STEP_SECONDS
+    var bouncesRemaining = state.bouncesRemaining
+    val top = viewport.clamp(PetPoint(state.position.x, viewport.top), halfSize).y
+    if (landing.y <= top + PET_EPSILON) {
         return state.copy(
-            position = landedPosition,
-            mode = PetMode.BOUNCE,
-            targetId = bounceTargetId,
+            position = viewport.clamp(PetPoint(state.position.x, landing.y), halfSize),
+            mode = PetMode.IDLE,
+            targetId = restingTargetId,
+            idleTicksRemaining = PET_IDLE_TICKS,
             movementSpeed = 0f,
-            verticalVelocity = -reboundSpeed,
-            bouncesRemaining = state.bouncesRemaining - 1,
+            verticalVelocity = 0f,
+            bouncesRemaining = 0,
             horizontalVelocity = 0f,
             curveVelocity = null,
         )
     }
+    // Consume contact time before reflecting; a strong rebound can reach the
+    // ceiling and start descending in the same simulation tick.
+    repeat(PET_MAX_SUBSTEPS_PER_TICK) {
+        if (remaining <= PET_CURVE_DIRECTION_EPSILON) return@repeat
+        val landingTime = positiveQuadraticRoots(0.5f * scaledGravity, velocity, y - landing.y, remaining)
+            .firstOrNull { time -> velocity + scaledGravity * time > PET_EPSILON }
+            ?: if (y >= landing.y - PET_EPSILON && velocity >= 0f) 0f else null
+        val topTime = if (velocity < -PET_EPSILON) {
+            if (y <= top + PET_EPSILON) 0f
+            else positiveQuadraticRoots(0.5f * scaledGravity, velocity, y - top, remaining)
+                .firstOrNull { time -> velocity + scaledGravity * time < -PET_EPSILON }
+        } else null
+        val ceilingFirst = topTime != null && (landingTime == null || topTime < landingTime)
+        val contactTime = if (ceilingFirst) topTime else landingTime
+        if (contactTime == null) {
+            y += velocity * remaining + 0.5f * scaledGravity * remaining * remaining
+            velocity += scaledGravity * remaining
+            remaining = 0f
+            return@repeat
+        }
+        val elapsed = contactTime.coerceIn(0f, remaining)
+        velocity += scaledGravity * elapsed
+        remaining = (remaining - elapsed).coerceAtLeast(0f)
+        if (ceilingFirst) {
+            y = top
+            velocity = abs(velocity) * PET_BOUNCE_TOP_RESTITUTION
+        } else {
+            y = landing.y
+            val reboundSpeed = min(abs(velocity) * PET_BOUNCE_DECAY, PET_MAX_BOUNCE_SPEED * fallUnitScale)
+            if (bouncesRemaining <= 1 || reboundSpeed < PET_MIN_BOUNCE_SPEED * fallUnitScale) {
+                return state.copy(
+                    position = viewport.clamp(PetPoint(state.position.x, y), halfSize),
+                    mode = PetMode.IDLE,
+                    targetId = restingTargetId,
+                    idleTicksRemaining = PET_IDLE_TICKS,
+                    movementSpeed = 0f,
+                    verticalVelocity = 0f,
+                    bouncesRemaining = 0,
+                    horizontalVelocity = 0f,
+                    curveVelocity = null,
+                )
+            }
+            velocity = -reboundSpeed
+            bouncesRemaining -= 1
+        }
+    }
     return state.copy(
-        position = viewport.clamp(PetPoint(state.position.x, rawY), halfSize),
+        position = viewport.clamp(PetPoint(state.position.x, y), halfSize),
         mode = PetMode.BOUNCE,
         targetId = bounceTargetId,
+        idleTicksRemaining = 0,
         movementSpeed = 0f,
         verticalVelocity = velocity,
+        bouncesRemaining = bouncesRemaining,
         horizontalVelocity = 0f,
         curveVelocity = null,
     )

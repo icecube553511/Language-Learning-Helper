@@ -265,9 +265,12 @@ def verify_pet_contract() -> None:
         "fallIntegration": "closed-form-constant-acceleration",
         "maxFallSpeed": None,
         "hardLandingSpeed": 437.5,
-        "bounceCount": 2,
-        "firstBounceSpeed": 312.5,
-        "bounceDecay": 0.55,
+        "bounceCount": 5,
+        "maxBounceSpeed": 1250.0,
+        "minBounceSpeed": 120.0,
+        "bounceDecay": 0.78,
+        "bounceTopRestitution": 0.5,
+        "bounceSpeedPolicy": "impact-speed-with-restitution",
         "centerBiasWeight": 0.65,
         "edgePenaltyRatio": 0.15,
         "supportSide": "upper",
@@ -332,11 +335,11 @@ def verify_pet_contract() -> None:
         "navigation-prefers-below",
         "fall-without-below-target-uses-viewport-bottom",
         "fall-accelerates",
-        "hard-landing-bounces-twice",
+        "hard-landing-elastic-bounces",
         "fall-skips-horizontally-offset-support",
         "fall-retargets-new-nearest-support-every-tick",
         "fall-already-touching-support-lands",
-        "synthetic-bottom-hard-landing-bounces-twice",
+        "synthetic-bottom-elastic-bounces",
         "suspended-drag-release-enters-fall",
         "center-bias-prefers-interior",
         "center-bias-measures-nearest-support",
@@ -354,11 +357,11 @@ def verify_pet_contract() -> None:
         "navigation-prefers-below": {"position", "targets", "step", "expectedTarget", "expectedPosition", "expectedVerticalVelocity"},
         "fall-without-below-target-uses-viewport-bottom": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode", "expectedYDirection"},
         "fall-accelerates": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedVerticalVelocity", "expectedMode"},
-        "hard-landing-bounces-twice": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedMode", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
+        "hard-landing-elastic-bounces": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedMode", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
         "fall-skips-horizontally-offset-support": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode"},
         "fall-retargets-new-nearest-support-every-tick": {"position", "verticalVelocity", "viewport", "petHalfSize", "previousTarget", "newlyAvailableTarget", "targets", "expectedTarget", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode"},
         "fall-already-touching-support-lands": {"position", "mode", "verticalVelocity", "viewport", "petHalfSize", "target", "expectedPosition", "expectedTarget", "expectedMode", "expectedVerticalVelocity"},
-        "synthetic-bottom-hard-landing-bounces-twice": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPosition", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedMode", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
+        "synthetic-bottom-elastic-bounces": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPosition", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedMode", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
         "suspended-drag-release-enters-fall": {"position", "viewport", "petHalfSize", "targets", "releaseOnLegalSupport", "expectedMode", "expectedTarget", "expectedVerticalVelocity"},
         "center-bias-prefers-interior": {"position", "viewport", "targets", "expectedTarget"},
         "center-bias-measures-nearest-support": {"position", "viewport", "targets", "expectedTarget"},
@@ -521,14 +524,17 @@ def verify_pet_contract() -> None:
             or not math.isclose(float(vector["expectedImpactVerticalVelocity"]), impact_velocity, rel_tol=1e-12, abs_tol=1e-9)
             or impact_velocity < float(payload["motion"]["hardLandingSpeed"])
             or vector["expectedMode"] != "bounce"
-            or not math.isclose(float(vector["expectedBounceVerticalVelocity"]), -float(payload["motion"]["firstBounceSpeed"]))
+            or not math.isclose(float(vector["expectedBounceVerticalVelocity"]), -min(
+                impact_velocity * float(payload["motion"]["bounceDecay"]),
+                float(payload["motion"]["maxBounceSpeed"]),
+            ))
             or int(vector["expectedBouncesRemaining"]) != int(payload["motion"]["bounceCount"])
         ):
             fail(f"Pet companion landing vector {vector['name']} differs from the hard-landing rule")
 
-    hard_landing = behavior_by_name["hard-landing-bounces-twice"]
+    hard_landing = behavior_by_name["hard-landing-elastic-bounces"]
     verify_hard_landing(hard_landing, float(hard_landing["target"]["rect"][1]))
-    synthetic_landing = behavior_by_name["synthetic-bottom-hard-landing-bounces-twice"]
+    synthetic_landing = behavior_by_name["synthetic-bottom-elastic-bounces"]
     synthetic_support_y = float(synthetic_landing["viewport"][1]) - float(synthetic_landing["petHalfSize"])
     if (
         synthetic_landing["targets"] != []
@@ -1048,6 +1054,11 @@ def verify_pet_contract() -> None:
             windows_constants[node.targets[0].id] = float(node.value.value)
     expected_windows_constants = {
         "FALL_GRAVITY": gravity,
+        "BOUNCE_COUNT": float(motion["bounceCount"]),
+        "BOUNCE_DECAY": float(motion["bounceDecay"]),
+        "MAX_BOUNCE_SPEED": float(motion["maxBounceSpeed"]),
+        "MIN_BOUNCE_SPEED": float(motion["minBounceSpeed"]),
+        "BOUNCE_TOP_RESTITUTION": float(motion["bounceTopRestitution"]),
         "CURVE_CORNER_SUBSTEPS": float(motion["curveCornerSubsteps"]),
         "CURVE_CORNER_RADIUS": float(motion["curveCornerRadius"]),
         "CURVE_LANDING_SPEED_LIMIT": landing_limit,
@@ -1132,6 +1143,11 @@ def verify_pet_contract() -> None:
         fail("Windows physical chart motion must project gravity onto the local slope")
 
     expected_android_constants = {
+        "PET_BOUNCE_COUNT": float(motion["bounceCount"]),
+        "PET_BOUNCE_DECAY": float(motion["bounceDecay"]),
+        "PET_MAX_BOUNCE_SPEED": float(motion["maxBounceSpeed"]),
+        "PET_MIN_BOUNCE_SPEED": float(motion["minBounceSpeed"]),
+        "PET_BOUNCE_TOP_RESTITUTION": float(motion["bounceTopRestitution"]),
         "PET_CURVE_CORNER_SUBSTEPS": float(motion["curveCornerSubsteps"]),
         "PET_CURVE_CORNER_RADIUS": float(motion["curveCornerRadius"]),
         "PET_FALL_GRAVITY": gravity,
@@ -1205,6 +1221,26 @@ def verify_pet_contract() -> None:
         fail("Android autonomous chart helper does not use the shared downhill direction rule")
     if not re.search(r"chartLandingState\(", android_helper_source("advanceBounce")):
         fail("Android chart bounce completion must resume physical sliding")
+
+    bounce_vectors = payload.get("bounceStabilityVectors", [])
+    if {vector.get("name") for vector in bounce_vectors} != {
+        "bottom-bounce-retains-anchor-before-upper-content-return",
+        "rebound-speed-follows-impact-with-cap",
+    }:
+        fail("Pet bounce stability vectors are missing")
+    rebound_vector = next(vector for vector in bounce_vectors if "impactSpeeds" in vector)
+    expected_rebounds = [
+        min(float(speed) * motion["bounceDecay"], motion["maxBounceSpeed"])
+        for speed in rebound_vector["impactSpeeds"]
+    ]
+    if expected_rebounds != rebound_vector["expectedReboundSpeeds"]:
+        fail("Pet bounce vectors must follow impact speed with restitution and a cap")
+    for path in (
+        "windows/tests/test_pet_elastic_bounce.py",
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetCompanionTest.kt",
+    ):
+        if "bounceStabilityVectors" not in (ROOT / path).read_text(encoding="utf-8"):
+            fail(f"Pet bounce stability vectors are not consumed by {path}")
 
     stability_tests = {
         "windows/tests/test_pet_motion_stability.py": (
@@ -1569,8 +1605,12 @@ def verify_pet_contract() -> None:
         "maxSubstepsPerTick": 8,
         "highSpeedInterpolation": "linear-between-simulated-substeps",
         "flingChartContactDirection": "contact-equation-derivative-nonnegative",
-        "hardLandingBounces": 2,
-        "bounceDecay": 0.55,
+        "hardLandingBounces": 5,
+        "bounceDecay": 0.78,
+        "maxBounceSpeed": 1250.0,
+        "minBounceSpeed": 120.0,
+        "bounceTopRestitution": 0.5,
+        "bounceSpeedPolicy": "impact-speed-with-restitution",
         "horizontalFlip": True,
         "centerBiasedSelection": True,
         "windowScope": "application-owned-window",
