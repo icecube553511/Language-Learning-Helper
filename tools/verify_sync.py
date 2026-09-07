@@ -1868,6 +1868,9 @@ def verify_pet_energy_ball_contract() -> None:
     payload = json.loads(golden_path.read_text(encoding="utf-8"))
     if payload.get("contractVersion") != "pet-energy-ball-v1" or payload.get("behaviorRevision") != 2:
         fail("Unexpected pet energy-ball contract version")
+    effect_scales = {"windows": 2.0, "android": 1.0}
+    if payload.get("platformEffectScale") != effect_scales:
+        fail("Pet energy-ball platform size profile differs")
     phases = payload.get("phases", {})
     if phases.get("study", {}).get("color") != "#F5C451" or phases.get("review", {}).get("color") != "#39D9D0":
         fail("Pet energy-ball phase colors differ")
@@ -1932,6 +1935,7 @@ def verify_pet_energy_ball_contract() -> None:
     parity = json.loads((CONTRACTS / "parity.json").read_text(encoding="utf-8"))
     expected = {
         "studyColor": "#F5C451",
+        "platformEffectScale": effect_scales,
         "reviewColor": "#39D9D0",
         "behaviorRevision": 2,
         "initialSpeedLogicalPxPerSecond": 65.0,
@@ -1986,6 +1990,7 @@ def verify_pet_energy_ball_contract() -> None:
         "REVIEW_REWARD_COLOR": phases["review"]["color"],
         "HOMING_INITIAL_SPEED": motion["initialSpeedLogicalPxPerSecond"],
         "HOMING_ACCELERATION": motion["accelerationLogicalPxPerSecondSquared"],
+        "WINDOWS_EFFECT_SCALE": effect_scales["windows"],
         "ORB_RADIUS": motion["orbRadiusLogicalPx"],
         "VISUAL_ORB_GLOW_RADIUS": payload["visual"]["glowRadiusLogicalPx"],
         "TRAIL_MAXIMUM_POINTS": payload["visual"]["trailSamples"],

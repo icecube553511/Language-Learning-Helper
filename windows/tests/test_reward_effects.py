@@ -19,6 +19,7 @@ from presentation.reward_effects import (
     HOMING_INITIAL_SPEED,
     HOMING_ACCELERATION,
     ORB_RADIUS,
+    WINDOWS_EFFECT_SCALE,
     SIMULATION_STEP_MS,
     TRAIL_MAXIMUM_POINTS,
     REVIEW_REWARD_COLOR,
@@ -30,6 +31,7 @@ from presentation.reward_effects import (
     STUDY_REWARD_COLOR,
     collision_fraction,
     render_reward_frame,
+    _orb_sprite,
 )
 from presentation.app import LexiTrackApp
 from presentation.widgets import PetOverlay
@@ -99,7 +101,7 @@ class RewardEffectsModelTests(unittest.TestCase):
         self.assertEqual(len(flight.particles), BURST_PARTICLE_COUNT)
         self.assertEqual(len({particle.direction for particle in flight.particles}), BURST_PARTICLE_COUNT)
         self.assertIsNotNone(flight.contact_point)
-        self.assertAlmostEqual(flight.contact_point.distance_to(target), 56.0 + ORB_RADIUS)
+        self.assertAlmostEqual(flight.contact_point.distance_to(target), 56.0 + ORB_RADIUS * WINDOWS_EFFECT_SCALE)
         self.assertEqual(flight.position, target)
         model.update(flight.last_update_ms + BURST_DURATION_MS + SIMULATION_STEP_MS, target, pet_half_size=56.0)
         self.assertEqual(model.active_count, 0)
@@ -161,10 +163,30 @@ class RewardEffectsModelTests(unittest.TestCase):
         model.emit((100, 100), STUDY_REWARD_COLOR, 0)
         frame, x, y = render_reward_frame(model, (0, 0, 200, 200))
         self.assertEqual(frame.getpixel((100 - x, 100 - y)), (255, 250, 228, 255))
-        inner = frame.getpixel((112 - x, 100 - y))[3]
-        outer = frame.getpixel((130 - x, 100 - y))[3]
+        inner = frame.getpixel((124 - x, 100 - y))[3]
+        outer = frame.getpixel((160 - x, 100 - y))[3]
         self.assertTrue(0 < outer < inner < 255)
         self.assertEqual(frame.getpixel((0, 0))[3], 0)
+
+    def test_windows_enlargement_uses_shared_profile_for_pixels_and_contact(self):
+        self.assertEqual(WINDOWS_EFFECT_SCALE, GOLDEN["platformEffectScale"]["windows"])
+        model = RewardAnimationModel()
+        flight = model.emit((100, 100), STUDY_REWARD_COLOR, 0)
+        frame, x, y = render_reward_frame(model, (0, 0, 300, 300))
+        self.assertGreaterEqual(frame.getpixel((112 - x, 100 - y))[3], 250)
+        self.assertTrue(0 < frame.getpixel((175 - x, 100 - y))[3] < 255)
+        model.update(SIMULATION_STEP_MS, (169, 100), 56)
+        self.assertEqual(flight.phase, FlightPhase.BURST)
+
+    def test_warm_frames_reuse_antialiased_orb_without_resampling_large_surface(self):
+        model = RewardAnimationModel()
+        for position in ((100, 100), (1800, 1000)):
+            model.emit(position, STUDY_REWARD_COLOR, 0)
+        render_reward_frame(model, (0, 0, 2560, 1600))
+        with patch("PIL.Image.Image.resize", side_effect=AssertionError("resampled whole frame")):
+            frame, _, _ = render_reward_frame(model, (0, 0, 2560, 1600))
+        self.assertGreater(frame.width, 1700)
+        self.assertGreater(_orb_sprite.cache_info().hits, 0)
 
     def test_source_is_button_center_even_when_pointer_position_is_available(self):
         app = object.__new__(LexiTrackApp)
@@ -303,6 +325,26 @@ class RewardEffectsControllerTests(unittest.TestCase):
         self.layer.render.side_effect = None
         self.tick(32)
         self.assertIsNone(self.controller._render_error)
+
+    def test_render_cost_is_subtracted_from_next_frame_delay(self):
+        self.controller.emit((0, 0), STUDY_REWARD_COLOR)
+
+        def render(*_args):
+            self.now += 6
+
+        self.layer.render.side_effect = render
+        self.tick(16)
+        self.host.after.assert_called_with(10, self.controller._tick)
+        self.layer.render.side_effect = lambda *_args: setattr(self, "now", self.now + 30)
+        self.tick(32)
+        self.host.after.assert_called_with(1, self.controller._tick)
+
+    def test_visible_layer_does_not_repeat_native_style_installation(self):
+        layer = Mock()
+        layer.state.return_value = "normal"
+        RewardEffectLayer.show(layer)
+        layer._enable_mouse_passthrough.assert_not_called()
+        layer.lift.assert_not_called()
 
     def test_exit_cancels_timer_and_discards_transient_state(self):
         self.controller.emit((0, 0), STUDY_REWARD_COLOR)

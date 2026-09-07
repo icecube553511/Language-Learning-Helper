@@ -13,7 +13,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw
 
-from presentation.layered_surface import present_alpha_frame
+from presentation.layered_surface import LayeredSurface
 
 
 STUDY_REWARD_COLOR = "#F5C451"
@@ -25,6 +25,7 @@ MAXIMUM_FRAME_MS = 100.0
 HOMING_INITIAL_SPEED = 65.0
 HOMING_ACCELERATION = 230.0
 REFERENCE_PET_HALF_SIZE = 56.0
+WINDOWS_EFFECT_SCALE = 2.0
 ORB_RADIUS = 7.0
 VISUAL_ORB_RADIUS = 7.0
 VISUAL_ORB_GLOW_RADIUS = 46.0
@@ -226,7 +227,7 @@ class RewardFlight:
                 origin=center,
                 direction=RewardPoint(math.cos(angle), math.sin(angle)),
                 started_at_ms=self.elapsed_ms,
-                scale=self.scale,
+                scale=self.scale * WINDOWS_EFFECT_SCALE,
             ))
 
     def reset_target(self) -> None:
@@ -283,7 +284,7 @@ class RewardFlight:
             self.velocity = direction.scaled(self._speed * self.scale)
             destination = self.position + direction.scaled(distance)
             fraction = collision_fraction(self.position, destination, target_start, target_end,
-                                          max(0.0, pet_half_size) + self.config.orb_radius * self.scale)
+                                          max(0.0, pet_half_size) + self.config.orb_radius * self.scale * WINDOWS_EFFECT_SCALE)
             if fraction is not None:
                 contact = self.position + (destination - self.position).scaled(fraction)
                 center = target_start + (target_end - target_start).scaled(fraction)
@@ -365,10 +366,45 @@ def _orb_glow(radius: int, color: str) -> Image.Image:
     return glow
 
 
+@lru_cache(maxsize=16)
+def _orb_sprite(scale: float, color: str) -> Image.Image:
+    factor = 2
+    radius = max(1, round(VISUAL_ORB_GLOW_RADIUS * scale * factor))
+    sprite = _orb_glow(radius, color).copy()
+    draw = ImageDraw.Draw(sprite)
+    center = radius + 1
+    for radius, fill in ((VISUAL_ORB_RADIUS, color), (VISUAL_ORB_HIGHLIGHT_RADIUS, "#FFFAE4")):
+        size = radius * scale * factor
+        draw.ellipse((center - size, center - size, center + size, center + size), fill=fill)
+    return sprite.resize((sprite.width // factor, sprite.height // factor), Image.Resampling.LANCZOS)
+
+
+@lru_cache(maxsize=64)
+def _impact_sprite(scale: float, color: str, age_step: int, duration_ms: float) -> Image.Image:
+    progress = min(1.0, age_step * SIMULATION_STEP_MS / duration_ms)
+    factor = 2
+    half = math.ceil((BURST_PARTICLE_DISTANCE_END + BURST_PARTICLE_RADIUS + 2) * scale)
+    sprite = Image.new("RGBA", (half * 2 * factor, half * 2 * factor))
+    draw = ImageDraw.Draw(sprite)
+    center = half * factor
+    rgb = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+    fill = (*rgb, round(255 * (1.0 - progress)))
+    radius = (BURST_RING_RADIUS_START + (BURST_RING_RADIUS_END - BURST_RING_RADIUS_START) * progress) * scale * factor
+    draw.ellipse((center - radius, center - radius, center + radius, center + radius),
+                 outline=fill, width=max(1, round(2 * scale * factor)))
+    distance = (BURST_PARTICLE_DISTANCE_START + (BURST_PARTICLE_DISTANCE_END - BURST_PARTICLE_DISTANCE_START) * progress) * scale * factor
+    radius = BURST_PARTICLE_RADIUS * scale * factor
+    for index in range(BURST_PARTICLE_COUNT):
+        angle = math.tau * index / BURST_PARTICLE_COUNT
+        x, y = center + math.cos(angle) * distance, center + math.sin(angle) * distance
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
+    return sprite.resize((half * 2, half * 2), Image.Resampling.LANCZOS)
+
+
 def render_reward_frame(model: RewardAnimationModel, bounds: tuple[int, int, int, int]) -> tuple[Image.Image, int, int]:
-    """Rasterize source-demo visuals using real alpha over arbitrary page colors."""
+    """Composite cached antialiased sprites without resampling the desktop-sized frame."""
     screen_x, screen_y, screen_width, screen_height = bounds
-    points = [(point, 70.0 * flight.scale) for flight in model.flights
+    points = [(point, 70.0 * flight.scale * WINDOWS_EFFECT_SCALE) for flight in model.flights
               for point in [flight.position, *(sample.position for sample in flight.trail)]]
     if not points:
         return Image.new("RGBA", (1, 1)), screen_x, screen_y
@@ -378,47 +414,34 @@ def render_reward_frame(model: RewardAnimationModel, bounds: tuple[int, int, int
     bottom = min(screen_y + screen_height, math.ceil(max(point.y + radius for point, radius in points)))
     if right <= left or bottom <= top:
         return Image.new("RGBA", (1, 1)), screen_x, screen_y
-    # Supersampling smooths narrow trailing strokes and the expanding impact ring.
-    factor = 2
-    frame = Image.new("RGBA", ((right - left) * factor, (bottom - top) * factor))
+    frame = Image.new("RGBA", (right - left, bottom - top))
     draw = ImageDraw.Draw(frame)
 
     def point(value: RewardPoint) -> tuple[float, float]:
-        return (value.x - left) * factor, (value.y - top) * factor
-
-    def circle(center: RewardPoint, radius: float, color, width: int = 0) -> None:
-        x, y = point(center)
-        radius *= factor
-        box = (x - radius, y - radius, x + radius, y + radius)
-        if width:
-            draw.ellipse(box, outline=color, width=width)
-        else:
-            draw.ellipse(box, fill=color)
+        return value.x - left, value.y - top
 
     for flight in model.flights:
         rgb = tuple(int(flight.color[index:index + 2], 16) for index in (1, 3, 5))
-        scale = flight.scale
+        scale = round(flight.scale * WINDOWS_EFFECT_SCALE, 3)
         if flight.phase is FlightPhase.HOMING:
             samples = flight.trail[::TRAIL_SAMPLE_STRIDE]
             for index in range(1, len(samples)):
                 strength = index / len(samples)
-                draw.line((point(samples[index - 1].position), point(samples[index].position)),
-                          fill=(*rgb, round(255 * strength * TRAIL_HEAD_OPACITY)),
-                          width=max(1, round(TRAIL_STROKE_WIDTH * scale * strength * factor)))
-            radius = max(1, round(VISUAL_ORB_GLOW_RADIUS * scale * factor))
-            glow = _orb_glow(radius, flight.color)
-            x, y = point(flight.position)
-            frame.alpha_composite(glow, (round(x - radius - 1), round(y - radius - 1)))
-            circle(flight.position, VISUAL_ORB_RADIUS * scale, (*rgb, 255))
-            circle(flight.position, VISUAL_ORB_HIGHLIGHT_RADIUS * scale, (255, 250, 228, 255))
+                width = max(1, round(TRAIL_STROKE_WIDTH * scale * strength))
+                fill = (*rgb, round(255 * strength * TRAIL_HEAD_OPACITY))
+                start, end = point(samples[index - 1].position), point(samples[index].position)
+                draw.line((start, end), fill=fill, width=width)
+                radius = width / 2
+                draw.ellipse((end[0] - radius, end[1] - radius, end[0] + radius, end[1] + radius), fill=fill)
+            sprite = _orb_sprite(scale, flight.color)
         elif flight.phase is FlightPhase.BURST:
-            progress = min(1.0, (flight.elapsed_ms - flight.burst_started_at_ms) / flight.config.burst_duration_ms)
-            color = (*rgb, round(255 * (1.0 - progress)))
-            radius = BURST_RING_RADIUS_START + (BURST_RING_RADIUS_END - BURST_RING_RADIUS_START) * progress
-            circle(flight.position, radius * scale, color, width=max(1, round(2 * scale * factor)))
-            for particle in flight.particles:
-                circle(particle.position_at(flight.elapsed_ms), BURST_PARTICLE_RADIUS * scale, color)
-    return frame.resize((right - left, bottom - top), Image.Resampling.LANCZOS), left, top
+            age_step = round((flight.elapsed_ms - flight.burst_started_at_ms) / SIMULATION_STEP_MS)
+            sprite = _impact_sprite(scale, flight.color, age_step, flight.config.burst_duration_ms)
+        else:
+            continue
+        x, y = point(flight.position)
+        frame.alpha_composite(sprite, (round(x - sprite.width / 2), round(y - sprite.height / 2)))
+    return frame, left, top
 
 
 class RewardEffectLayer(tk.Toplevel):
@@ -440,6 +463,8 @@ class RewardEffectLayer(tk.Toplevel):
         self._passthrough_callbacks: list = []
         self._passthrough_failures: list[int] = []
         self._call_window_proc = None
+        self._frame_surface = LayeredSurface() if sys.platform == "win32" else None
+        self._frame_hwnd: int | None = None
         self.withdraw()
         self.overrideredirect(True)
         self.configure(bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
@@ -556,6 +581,7 @@ class RewardEffectLayer(tk.Toplevel):
         if not surfaces:
             return
         top_level = surfaces[0]
+        self._frame_hwnd = top_level
         extended_style = int(get_style(top_level, -20) or 0)
         try:
             set_style(
@@ -698,8 +724,8 @@ class RewardEffectLayer(tk.Toplevel):
     def show(self) -> None:
         if self.state() == "withdrawn":
             self.deiconify()
-        self.lift()
-        self._enable_mouse_passthrough()
+            self._enable_mouse_passthrough()
+            self.lift()
 
     def keep_above(self, other: tk.Misc | None = None) -> None:
         """Keep the transparent surface above the independently placed pet window."""
@@ -724,10 +750,9 @@ class RewardEffectLayer(tk.Toplevel):
         frame, x, y = render_reward_frame(model, self._screen_bounds)
         self._alpha_frame, self._alpha_origin = frame, (x, y)
         if sys.platform == "win32":
-            surfaces = self._native_surfaces()
-            if not surfaces:
+            if not self._frame_hwnd:
                 raise RuntimeError("Reward layer has no native window")
-            present_alpha_frame(surfaces[0], frame, x, y)
+            self._frame_surface.present(self._frame_hwnd, frame, x, y)
         else:
             from PIL import ImageTk
             self.canvas.delete("all")
@@ -737,6 +762,8 @@ class RewardEffectLayer(tk.Toplevel):
 
     def destroy(self) -> None:
         self._restore_hit_test_passthrough()
+        if self._frame_surface is not None:
+            self._frame_surface.close()
         super().destroy()
 
 
@@ -764,6 +791,7 @@ class RewardEffectsController:
     def emit(self, source: RewardPoint | tuple[float, float], color: str) -> RewardFlight:
         if self._destroyed:
             raise RuntimeError("Reward effects controller is destroyed")
+        started_ms = _monotonic_ms()
         target = self._advance_clock()
         flight = self.model.emit(source, color, self._animation_now_ms)
         flight.scale = (target.half_size if target is not None else self.pet_half_size) / REFERENCE_PET_HALF_SIZE
@@ -771,7 +799,6 @@ class RewardEffectsController:
             if target is not None:
                 self.layer.show()
                 self.layer.render(self.model, self._animation_now_ms)
-                self.layer.update_idletasks()
             else:
                 self.layer.hide()
         except Exception as error:
@@ -780,8 +807,13 @@ class RewardEffectsController:
             # animation loop; the next tick retries showing the surface.
             pass
         if self._after_id is None:
-            self._after_id = self.host.after(FRAME_MS, self._tick)
+            self._schedule_frame(started_ms)
         return flight
+
+    def _schedule_frame(self, started_ms: float) -> None:
+        # Rendering is part of the frame budget, not an extra delay each tick.
+        delay = max(1, math.ceil(FRAME_MS - (_monotonic_ms() - started_ms)))
+        self._after_id = self.host.after(delay, self._tick)
 
     def keep_above(self, other: tk.Misc | None = None) -> None:
         self.layer.keep_above(other)
@@ -837,6 +869,7 @@ class RewardEffectsController:
         self._after_id = None
         if self._destroyed:
             return
+        started_ms = _monotonic_ms()
         target = self._advance_clock()
         try:
             if target is not None:
@@ -849,7 +882,6 @@ class RewardEffectsController:
             try:
                 self.layer.show()
                 self.layer.render(self.model, self._animation_now_ms)
-                self.layer.keep_above()
                 self._render_error = None
             except Exception as error:
                 # Keep the animation alive, but retain one diagnostic for the
@@ -865,7 +897,7 @@ class RewardEffectsController:
             except tk.TclError:
                 pass
         if self.model.active_count:
-            self._after_id = self.host.after(FRAME_MS, self._tick)
+            self._schedule_frame(started_ms)
 
     def destroy(self) -> None:
         if self._destroyed:

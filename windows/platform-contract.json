@@ -127,6 +127,7 @@
     "disabledReason": "appearance PNG set is incomplete"
   },
   "petEnergyBall": {
+    "platformEffectScale": { "windows": 2.0, "android": 1.0 },
     "studyColor": "#F5C451",
     "reviewColor": "#39D9D0",
     "behaviorRevision": 2,
