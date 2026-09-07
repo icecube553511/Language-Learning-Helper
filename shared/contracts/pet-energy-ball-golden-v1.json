@@ -1,6 +1,7 @@
 {
   "contractVersion": "pet-energy-ball-v1",
   "behaviorRevision": 2,
+  "platformEffectScale": { "windows": 2.0, "android": 1.0 },
   "phases": {
     "study": { "color": "#F5C451", "label": "gold" },
     "review": { "color": "#39D9D0", "label": "cyan" }

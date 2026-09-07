@@ -44,6 +44,20 @@ presentation state and never persisted.
   radius `20+38*p`, width `2`, and eight dots at radial distance `22+44*p`, dot
   radius `2`. Here `p` is impact progress; all use phase color and fade `1-p`.
 
+### Windows presentation profile
+
+The Windows-only enlargement request applies `platformEffectScale.windows=2`
+to the orb, core, glow, trail width and impact geometry. Android retains scale
+`1`. Motion speed, acceleration, trail sample count and impact lifetime keep
+their shared values. The solid orb collision radius uses the same effect
+scale (`14` logical px on Windows; `7` on Android).
+
+Windows composites cached antialiased sprites at native frame resolution and
+reuses its native DIB/DC resources. Rendering time counts toward the `16` ms
+frame interval. Showing an already visible layer must not reinstall native
+styles or enumerate/subclass its windows on every frame. Resource disposal
+must release the native drawing buffer and restore original window procedures.
+
 ## Lifetime
 
 - Preserve every instance through card rebuilds, navigation and pet host changes.
