@@ -10,7 +10,7 @@ Android 8.0 及以上的本地英语学习应用。内置四六级词库，提�
 
 ## 安装预发布版
 
-在 GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 下载 `app-debug.apk` 与同包的 `SHA256SUMS.txt`。当前 `v0.2.0` 是面向 Android 8.0+ 的开发预览包，使用 Android Debug 证书签名且包含可调试标记，不是应用商店正式包。设备需允许浏览器或文件管理器“安装未知应用”；也可使用下方 ADB 命令安装。
+在 GitHub [Releases](https://github.com/icecube553511/Language-Learning-Helper/releases) 下载已发布版本的 `app-debug.apk` 与同包的 `SHA256SUMS.txt`。仓库源码中的 `versionName` 是当前开发目标，不保证已有同名 Release。预览 APK 使用 Android Debug 证书签名且包含可调试标记，不是应用商店正式包。设备需允许浏览器或文件管理器“安装未知应用”；也可使用下方 ADB 命令安装。
 
 后续 CI 生成的 debug 包可能使用不同证书，若覆盖安装提示签名不一致，需要先卸载旧版。卸载会删除应用本地学习记录。默认构建不配置跨设备服务，所有学习数据和默写草稿仅保存在本机；组合根可选择注入 HTTPS 默写草稿同步适配器，该适配器不上传词库、学习进度或导出文件。
 
@@ -21,33 +21,33 @@ Android 8.0 及以上的本地英语学习应用。内置四六级词库，提�
 ```text
 app              Activity、SAF 文件选择与依赖装配
 presentation     Compose 页面、主题、ViewModel
-infrastructure   catalog assets、CSV、SharedPreferences 适配器
+infrastructure   catalog/CSV、SharedPreferences、Keystore、导出、提醒与同步适配器
 application      用例与仓储端口
 domain           词条约束、lexi-sm2-v1 调度器
 ```
 
-`domain` 和 `application` 不依赖 Android。`presentation` 不访问持久化实现，`app` 是唯一组合入口。内置词库从仓库根目录的 `shared/content/catalog.json` 合并进 APK；该文件不存在时应用显示空词库，并仍允许 CSV 导入。
+`domain` 和 `application` 不依赖 Android。`presentation` 不访问持久化实现；`app` 是前台组合模块，后台通知则由 infrastructure 中的 `ReminderReceiver` 作为无界面平台入口装配所需用例。内置词库从仓库根目录的 `shared/content/catalog.json` 合并进 APK；该文件不存在时应用显示空词库，并仍允许 CSV 导入。
 
 ## 构建
 
-需要 JDK 17、Android SDK Platform 35 和 Build Tools 35。工程包含 Gradle Wrapper，并校验 Gradle 8.10.2 分发包的 SHA-256：
+需要 JDK 17、Android SDK Platform 35 和 Build Tools 35。工程包含 Gradle Wrapper，并校验 Gradle 8.10.2 分发包的 SHA-256。从仓库根目录运行：
 
 ```powershell
 $env:JAVA_HOME='C:\path\to\jdk-17'
 $env:ANDROID_SDK_ROOT='C:\path\to\Android\Sdk'
-./gradlew.bat test lintDebug assembleDebug
+.\android\gradlew.bat -p .\android test lintDebug assembleDebug
 ```
 
 调试 APK 位于：
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 安装到已连接设备：
 
 ```powershell
-adb install -r .\app\build\outputs\apk\debug\app-debug.apk
+adb install -r .\android\app\build\outputs\apk\debug\app-debug.apk
 adb shell am start -n com.lexitrack.learning/.MainActivity
 ```
 
@@ -74,4 +74,4 @@ negotiate,"v. 谈判,协商",/nɪˈɡəʊʃieɪt/,CET6,business|meeting,go + tia
 
 Android 端实现根目录 `shared/contracts/scheduler-v1.md` 定义的 `lexi-sm2-v1`，所有调度时间以 UTC epoch seconds 保存。领域测试直接回放 `shared/contracts/scheduler-golden-v1.json`，确保与 Windows 端保持一致。
 
-学习页只展示未学习词，首次评分会把词条写入应用私有 `Words_Learnt` 数据库。复习页按共享 `weighted-review-v1` 契约进行加权无放回抽样；“忘记/模糊”保持原权重，“认识/很熟”分别调整为 `20%/5%`。应用运行期间每分钟检查到期排期并显示复习提醒。
+学习页只展示未学习词，首次评分会把词条写入应用私有的 `Words_Learnt` SharedPreferences store。复习页按共享 `weighted-review-v1` 契约进行加权无放回抽样；“忘记/模糊”保持原权重，“认识/很熟”分别调整为 `20%/5%`。应用运行期间每分钟检查到期排期并显示复习提醒。

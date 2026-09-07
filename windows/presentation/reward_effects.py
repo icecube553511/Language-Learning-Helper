@@ -2,50 +2,45 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 import ctypes
 import ctypes.wintypes as wintypes
 import math
 import sys
 import time
 import tkinter as tk
-from typing import Callable, Sequence
+from typing import Callable
+
+from PIL import Image, ImageDraw
+
+from presentation.layered_surface import LayeredSurface
 
 
 STUDY_REWARD_COLOR = "#F5C451"
 REVIEW_REWARD_COLOR = "#39D9D0"
 
-# Animation constants are intentionally centralized because motion and visual
-# balance will be tuned in later releases.
 FRAME_MS = 16
-SPIRAL_DURATION_MS = 180.0
-SPIRAL_TURNS = 1.0
-SPIRAL_RADIUS_START = 4.0
-SPIRAL_RADIUS_END = 18.0
-HOMING_INITIAL_SPEED = 180.0
-HOMING_ACCELERATION = 2400.0
-HOMING_MAXIMUM_SPEED = 1800.0
-# Keep the physical contact radius separate from the visible feedback.  These
-# presentation values are centralized because they will be tuned later.
-ORB_RADIUS = 6.0
-VISUAL_ORB_RADIUS = 16.0
-VISUAL_ORB_GLOW_RADIUS = 34.0
+SIMULATION_STEP_MS = 1000.0 / 120.0
+MAXIMUM_FRAME_MS = 100.0
+HOMING_INITIAL_SPEED = 65.0
+HOMING_ACCELERATION = 230.0
+REFERENCE_PET_HALF_SIZE = 56.0
+WINDOWS_EFFECT_SCALE = 2.0
+ORB_RADIUS = 7.0
+VISUAL_ORB_RADIUS = 7.0
+VISUAL_ORB_GLOW_RADIUS = 46.0
 VISUAL_ORB_HIGHLIGHT_RADIUS = 4.0
-TRAIL_LIFETIME_MS = 180.0
-TRAIL_MAXIMUM_POINTS = 20
-TRAIL_MINIMUM_LENGTH = 12.0
-TRAIL_MAXIMUM_LENGTH = 96.0
-TRAIL_MINIMUM_STROKE_WIDTH = 5.0
-TRAIL_MAXIMUM_STROKE_WIDTH = 12.0
-TRAIL_STROKE_SPEED_FACTOR = 0.0025
-TRAIL_GLOW_WIDTH_MULTIPLIER = 2.2
-BURST_PARTICLE_COUNT = 18
-BURST_PARTICLE_RADIUS = 4.0
-BURST_PARTICLE_GLOW_RADIUS = 10.0
-BURST_DURATION_MS = 260.0
-HIT_RADIUS = 36.0
-MAX_CONCURRENT_BALLS = 3
-MAXIMUM_LIFETIME_MS = 2500.0
-MISSING_TARGET_TIMEOUT_MS = 500.0
+TRAIL_MAXIMUM_POINTS = 42
+TRAIL_SAMPLE_STRIDE = 3
+TRAIL_STROKE_WIDTH = 7.0
+TRAIL_HEAD_OPACITY = 0.55
+BURST_PARTICLE_COUNT = 8
+BURST_PARTICLE_RADIUS = 2.0
+BURST_DURATION_MS = 420.0
+BURST_RING_RADIUS_START = 20.0
+BURST_RING_RADIUS_END = 58.0
+BURST_PARTICLE_DISTANCE_START = 22.0
+BURST_PARTICLE_DISTANCE_END = 66.0
 
 # Win32 hit-testing constants.  ``WS_EX_TRANSPARENT`` only affects paint
 # ordering; it does not make a top-level window ignore pointer input.  The
@@ -96,28 +91,18 @@ class RewardPoint:
 
 @dataclass(frozen=True)
 class RewardFlightConfig:
-    spiral_duration_ms: float = SPIRAL_DURATION_MS
-    spiral_turns: float = SPIRAL_TURNS
-    spiral_radius_start: float = SPIRAL_RADIUS_START
-    spiral_radius_end: float = SPIRAL_RADIUS_END
     homing_initial_speed: float = HOMING_INITIAL_SPEED
     homing_acceleration: float = HOMING_ACCELERATION
-    homing_maximum_speed: float = HOMING_MAXIMUM_SPEED
     orb_radius: float = ORB_RADIUS
-    trail_lifetime_ms: float = TRAIL_LIFETIME_MS
     trail_maximum_points: int = TRAIL_MAXIMUM_POINTS
     burst_particle_count: int = BURST_PARTICLE_COUNT
     burst_duration_ms: float = BURST_DURATION_MS
-    hit_radius: float = HIT_RADIUS
-    maximum_lifetime_ms: float = MAXIMUM_LIFETIME_MS
-    missing_target_timeout_ms: float = MISSING_TARGET_TIMEOUT_MS
 
 
 DEFAULT_CONFIG = RewardFlightConfig()
 
 
 class FlightPhase(str, Enum):
-    SPIRAL = "spiral"
     HOMING = "homing"
     BURST = "burst"
     FINISHED = "finished"
@@ -133,107 +118,23 @@ class TrailSample:
 @dataclass(frozen=True)
 class BurstParticle:
     origin: RewardPoint
-    velocity: RewardPoint
+    direction: RewardPoint
     started_at_ms: float
+    scale: float = 1.0
 
     def position_at(self, now_ms: float) -> RewardPoint:
-        elapsed = max(0.0, now_ms - self.started_at_ms) / 1000.0
-        # A small deceleration keeps the burst compact while retaining a
-        # deterministic radial shape for both rendering and tests.
-        damping = max(0.0, 1.0 - elapsed * 1.8)
-        distance_factor = elapsed * (0.55 + 0.45 * damping)
-        return self.origin + self.velocity.scaled(distance_factor)
+        progress = min(1.0, max(0.0, now_ms - self.started_at_ms) / BURST_DURATION_MS)
+        radius = BURST_PARTICLE_DISTANCE_START + (
+            BURST_PARTICLE_DISTANCE_END - BURST_PARTICLE_DISTANCE_START
+        ) * progress
+        return self.origin + self.direction.scaled(radius * self.scale)
 
 
-def trail_length_for_speed(speed: float) -> float:
-    return min(
-        TRAIL_MAXIMUM_LENGTH,
-        max(TRAIL_MINIMUM_LENGTH, max(0.0, float(speed)) * 0.04),
-    )
-
-
-def trail_stroke_width_for_speed(speed: float) -> float:
-    """Return a readable, speed-responsive core width for the trail."""
-    bounded_speed = max(0.0, float(speed)) if math.isfinite(float(speed)) else 0.0
-    return min(
-        TRAIL_MAXIMUM_STROKE_WIDTH,
-        max(
-            TRAIL_MINIMUM_STROKE_WIDTH,
-            TRAIL_MINIMUM_STROKE_WIDTH + bounded_speed * TRAIL_STROKE_SPEED_FACTOR,
-        ),
-    )
-
-
-def trail_polyline_length(samples: Sequence[TrailSample]) -> float:
-    return sum(
-        samples[index].position.distance_to(samples[index - 1].position)
-        for index in range(1, len(samples))
-    )
-
-
-def clip_trail_to_length(
-    samples: Sequence[TrailSample],
-    maximum_length: float,
-) -> list[TrailSample]:
-    """Keep the newest polyline suffix, interpolating its exact boundary."""
-    if not samples:
-        return []
-    limit = max(0.0, float(maximum_length))
-    if len(samples) == 1 or trail_polyline_length(samples) <= limit:
-        return list(samples)
-
-    clipped_reversed = [samples[-1]]
-    remaining = limit
-    for index in range(len(samples) - 1, 0, -1):
-        newer = samples[index]
-        older = samples[index - 1]
-        segment_length = newer.position.distance_to(older.position)
-        if segment_length <= remaining:
-            clipped_reversed.append(older)
-            remaining -= segment_length
-            if remaining <= 0.0:
-                break
-            continue
-        if segment_length > 0.0 and remaining > 0.0:
-            ratio = remaining / segment_length
-            boundary = newer.position + (older.position - newer.position).scaled(ratio)
-            boundary_time = newer.at_ms + (older.at_ms - newer.at_ms) * ratio
-            clipped_reversed.append(TrailSample(boundary_time, boundary))
-        break
-    return list(reversed(clipped_reversed))
-
-
-def trail_point_at_distance(samples: Sequence[TrailSample], distance: float) -> RewardPoint | None:
-    """Sample a point from the newest trail suffix for moving energy pulses."""
-    if not samples:
-        return None
-    remaining = max(0.0, float(distance))
-    for newer, older in zip(reversed(samples[1:]), reversed(samples[:-1])):
-        segment = newer.position.distance_to(older.position)
-        if segment >= remaining and segment > 1e-9:
-            return newer.position + (older.position - newer.position).scaled(remaining / segment)
-        remaining -= segment
-    return samples[0].position
-
-
-def _spiral_offset(config: RewardFlightConfig, progress: float) -> RewardPoint:
-    accelerated_progress = progress * progress
-    turns = config.spiral_turns * accelerated_progress
-    radius = (
-        config.spiral_radius_start
-        + (config.spiral_radius_end - config.spiral_radius_start) * progress
-    )
-    quarter_turns = round(turns * 4.0)
-    if math.isclose(turns * 4.0, quarter_turns, rel_tol=0.0, abs_tol=1e-12):
-        cardinal = (
-            RewardPoint(1.0, 0.0),
-            RewardPoint(0.0, 1.0),
-            RewardPoint(-1.0, 0.0),
-            RewardPoint(0.0, -1.0),
-        )[quarter_turns % 4]
-        return cardinal.scaled(radius)
-    angle = math.tau * turns
-    return RewardPoint(math.cos(angle) * radius, math.sin(angle) * radius)
+@dataclass(frozen=True)
+class RewardTarget:
+    center: RewardPoint
+    half_size: float
+    continuity_key: object = None
 
 
 def _coerce_point(value: RewardPoint | tuple[float, float] | None) -> RewardPoint | None:
@@ -242,16 +143,18 @@ def _coerce_point(value: RewardPoint | tuple[float, float] | None) -> RewardPoin
     return RewardPoint(float(value[0]), float(value[1]))
 
 
-def _swept_contact(
+def collision_fraction(
     start: RewardPoint,
     end: RewardPoint,
-    center: RewardPoint,
+    target_start: RewardPoint,
+    target_end: RewardPoint,
     radius: float,
-) -> RewardPoint | None:
-    relative = start - center
+) -> float | None:
+    """Intersect relative motion so a dragged target cannot cross an orb unseen."""
+    relative = start - target_start
     if relative.length <= radius:
-        return start
-    movement = end - start
+        return 0.0
+    movement = (end - target_end) - relative
     a = movement.x * movement.x + movement.y * movement.y
     if a <= 1e-12:
         return None
@@ -263,7 +166,7 @@ def _swept_contact(
     root = math.sqrt(discriminant)
     for candidate in sorted(((-b - root) / (2.0 * a), (-b + root) / (2.0 * a))):
         if 0.0 <= candidate <= 1.0:
-            return start + movement.scaled(candidate)
+            return candidate
     return None
 
 
@@ -274,13 +177,18 @@ class RewardFlight:
     color: str
     created_at_ms: float
     config: RewardFlightConfig = DEFAULT_CONFIG
-    # New flights home immediately; the legacy SPIRAL enum remains accepted
-    # for callers that construct a flight explicitly.
     phase: FlightPhase = FlightPhase.HOMING
     position: RewardPoint = field(init=False)
     velocity: RewardPoint = field(default_factory=lambda: RewardPoint(0.0, 0.0))
     last_update_ms: float = field(init=False)
-    missing_target_since_ms: float | None = None
+    elapsed_ms: float = 0.0
+    scale: float = 1.0
+    _speed: float = field(init=False)
+    _previous_target: RewardPoint | None = None
+    _previous_step_target: RewardPoint | None = None
+    _target_key: object = None
+    _paused: bool = False
+    _accumulator_ms: float = 0.0
     trail: list[TrailSample] = field(default_factory=list)
     particles: list[BurstParticle] = field(default_factory=list)
     burst_started_at_ms: float | None = None
@@ -289,129 +197,103 @@ class RewardFlight:
     def __post_init__(self) -> None:
         self.position = self.source
         self.last_update_ms = self.created_at_ms
-        self.trail.append(TrailSample(self.created_at_ms, self.source))
+        self._speed = self.config.homing_initial_speed
+        self.trail.append(TrailSample(0.0, self.source))
 
     @property
     def speed(self) -> float:
-        return self.velocity.length
+        return self._speed
 
     @property
     def active(self) -> bool:
         return self.phase not in (FlightPhase.FINISHED, FlightPhase.CANCELLED)
 
-    def _append_trail(self, now_ms: float, previous: RewardPoint) -> None:
-        elapsed_seconds = max(1e-6, now_ms - self.last_update_ms) / 1000.0
-        measured_speed = self.position.distance_to(previous) / elapsed_seconds
-        if self.phase is FlightPhase.SPIRAL:
-            self.velocity = (self.position - previous).scaled(1.0 / elapsed_seconds)
-        if not self.trail or self.trail[-1].position != self.position:
-            self.trail.append(TrailSample(now_ms, self.position))
-        cutoff = now_ms - self.config.trail_lifetime_ms
-        self.trail[:] = [sample for sample in self.trail if sample.at_ms >= cutoff]
+    def _append_trail(self) -> None:
+        self.trail.append(TrailSample(self.elapsed_ms, self.position))
         if len(self.trail) > self.config.trail_maximum_points:
             del self.trail[: len(self.trail) - self.config.trail_maximum_points]
 
-        maximum_length = trail_length_for_speed(max(self.speed, measured_speed))
-        self.trail[:] = clip_trail_to_length(self.trail, maximum_length)
-
-    def _begin_burst(self, at_ms: float, contact: RewardPoint) -> None:
+    def _begin_burst(self, contact: RewardPoint, center: RewardPoint) -> None:
         self.phase = FlightPhase.BURST
-        self.position = contact
+        self.position = center
         self.contact_point = contact
-        self.burst_started_at_ms = at_ms
+        self.burst_started_at_ms = self.elapsed_ms
         self.velocity = RewardPoint(0.0, 0.0)
-        particles: list[BurstParticle] = []
+        self._speed = 0.0
+        self.trail.clear()
         for index in range(self.config.burst_particle_count):
             angle = math.tau * index / self.config.burst_particle_count
-            speed = 180.0 + (460.0 - 180.0) * (
-                index / max(1, self.config.burst_particle_count - 1)
-            )
-            particles.append(BurstParticle(
-                origin=contact,
-                velocity=RewardPoint(math.cos(angle) * speed, math.sin(angle) * speed),
-                started_at_ms=at_ms,
+            self.particles.append(BurstParticle(
+                origin=center,
+                direction=RewardPoint(math.cos(angle), math.sin(angle)),
+                started_at_ms=self.elapsed_ms,
+                scale=self.scale * WINDOWS_EFFECT_SCALE,
             ))
-        self.particles = particles
+
+    def reset_target(self) -> None:
+        self._previous_target = None
+        self._previous_step_target = None
+
+    def pause(self, now_ms: float) -> None:
+        self.last_update_ms = max(self.last_update_ms, float(now_ms))
+        self._paused = True
+        self.reset_target()
 
     def update(
         self,
         now_ms: float,
         target: RewardPoint | tuple[float, float] | None,
         pet_half_size: float,
+        target_key: object = None,
     ) -> bool:
         if not self.active:
             return False
         now_ms = max(float(now_ms), self.last_update_ms)
         target_point = _coerce_point(target)
-        age_ms = now_ms - self.created_at_ms
-        if age_ms >= self.config.maximum_lifetime_ms and self.phase is not FlightPhase.BURST:
-            self.phase = FlightPhase.CANCELLED
-            return False
-
         if target_point is None:
-            if self.missing_target_since_ms is None:
-                self.missing_target_since_ms = now_ms
-            elif now_ms - self.missing_target_since_ms >= self.config.missing_target_timeout_ms:
-                self.phase = FlightPhase.CANCELLED
-                return False
-        else:
-            self.missing_target_since_ms = None
-
-        if self.phase is FlightPhase.BURST:
-            if (
-                self.burst_started_at_ms is not None
-                and now_ms - self.burst_started_at_ms >= self.config.burst_duration_ms
-            ):
-                self.phase = FlightPhase.FINISHED
-                return False
-            self.last_update_ms = now_ms
+            self.pause(now_ms)
             return True
-
-        previous = self.position
-        if self.phase is FlightPhase.SPIRAL:
-            progress = min(1.0, max(0.0, age_ms / self.config.spiral_duration_ms))
-            self.position = self.source + _spiral_offset(self.config, progress)
-            self._append_trail(now_ms, previous)
-            if progress >= 1.0:
-                self.phase = FlightPhase.HOMING
-                if target_point is not None:
-                    self.velocity = (target_point - self.position).normalized().scaled(
-                        self.config.homing_initial_speed
-                    )
-                    contact = _swept_contact(
-                        self.position,
-                        self.position,
-                        target_point,
-                        max(0.0, self.config.hit_radius),
-                    )
-                    if contact is not None:
-                        self._begin_burst(now_ms, contact)
-            self.last_update_ms = now_ms
-            return True
-
-        elapsed_seconds = max(0.0, now_ms - self.last_update_ms) / 1000.0
-        if target_point is not None and elapsed_seconds > 0.0:
-            direction = (target_point - self.position).normalized()
-            self.velocity = self.velocity + direction.scaled(
-                self.config.homing_acceleration * elapsed_seconds
-            )
-            if self.speed > self.config.homing_maximum_speed:
-                self.velocity = self.velocity.normalized().scaled(
-                    self.config.homing_maximum_speed
-                )
-            destination = self.position + self.velocity.scaled(elapsed_seconds)
-            contact = _swept_contact(
-                self.position,
-                destination,
-                target_point,
-                max(0.0, self.config.hit_radius),
-            )
-            self.position = destination if contact is None else contact
-            self._append_trail(now_ms, previous)
-            if contact is not None:
-                self._begin_burst(now_ms, contact)
+        delta_ms = 0.0 if self._paused else now_ms - self.last_update_ms
         self.last_update_ms = now_ms
-        return True
+        self._paused = False
+        self.scale = max(0.0, float(pet_half_size)) / REFERENCE_PET_HALF_SIZE
+        initial_target = self._previous_target
+        if initial_target is None or target_key != self._target_key:
+            initial_target = target_point
+            self._previous_step_target = target_point
+        self._previous_target = target_point
+        self._target_key = target_key
+        old_remainder = self._accumulator_ms
+        self._accumulator_ms += delta_ms
+        step_count = math.floor((self._accumulator_ms + 1e-9) / SIMULATION_STEP_MS)
+        for index in range(step_count):
+            fraction = min(1.0, max(0.0, ((index + 1) * SIMULATION_STEP_MS - old_remainder) / delta_ms)) if delta_ms else 1.0
+            target_start = self._previous_step_target or initial_target
+            target_end = initial_target + (target_point - initial_target).scaled(fraction)
+            self._previous_step_target = target_end
+            self.elapsed_ms += SIMULATION_STEP_MS
+            if self.phase is FlightPhase.BURST:
+                if self.elapsed_ms - self.burst_started_at_ms >= self.config.burst_duration_ms - 1e-9:
+                    self.phase = FlightPhase.FINISHED
+                    break
+                continue
+            dt = SIMULATION_STEP_MS / 1000.0
+            direction = (target_start - self.position).normalized()
+            distance = (self._speed * dt + 0.5 * self.config.homing_acceleration * dt * dt) * self.scale
+            self._speed += self.config.homing_acceleration * dt
+            self.velocity = direction.scaled(self._speed * self.scale)
+            destination = self.position + direction.scaled(distance)
+            fraction = collision_fraction(self.position, destination, target_start, target_end,
+                                          max(0.0, pet_half_size) + self.config.orb_radius * self.scale * WINDOWS_EFFECT_SCALE)
+            if fraction is not None:
+                contact = self.position + (destination - self.position).scaled(fraction)
+                center = target_start + (target_end - target_start).scaled(fraction)
+                self._begin_burst(contact, center)
+                continue
+            self.position = destination
+            self._append_trail()
+        self._accumulator_ms = max(0.0, self._accumulator_ms - step_count * SIMULATION_STEP_MS)
+        return self.active
 
 
 class RewardAnimationModel:
@@ -433,8 +315,6 @@ class RewardAnimationModel:
         now_ms: float | None = None,
     ) -> RewardFlight:
         created_at = _monotonic_ms() if now_ms is None else float(now_ms)
-        if len(self.flights) >= MAX_CONCURRENT_BALLS:
-            self.flights[:] = self.flights[-(MAX_CONCURRENT_BALLS - 1):]
         flight = RewardFlight(
             flight_id=self._next_flight_id,
             source=_coerce_point(source) or RewardPoint(0.0, 0.0),
@@ -451,10 +331,19 @@ class RewardAnimationModel:
         now_ms: float,
         target: RewardPoint | tuple[float, float] | None,
         pet_half_size: float,
+        target_key: object = None,
     ) -> None:
         for flight in tuple(self.flights):
-            flight.update(now_ms, target, pet_half_size)
+            flight.update(now_ms, target, pet_half_size, target_key)
         self.flights[:] = [flight for flight in self.flights if flight.active]
+
+    def pause(self, now_ms: float) -> None:
+        for flight in self.flights:
+            flight.pause(now_ms)
+
+    def reset_target(self) -> None:
+        for flight in self.flights:
+            flight.reset_target()
 
     def clear(self) -> None:
         self.flights.clear()
@@ -462,6 +351,97 @@ class RewardAnimationModel:
 
 def _monotonic_ms() -> float:
     return time.monotonic_ns() / 1_000_000.0
+
+
+@lru_cache(maxsize=32)
+def _orb_glow(radius: int, color: str) -> Image.Image:
+    glow = Image.new("RGBA", (radius * 2 + 2, radius * 2 + 2))
+    draw = ImageDraw.Draw(glow)
+    rgb = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+    center = radius + 1
+    for ring in range(radius, 0, -1):
+        alpha = round(105 * (1.0 - ring / radius) ** 2)
+        draw.ellipse((center - ring, center - ring, center + ring, center + ring),
+                     fill=(*rgb, alpha))
+    return glow
+
+
+@lru_cache(maxsize=16)
+def _orb_sprite(scale: float, color: str) -> Image.Image:
+    factor = 2
+    radius = max(1, round(VISUAL_ORB_GLOW_RADIUS * scale * factor))
+    sprite = _orb_glow(radius, color).copy()
+    draw = ImageDraw.Draw(sprite)
+    center = radius + 1
+    for radius, fill in ((VISUAL_ORB_RADIUS, color), (VISUAL_ORB_HIGHLIGHT_RADIUS, "#FFFAE4")):
+        size = radius * scale * factor
+        draw.ellipse((center - size, center - size, center + size, center + size), fill=fill)
+    return sprite.resize((sprite.width // factor, sprite.height // factor), Image.Resampling.LANCZOS)
+
+
+@lru_cache(maxsize=64)
+def _impact_sprite(scale: float, color: str, age_step: int, duration_ms: float) -> Image.Image:
+    progress = min(1.0, age_step * SIMULATION_STEP_MS / duration_ms)
+    factor = 2
+    half = math.ceil((BURST_PARTICLE_DISTANCE_END + BURST_PARTICLE_RADIUS + 2) * scale)
+    sprite = Image.new("RGBA", (half * 2 * factor, half * 2 * factor))
+    draw = ImageDraw.Draw(sprite)
+    center = half * factor
+    rgb = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+    fill = (*rgb, round(255 * (1.0 - progress)))
+    radius = (BURST_RING_RADIUS_START + (BURST_RING_RADIUS_END - BURST_RING_RADIUS_START) * progress) * scale * factor
+    draw.ellipse((center - radius, center - radius, center + radius, center + radius),
+                 outline=fill, width=max(1, round(2 * scale * factor)))
+    distance = (BURST_PARTICLE_DISTANCE_START + (BURST_PARTICLE_DISTANCE_END - BURST_PARTICLE_DISTANCE_START) * progress) * scale * factor
+    radius = BURST_PARTICLE_RADIUS * scale * factor
+    for index in range(BURST_PARTICLE_COUNT):
+        angle = math.tau * index / BURST_PARTICLE_COUNT
+        x, y = center + math.cos(angle) * distance, center + math.sin(angle) * distance
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
+    return sprite.resize((half * 2, half * 2), Image.Resampling.LANCZOS)
+
+
+def render_reward_frame(model: RewardAnimationModel, bounds: tuple[int, int, int, int]) -> tuple[Image.Image, int, int]:
+    """Composite cached antialiased sprites without resampling the desktop-sized frame."""
+    screen_x, screen_y, screen_width, screen_height = bounds
+    points = [(point, 70.0 * flight.scale * WINDOWS_EFFECT_SCALE) for flight in model.flights
+              for point in [flight.position, *(sample.position for sample in flight.trail)]]
+    if not points:
+        return Image.new("RGBA", (1, 1)), screen_x, screen_y
+    left = max(screen_x, math.floor(min(point.x - radius for point, radius in points)))
+    top = max(screen_y, math.floor(min(point.y - radius for point, radius in points)))
+    right = min(screen_x + screen_width, math.ceil(max(point.x + radius for point, radius in points)))
+    bottom = min(screen_y + screen_height, math.ceil(max(point.y + radius for point, radius in points)))
+    if right <= left or bottom <= top:
+        return Image.new("RGBA", (1, 1)), screen_x, screen_y
+    frame = Image.new("RGBA", (right - left, bottom - top))
+    draw = ImageDraw.Draw(frame)
+
+    def point(value: RewardPoint) -> tuple[float, float]:
+        return value.x - left, value.y - top
+
+    for flight in model.flights:
+        rgb = tuple(int(flight.color[index:index + 2], 16) for index in (1, 3, 5))
+        scale = round(flight.scale * WINDOWS_EFFECT_SCALE, 3)
+        if flight.phase is FlightPhase.HOMING:
+            samples = flight.trail[::TRAIL_SAMPLE_STRIDE]
+            for index in range(1, len(samples)):
+                strength = index / len(samples)
+                width = max(1, round(TRAIL_STROKE_WIDTH * scale * strength))
+                fill = (*rgb, round(255 * strength * TRAIL_HEAD_OPACITY))
+                start, end = point(samples[index - 1].position), point(samples[index].position)
+                draw.line((start, end), fill=fill, width=width)
+                radius = width / 2
+                draw.ellipse((end[0] - radius, end[1] - radius, end[0] + radius, end[1] + radius), fill=fill)
+            sprite = _orb_sprite(scale, flight.color)
+        elif flight.phase is FlightPhase.BURST:
+            age_step = round((flight.elapsed_ms - flight.burst_started_at_ms) / SIMULATION_STEP_MS)
+            sprite = _impact_sprite(scale, flight.color, age_step, flight.config.burst_duration_ms)
+        else:
+            continue
+        x, y = point(flight.position)
+        frame.alpha_composite(sprite, (round(x - sprite.width / 2), round(y - sprite.height / 2)))
+    return frame, left, top
 
 
 class RewardEffectLayer(tk.Toplevel):
@@ -483,15 +463,21 @@ class RewardEffectLayer(tk.Toplevel):
         self._passthrough_callbacks: list = []
         self._passthrough_failures: list[int] = []
         self._call_window_proc = None
+        self._frame_surface = LayeredSurface() if sys.platform == "win32" else None
+        self._frame_hwnd: int | None = None
         self.withdraw()
         self.overrideredirect(True)
         self.configure(bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         try:
             self.wm_attributes("-topmost", True)
-            self.wm_attributes("-transparentcolor", self.TRANSPARENT_KEY)
+            if sys.platform != "win32":
+                self.wm_attributes("-transparentcolor", self.TRANSPARENT_KEY)
         except tk.TclError:
             pass
         self._origin_x, self._origin_y, width, height = self._virtual_screen_bounds(parent)
+        self._screen_bounds = (self._origin_x, self._origin_y, width, height)
+        self._alpha_frame: Image.Image | None = None
+        self._alpha_origin = (self._origin_x, self._origin_y)
         self.geometry(f"{width}x{height}{self._origin_x:+d}{self._origin_y:+d}")
         self.canvas = tk.Canvas(
             self,
@@ -539,7 +525,9 @@ class RewardEffectLayer(tk.Toplevel):
                 get_style.argtypes = [wintypes.HWND, ctypes.c_int]
                 window_style = int(get_style(widget_hwnd, -16) or 0)
                 if window_style & 0x40000000:  # WS_CHILD
-                    parent_hwnd = int(user32.GetParent(widget_hwnd) or 0)
+                    get_parent = user32.GetParent
+                    get_parent.argtypes, get_parent.restype = [wintypes.HWND], wintypes.HWND
+                    parent_hwnd = int(get_parent(widget_hwnd) or 0)
                     if parent_hwnd:
                         hwnd = parent_hwnd
                 enumerator_type = ctypes.WINFUNCTYPE(
@@ -553,10 +541,14 @@ class RewardEffectLayer(tk.Toplevel):
                     result.append(int(child_hwnd))
                     return True
 
-                user32.EnumChildWindows(hwnd, collect, 0)
+                enumerate_children = user32.EnumChildWindows
+                enumerate_children.argtypes = [wintypes.HWND, enumerator_type, wintypes.LPARAM]
+                enumerate_children.restype = wintypes.BOOL
+                enumerate_children(hwnd, collect, 0)
             except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError, tk.TclError):
                 pass
-        for candidate in (hwnd, widget_hwnd):
+        descendants, result = result, []
+        for candidate in (hwnd, widget_hwnd, *descendants):
             if candidate and candidate not in result:
                 # EnumChildWindows returns descendants only; the top-level
                 # itself must be subclassed too.
@@ -589,6 +581,7 @@ class RewardEffectLayer(tk.Toplevel):
         if not surfaces:
             return
         top_level = surfaces[0]
+        self._frame_hwnd = top_level
         extended_style = int(get_style(top_level, -20) or 0)
         try:
             set_style(
@@ -731,18 +724,18 @@ class RewardEffectLayer(tk.Toplevel):
     def show(self) -> None:
         if self.state() == "withdrawn":
             self.deiconify()
-        self.lift()
-        self._enable_mouse_passthrough()
+            self._enable_mouse_passthrough()
+            self.lift()
 
     def keep_above(self, other: tk.Misc | None = None) -> None:
         """Keep the transparent surface above the independently placed pet window."""
         if self.state() == "withdrawn":
             return
         try:
-            if other is None:
-                self.lift()
-            else:
-                self.lift(aboveThis=other)
+            # Tk's relative restack can replace the reference Toplevel's
+            # pending geometry with its old native bounds. Raising this
+            # already-topmost layer preserves the pet's queued movement.
+            self.lift()
         except tk.TclError:
             pass
 
@@ -754,120 +747,23 @@ class RewardEffectLayer(tk.Toplevel):
         return point.x - self._origin_x, point.y - self._origin_y
 
     def render(self, model: RewardAnimationModel, now_ms: float) -> None:
-        self.canvas.delete("all")
-        for flight in model.flights:
-            trail = flight.trail
-            base_stroke_width = trail_stroke_width_for_speed(flight.speed)
-            for index in range(1, len(trail)):
-                x1, y1 = self._canvas_point(trail[index - 1].position)
-                x2, y2 = self._canvas_point(trail[index].position)
-                sequence = index / max(1, len(trail) - 1)
-                width = base_stroke_width * (0.55 + sequence * 0.45)
-                self.canvas.create_line(
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    fill=flight.color,
-                    width=base_stroke_width * TRAIL_GLOW_WIDTH_MULTIPLIER,
-                    capstyle=tk.ROUND,
-                    stipple="gray50",
-                )
-                self.canvas.create_line(
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    fill=flight.color,
-                    width=width,
-                    capstyle=tk.ROUND,
-                )
-            if len(trail) > 1 and flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
-                # Small moving points make the trail read as flowing energy;
-                # they are transient and remain on the same click-through layer.
-                trail_length = trail_polyline_length(trail)
-                for pulse_index in range(3):
-                    pulse_distance = trail_length * ((now_ms / 160.0 + pulse_index / 3.0) % 1.0)
-                    pulse = trail_point_at_distance(trail, pulse_distance)
-                    if pulse is None:
-                        continue
-                    px, py = self._canvas_point(pulse)
-                    pulse_radius = 2.0 + (1.0 - pulse_distance / max(1.0, trail_length)) * 1.5
-                    self.canvas.create_oval(
-                        px - pulse_radius,
-                        py - pulse_radius,
-                        px + pulse_radius,
-                        py + pulse_radius,
-                        fill="#FFFFFF",
-                        outline="",
-                    )
-            if flight.phase in (FlightPhase.SPIRAL, FlightPhase.HOMING):
-                x, y = self._canvas_point(flight.position)
-                # Layered stipples approximate a radial alpha falloff on
-                # Tk's binary transparent-color surface.  The outer halo is
-                # sparse, while denser inner rings blend into the core.
-                for radius, stipple in (
-                    (VISUAL_ORB_GLOW_RADIUS, "gray25"),
-                    (VISUAL_ORB_GLOW_RADIUS * 0.78, "gray50"),
-                    (VISUAL_ORB_RADIUS * 1.55, "gray75"),
-                ):
-                    self.canvas.create_oval(
-                        x - radius,
-                        y - radius,
-                        x + radius,
-                        y + radius,
-                        fill=flight.color,
-                        outline="",
-                        stipple=stipple,
-                    )
-                radius = VISUAL_ORB_RADIUS
-                self.canvas.create_oval(
-                    x - radius,
-                    y - radius,
-                    x + radius,
-                    y + radius,
-                    fill=flight.color,
-                    outline=flight.color,
-                )
-                self.canvas.create_oval(
-                    x - VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    y - VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    x + VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    y + VISUAL_ORB_HIGHLIGHT_RADIUS,
-                    fill="#FFFFFF",
-                    outline="#FFFFFF",
-                )
-            elif flight.phase is FlightPhase.BURST:
-                for particle in flight.particles:
-                    x, y = self._canvas_point(particle.position_at(now_ms))
-                    self.canvas.create_oval(
-                        x - BURST_PARTICLE_GLOW_RADIUS,
-                        y - BURST_PARTICLE_GLOW_RADIUS,
-                        x + BURST_PARTICLE_GLOW_RADIUS,
-                        y + BURST_PARTICLE_GLOW_RADIUS,
-                        fill=flight.color,
-                        outline="",
-                        stipple="gray50",
-                    )
-                    self.canvas.create_oval(
-                        x - BURST_PARTICLE_RADIUS,
-                        y - BURST_PARTICLE_RADIUS,
-                        x + BURST_PARTICLE_RADIUS,
-                        y + BURST_PARTICLE_RADIUS,
-                        fill=flight.color,
-                        outline=flight.color,
-                    )
-                    self.canvas.create_oval(
-                        x - 1.4,
-                        y - 1.4,
-                        x + 1.4,
-                        y + 1.4,
-                        fill="#FFFFFF",
-                        outline="#FFFFFF",
-                    )
+        frame, x, y = render_reward_frame(model, self._screen_bounds)
+        self._alpha_frame, self._alpha_origin = frame, (x, y)
+        if sys.platform == "win32":
+            if not self._frame_hwnd:
+                raise RuntimeError("Reward layer has no native window")
+            self._frame_surface.present(self._frame_hwnd, frame, x, y)
+        else:
+            from PIL import ImageTk
+            self.canvas.delete("all")
+            self._tk_frame = ImageTk.PhotoImage(frame)
+            self.canvas.create_image(x - self._origin_x, y - self._origin_y,
+                                     image=self._tk_frame, anchor=tk.NW)
 
     def destroy(self) -> None:
         self._restore_hit_test_passthrough()
+        if self._frame_surface is not None:
+            self._frame_surface.close()
         super().destroy()
 
 
@@ -875,7 +771,7 @@ class RewardEffectsController:
     def __init__(
         self,
         host: tk.Misc,
-        target_provider: Callable[[], RewardPoint | tuple[float, float] | None],
+        target_provider: Callable[[], RewardTarget | RewardPoint | tuple[float, float] | None],
         *,
         pet_half_size: float,
         config: RewardFlightConfig = DEFAULT_CONFIG,
@@ -890,30 +786,41 @@ class RewardEffectsController:
         self._animation_now_ms = _monotonic_ms()
         self._last_wall_ms = self._animation_now_ms
         self._render_error: str | None = None
+        self._ready_last_tick = False
 
     def emit(self, source: RewardPoint | tuple[float, float], color: str) -> RewardFlight:
         if self._destroyed:
             raise RuntimeError("Reward effects controller is destroyed")
-        self._advance_clock()
+        started_ms = _monotonic_ms()
+        target = self._advance_clock()
         flight = self.model.emit(source, color, self._animation_now_ms)
+        flight.scale = (target.half_size if target is not None else self.pet_half_size) / REFERENCE_PET_HALF_SIZE
         try:
-            self.layer.show()
-            # Paint the first frame synchronously.  Waiting for the first
-            # timer tick made short flights effectively invisible on Windows
-            # when a card reflow happened in the same event-loop turn.
-            self.layer.render(self.model, self._animation_now_ms)
-            self.layer.update_idletasks()
+            if target is not None:
+                self.layer.show()
+                self.layer.render(self.model, self._animation_now_ms)
+            else:
+                self.layer.hide()
         except Exception as error:
             self._render_error = f"{type(error).__name__}: {error}"
             # A transient layer failure must not lose the flight or skip the
             # animation loop; the next tick retries showing the surface.
             pass
         if self._after_id is None:
-            self._after_id = self.host.after(FRAME_MS, self._tick)
+            self._schedule_frame(started_ms)
         return flight
+
+    def _schedule_frame(self, started_ms: float) -> None:
+        # Rendering is part of the frame budget, not an extra delay each tick.
+        delay = max(1, math.ceil(FRAME_MS - (_monotonic_ms() - started_ms)))
+        self._after_id = self.host.after(delay, self._tick)
 
     def keep_above(self, other: tk.Misc | None = None) -> None:
         self.layer.keep_above(other)
+
+    def reset_target(self) -> None:
+        """Retarget after layout migration without sweeping across a teleport."""
+        self.model.reset_target()
 
     def clear(self) -> None:
         """Cancel all active flights and hide the transient layer immediately."""
@@ -932,40 +839,49 @@ class RewardEffectsController:
     def _host_visible(self) -> bool:
         try:
             state = str(self.host.wm_state()) if hasattr(self.host, "wm_state") else "normal"
-            return bool(self.host.winfo_exists() and self.host.winfo_viewable() and state != "iconic")
+            focused = self.host.focus_displayof() is not None
+            return bool(self.host.winfo_exists() and self.host.winfo_viewable()
+                        and state not in ("iconic", "withdrawn") and focused)
         except tk.TclError:
             return False
 
-    def _advance_clock(self) -> None:
+    def _advance_clock(self) -> RewardTarget | None:
         wall_ms = _monotonic_ms()
-        if self._host_visible():
-            self._animation_now_ms += max(0.0, wall_ms - self._last_wall_ms)
+        target = None
+        try:
+            raw = self.target_provider() if self._host_visible() else None
+            if isinstance(raw, RewardTarget):
+                target = raw
+            elif raw is not None:
+                target = RewardTarget(_coerce_point(raw), self.pet_half_size)
+        except Exception:
+            # Target widgets can disappear during a page or host rebuild.
+            target = None
+        if target is not None and self._ready_last_tick:
+            self._animation_now_ms += min(MAXIMUM_FRAME_MS, max(0.0, wall_ms - self._last_wall_ms))
+        elif target is None:
+            self.model.pause(self._animation_now_ms)
+        self._ready_last_tick = target is not None
         self._last_wall_ms = wall_ms
+        return target
 
     def _tick(self) -> None:
         self._after_id = None
         if self._destroyed:
             return
-        self._advance_clock()
-        host_visible = True
+        started_ms = _monotonic_ms()
+        target = self._advance_clock()
         try:
-            host_visible = self._host_visible()
-            if host_visible:
-                target = self.target_provider()
-                self.model.update(self._animation_now_ms, target, self.pet_half_size)
+            if target is not None:
+                self.model.update(self._animation_now_ms, target.center, target.half_size, target.continuity_key)
             else:
                 self.layer.hide()
         except Exception:
-            # A single failed frame (for example a transient control teardown
-            # while sampling the pet target) must not strand the overlay or
-            # freeze the animation: skip the frame and keep the flights aging
-            # so they still clean up and hide the layer.
-            pass
-        if host_visible and self.model.active_count:
+            self.model.pause(self._animation_now_ms)
+        if target is not None and self.model.active_count:
             try:
                 self.layer.show()
                 self.layer.render(self.model, self._animation_now_ms)
-                self.layer.keep_above()
                 self._render_error = None
             except Exception as error:
                 # Keep the animation alive, but retain one diagnostic for the
@@ -981,7 +897,7 @@ class RewardEffectsController:
             except tk.TclError:
                 pass
         if self.model.active_count:
-            self._after_id = self.host.after(FRAME_MS, self._tick)
+            self._schedule_frame(started_ms)
 
     def destroy(self) -> None:
         if self._destroyed:

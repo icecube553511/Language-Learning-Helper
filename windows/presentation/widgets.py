@@ -1203,6 +1203,7 @@ class PetOverlay(tk.Toplevel):
     ):
         self._pet_image = image
         self._display_size = max(1, display_size)
+        self._last_geometry: tuple[int, int, int, int] | None = None
         super().__init__(parent)
         self.withdraw()
         self.overrideredirect(True)
@@ -1259,9 +1260,13 @@ class PetOverlay(tk.Toplevel):
         height = height or self._display_size
         root_x = self.master.winfo_rootx() + x
         root_y = self.master.winfo_rooty() + y
-        self.geometry(f"{width}x{height}+{root_x}+{root_y}")
+        geometry = (width, height, root_x, root_y)
+        if geometry != self._last_geometry:
+            self.geometry(f"{width}x{height}+{root_x}+{root_y}")
+            self._last_geometry = geometry
         if self.state() == "withdrawn":
             self.deiconify()
+            self.lift()
 
     def _on_press(self, event):
         self._on_pet_press(event)

@@ -64,6 +64,7 @@ from presentation.reward_effects import (
     REVIEW_REWARD_COLOR,
     RewardEffectsController,
     RewardPoint,
+    RewardTarget,
     STUDY_REWARD_COLOR,
 )
 from presentation.widgets import (
@@ -140,27 +141,8 @@ def preserve_pet_motion_for_targets(
     state: PetState,
     targets: list[PetTarget] | tuple[PetTarget, ...],
 ) -> PetState:
-    """Drop a stale support id without resetting the companion's motion.
-
-    Rating a card briefly unmaps the old answer/rating controls while the next
-    card is laid out.  The support id is presentation-scoped, so retaining it
-    through that gap would make the domain reducer interpret a normal layout
-    refresh as a lost support and transition to FALL (clearing velocities).
-    """
-    target_id = state.target_id
-    if not target_id or target_id == "__viewport-bottom__":
-        return state
-    if any(target.valid and target.id == target_id for target in targets):
-        return state
-    return replace(
-        state,
-        target_id=None,
-        path_index=0,
-        path_direction=1,
-        roll_corners=0,
-        avoid_target_id=None,
-        curve_velocity=None,
-    )
+    """Keep support history intact so the domain can resolve lost contact."""
+    return state
 
 
 def _transfer_pet_axis(
@@ -436,6 +418,7 @@ class LexiTrackApp(tk.Tk):
             self,
             self.service,
             pet_half_size=PET_DISPLAY_SIZE // 2,
+            on_popup_created=self._on_word_bubble_created,
         )
         self.dictation_document = None
         self.dictation_document_word_ids: set[str] = set()
@@ -490,7 +473,7 @@ class LexiTrackApp(tk.Tk):
         self._setup_pet_overlay()
         self._reward_effects = RewardEffectsController(
             self,
-            self._reward_pet_center,
+            self._reward_pet_target,
             pet_half_size=PET_DISPLAY_SIZE / 2.0,
         )
         self.show_page("dashboard")
@@ -555,12 +538,14 @@ class LexiTrackApp(tk.Tk):
         self._schedule_pet_target_refresh()
         self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
 
-    def _reward_pet_center(self) -> RewardPoint | None:
-        """Return the currently rendered Bingzi center in screen coordinates."""
+    def _reward_pet_target(self) -> RewardTarget | None:
+        """Sample the rendered pet, including dragging and the active dialog host."""
         overlay: PetOverlay | None = None
+        host: tk.Misc = self
         if self._dialog_pet_stack:
             runtime = self._dialog_pet_runtimes.get(self._dialog_pet_stack[-1])
             overlay = runtime.overlay if runtime is not None else None
+            host = self._dialog_pet_stack[-1]
         else:
             overlay = self._pet_overlay
         if overlay is None:
@@ -568,22 +553,20 @@ class LexiTrackApp(tk.Tk):
         try:
             if not overlay.winfo_exists() or not overlay.winfo_viewable():
                 return None
-            return RewardPoint(
+            center = RewardPoint(
                 float(overlay.winfo_rootx()) + float(overlay.winfo_width()) / 2.0,
                 float(overlay.winfo_rooty()) + float(overlay.winfo_height()) / 2.0,
             )
+            # A host move is a coordinate discontinuity, whereas motion of the
+            # sprite within that host participates in swept collision checks.
+            return RewardTarget(center, max(overlay.winfo_width(), overlay.winfo_height()) / 2.0,
+                                (str(overlay), host.winfo_rootx(), host.winfo_rooty()))
         except tk.TclError:
             return None
 
-    def _remember_rating_pointer(self, event: tk.Event) -> None:
-        event.widget._reward_pointer_down = (
-            RewardPoint(float(event.x_root), float(event.y_root)),
-            self._pet_now_ms(),
-        )
-
-    @staticmethod
-    def _clear_rating_pointer(event: tk.Event) -> None:
-        event.widget._reward_pointer_down = None
+    def _reward_pet_center(self) -> RewardPoint | None:
+        target = self._reward_pet_target()
+        return None if target is None else target.center
 
     def _rating_button_center(self, button: tk.Button) -> RewardPoint:
         button.update_idletasks()
@@ -593,10 +576,6 @@ class LexiTrackApp(tk.Tk):
         )
 
     def _rating_source_point(self, button: tk.Button) -> RewardPoint:
-        pointer = getattr(button, "_reward_pointer_down", None)
-        button._reward_pointer_down = None
-        if pointer is not None and self._pet_now_ms() - float(pointer[1]) <= 1_000.0:
-            return pointer[0]
         return self._rating_button_center(button)
 
     def _emit_rating_reward(self, source: RewardPoint, color: str) -> None:
@@ -625,7 +604,6 @@ class LexiTrackApp(tk.Tk):
             width=width,
             height=height,
         )
-        overlay.lift()
         if self._reward_effects is not None:
             self._reward_effects.keep_above(overlay)
 
@@ -651,6 +629,9 @@ class LexiTrackApp(tk.Tk):
         use it as the next interpolation anchor instead.
         """
         self._cancel_main_pet_render()
+        effects = vars(self).get("_reward_effects")
+        if effects is not None:
+            effects.reset_target()
         if "pet_companion" in vars(self):
             self._pet_last_rendered_position = self.pet_companion.state.position
 
@@ -683,14 +664,17 @@ class LexiTrackApp(tk.Tk):
             self._pet_last_rendered_position = target
             return
         generation = self._pet_render_generation
+        started_ms = self._pet_now_ms()
         steps = max(1, (PET_TICK_MS + PET_RENDER_FRAME_MS - 1) // PET_RENDER_FRAME_MS)
         for step in range(1, steps + 1):
             elapsed_ms = min(PET_TICK_MS, step * PET_RENDER_FRAME_MS)
 
-            def render(elapsed: float = elapsed_ms) -> None:
+            def render() -> None:
                 if generation != self._pet_render_generation or self._dialog_pet_stack:
                     return
-                position = interpolate_pet_position(start, target, elapsed, PET_TICK_MS)
+                position = interpolate_pet_position(
+                    start, target, self._pet_now_ms() - started_ms, PET_TICK_MS,
+                )
                 self._place_pet_overlay(overlay, state, position)
                 self._pet_last_rendered_position = position
 
@@ -711,18 +695,21 @@ class LexiTrackApp(tk.Tk):
             runtime.last_rendered_position = target
             return
         generation = runtime.render_generation
+        started_ms = self._pet_now_ms()
         steps = max(1, (PET_TICK_MS + PET_RENDER_FRAME_MS - 1) // PET_RENDER_FRAME_MS)
         for step in range(1, steps + 1):
             elapsed_ms = min(PET_TICK_MS, step * PET_RENDER_FRAME_MS)
 
-            def render(elapsed: float = elapsed_ms) -> None:
+            def render() -> None:
                 if (
                     generation != runtime.render_generation
                     or not self._dialog_pet_stack
                     or self._dialog_pet_stack[-1] is not dialog
                 ):
                     return
-                position = interpolate_pet_position(start, target, elapsed, PET_TICK_MS)
+                position = interpolate_pet_position(
+                    start, target, self._pet_now_ms() - started_ms, PET_TICK_MS,
+                )
                 self._place_pet_overlay(runtime.overlay, state, position)
                 runtime.last_rendered_position = position
 
@@ -827,7 +814,7 @@ class LexiTrackApp(tk.Tk):
 
     @staticmethod
     def _pet_now_ms() -> float:
-        """Monotonic clock used exclusively for transient drag samples."""
+        """Monotonic clock for transient drag samples and interpolation."""
         return time.monotonic_ns() / 1_000_000.0
 
     @staticmethod
@@ -1202,6 +1189,15 @@ class LexiTrackApp(tk.Tk):
         ))
         return tuple(targets)
 
+    def _on_word_bubble_created(self, popup: tk.Toplevel, _key: str) -> None:
+        def restack(event=None) -> None:
+            if event is None or event.widget is popup:
+                self._sync_pet_overlay_visibility()
+
+        popup.bind("<Map>", restack, add="+")
+        popup.bind("<FocusIn>", restack, add="+")
+        restack()
+
     def _sync_pet_overlay_visibility(self) -> None:
         """Show exactly one companion: the newest dialog, or the main window."""
         active_dialog = self._dialog_pet_stack[-1] if self._dialog_pet_stack else None
@@ -1210,6 +1206,7 @@ class LexiTrackApp(tk.Tk):
                 if active_dialog is None:
                     self._cancel_main_pet_render()
                     state = self.pet_companion.state
+                    self._pet_overlay.lift()
                     self._place_pet_overlay(self._pet_overlay, state, state.position)
                     self._pet_last_rendered_position = state.position
                 else:
@@ -1224,6 +1221,7 @@ class LexiTrackApp(tk.Tk):
                 if dialog is active_dialog:
                     self._cancel_dialog_pet_render(dialog, runtime)
                     state = runtime.companion.state
+                    runtime.overlay.lift()
                     self._place_pet_overlay(runtime.overlay, state, state.position)
                     runtime.last_rendered_position = state.position
                 else:
@@ -1673,11 +1671,13 @@ class LexiTrackApp(tk.Tk):
             self._cancel_dialog_pet_render(dialog, runtime)
             event_point = pointer(event)
             state = runtime.companion.state
+            position = runtime.last_rendered_position or state.position
             runtime.drag_offset = PetPoint(
-                state.position.x - event_point.x,
-                state.position.y - event_point.y,
+                position.x - event_point.x,
+                position.y - event_point.y,
             )
-            runtime.companion.drag_start(state.position)
+            runtime.companion.drag_start(position)
+            runtime.last_rendered_position = position
             runtime.drag_samples = []
             self._record_pet_sample(
                 runtime.drag_samples,
@@ -1840,6 +1840,7 @@ class LexiTrackApp(tk.Tk):
                     )
                     return
             moved = runtime.companion.drag_move(desired, viewport_now)
+            self._schedule_dialog_pet_render(dialog, runtime, moved, moved.position)
             if runtime.drag_samples is None:
                 runtime.drag_samples = []
             self._record_pet_sample(
@@ -1902,8 +1903,14 @@ class LexiTrackApp(tk.Tk):
                     runtime.last_rendered_position = None
                     overlay.withdraw()
                 runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
-            except tk.TclError:
-                self._detach_pet_from_dialog(dialog)
+            except Exception:
+                try:
+                    if dialog.winfo_exists():
+                        runtime.tick_after_id = dialog.after(PET_TICK_MS, tick)
+                    else:
+                        self._detach_pet_from_dialog(dialog)
+                except tk.TclError:
+                    self._detach_pet_from_dialog(dialog)
 
         def on_destroy(event) -> None:
             if event.widget is dialog:
@@ -2123,9 +2130,9 @@ class LexiTrackApp(tk.Tk):
             # A rating card rebuild can unmount a control mid-tick, which
             # surfaces as a transient TclError from winfo geometry.  A single
             # failure must not permanently kill the pet loop (that is what
-            # stops Bingzi after a click), so retry a bounded number of times.
+            # stops Bingzi after a click), so retry while the overlay exists.
             self._pet_tick_failures += 1
-            if self._pet_tick_failures < 5 and self._pet_overlay is not None:
+            if self._pet_overlay is not None:
                 try:
                     self._pet_tick_after_id = self.after(PET_TICK_MS, self._pet_tick)
                     return
@@ -2153,8 +2160,10 @@ class LexiTrackApp(tk.Tk):
         self._cancel_main_pet_render()
         pointer = self._pet_pointer(event)
         state = self.pet_companion.state
-        self._pet_drag_offset = PetPoint(state.position.x - pointer.x, state.position.y - pointer.y)
-        self.pet_companion.drag_start(state.position)
+        position = self._pet_last_rendered_position or state.position
+        self._pet_drag_offset = PetPoint(position.x - pointer.x, position.y - pointer.y)
+        self.pet_companion.drag_start(position)
+        self._pet_last_rendered_position = position
         self._pet_drag_samples = []
         self._pet_dragging = True
         self._pet_drag_host_dialog = None
@@ -2273,6 +2282,7 @@ class LexiTrackApp(tk.Tk):
                     )
                 return
         moved = self.pet_companion.drag_move(desired, viewport)
+        self._schedule_main_pet_render(moved, moved.position)
         self._record_pet_sample(
             self._pet_drag_samples,
             self._pet_now_ms(),
@@ -2577,8 +2587,6 @@ class LexiTrackApp(tk.Tk):
                 width=8,
             )
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
-            button.bind("<ButtonPress-1>", self._remember_rating_pointer, add="+")
-            button.bind("<Leave>", self._clear_rating_pointer, add="+")
             self.rating_buttons.append(button)
         self.answer_panel = tk.Frame(self.study_card, bg=SURFACE)
         self.answer_panel.bind("<Configure>", self._resize_study_answer, add="+")
@@ -2684,8 +2692,6 @@ class LexiTrackApp(tk.Tk):
                 width=8,
             )
             button.grid(row=0, column=column, sticky="nsew", padx=6, pady=0)
-            button.bind("<ButtonPress-1>", self._remember_rating_pointer, add="+")
-            button.bind("<Leave>", self._clear_rating_pointer, add="+")
             self.review_rating_buttons.append(button)
         self.review_answer_panel = tk.Frame(self.review_card, bg=SURFACE)
         self.review_answer_panel.bind("<Configure>", self._resize_review_answer, add="+")
@@ -4738,6 +4744,8 @@ class LexiTrackApp(tk.Tk):
         self.bind("<Control-k>", lambda _event: self._focus_search())
         self.bind("<Control-s>", self._on_control_s, add="+")
         self.bind("<FocusIn>", self._on_app_focus_in, add="+")
+        self.bind("<FocusIn>", self._on_pet_host_activation, add="+")
+        self.bind("<Map>", self._on_pet_host_activation, add="+")
         self.bind("<FocusOut>", self._on_app_focus_out, add="+")
         self.bind("<space>", lambda _event: self._reveal_current_answer())
         for key, rating in (("1", ReviewRating.AGAIN), ("2", ReviewRating.HARD), ("3", ReviewRating.GOOD), ("4", ReviewRating.EASY)):
@@ -4748,6 +4756,10 @@ class LexiTrackApp(tk.Tk):
             self.save_dictation_selection()
             return "break"
         return None
+
+    def _on_pet_host_activation(self, event) -> None:
+        if event.widget is self or event.type == tk.EventType.FocusIn:
+            self._sync_pet_overlay_visibility()
 
     def _on_app_focus_in(self, _event) -> None:
         if self._dictation_window_active:
@@ -4774,10 +4786,6 @@ class LexiTrackApp(tk.Tk):
         if self.current_page == "dictation" and key != "dictation":
             if not self._confirm_dictation_leave():
                 return
-        if self.current_page != key:
-            reward_effects = vars(self).get("_reward_effects")
-            if reward_effects is not None:
-                reward_effects.clear()
         # Page packing immediately changes target geometry.  Invalidate
         # callbacks scheduled against the previous page before navigation
         # turns the companion into a FALL transition.

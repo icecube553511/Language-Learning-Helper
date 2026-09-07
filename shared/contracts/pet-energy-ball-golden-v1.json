@@ -1,22 +1,66 @@
 {
   "contractVersion": "pet-energy-ball-v1",
+  "behaviorRevision": 2,
+  "platformEffectScale": { "windows": 2.0, "android": 1.0 },
   "phases": {
     "study": { "color": "#F5C451", "label": "gold" },
     "review": { "color": "#39D9D0", "label": "cyan" }
   },
+  "trigger": { "source": "button-center", "activation": "valid-rating-command", "ratings": ["again", "hard", "good", "easy"] },
   "motion": {
-    "acceleration": "continuous-toward-live-pet",
-    "maxSpeedLogicalPxPerSecond": 1800.0,
-    "hitRadiusLogicalPx": 36.0,
-    "trailLengthLogicalPx": { "minimum": 12.0, "maximum": 96.0 },
-    "trailOpacity": { "head": 0.72, "tail": 0.0 }
+    "model": "accelerating-direct-pursuit",
+    "initialSpeedLogicalPxPerSecond": 65.0,
+    "accelerationLogicalPxPerSecondSquared": 230.0,
+    "maxSpeedLogicalPxPerSecond": null,
+    "fixedStepSeconds": 0.008333333333333333,
+    "maximumFrameSeconds": 0.1,
+    "orbRadiusLogicalPx": 7.0,
+    "targetRadius": "displayed-pet-half-size",
+    "collision": "relative-swept-circles",
+    "targetDiscontinuity": "reset-history-on-host-change-or-resume"
+  },
+  "visual": {
+    "coreRadiusLogicalPx": 4.0,
+    "glowRadiusLogicalPx": 46.0,
+    "glowPeakAlpha": 105,
+    "trailSamples": 42,
+    "trailSampleStride": 3,
+    "trailWidthLogicalPx": 7.0,
+    "trailHeadOpacity": 0.55
   },
   "burst": {
-    "particleCount": 18,
-    "lifetimeMs": 260,
-    "radialSpeedLogicalPxPerSecond": { "minimum": 180.0, "maximum": 460.0 },
+    "particleCount": 8,
+    "lifetimeMs": 420,
+    "ringRadiusLogicalPx": [20.0, 58.0],
+    "particleDistanceLogicalPx": [22.0, 66.0],
+    "particleRadiusLogicalPx": 2.0,
+    "ringWidthLogicalPx": 2.0,
     "inheritsPhaseColor": true
   },
-  "maxConcurrentBalls": 3,
-  "transient": true
+  "lifecycle": {
+    "navigation": "preserve",
+    "hostChange": "preserve-and-retarget",
+    "background": "pause",
+    "missingTarget": "pause",
+    "resume": "fresh-clock-and-target-baseline",
+    "exit": "clear"
+  },
+  "maxConcurrentBalls": null,
+  "maximumLifetimeMs": null,
+  "transient": true,
+  "motionVectors": [
+    { "name": "one-second", "seconds": 1.0, "distance": 180.0, "speed": 295.0 },
+    { "name": "two-seconds", "seconds": 2.0, "distance": 590.0, "speed": 525.0 },
+    { "name": "beyond-old-timeout", "seconds": 3.0, "distance": 1230.0, "speed": 755.0 },
+    { "name": "beyond-old-speed-cap", "seconds": 10.0, "distance": 12150.0, "speed": 2365.0 }
+  ],
+  "collisionVectors": [
+    { "name": "fast-orb", "orbStart": [0.0, 0.0], "orbEnd": [1000.0, 0.0], "targetStart": [500.0, 0.0], "targetEnd": [500.0, 0.0], "targetRadius": 18.0, "fraction": 0.475 },
+    { "name": "moving-target-crosses-orb", "orbStart": [0.0, 0.0], "orbEnd": [10.0, 0.0], "targetStart": [100.0, 0.0], "targetEnd": [0.0, 0.0], "targetRadius": 18.0, "fraction": 0.6818181818181818 },
+    { "name": "initial-overlap", "orbStart": [0.0, 0.0], "orbEnd": [10.0, 0.0], "targetStart": [20.0, 0.0], "targetEnd": [30.0, 0.0], "targetRadius": 18.0, "fraction": 0.0 },
+    { "name": "miss", "orbStart": [0.0, 40.0], "orbEnd": [1000.0, 40.0], "targetStart": [500.0, 0.0], "targetEnd": [500.0, 0.0], "targetRadius": 18.0, "fraction": null },
+    { "name": "tangent", "orbStart": [-100.0, 25.0], "orbEnd": [100.0, 25.0], "targetStart": [0.0, 0.0], "targetEnd": [0.0, 0.0], "targetRadius": 18.0, "fraction": 0.5 },
+    { "name": "near-tangent-miss", "orbStart": [-100.0, 25.001], "orbEnd": [100.0, 25.001], "targetStart": [0.0, 0.0], "targetEnd": [0.0, 0.0], "targetRadius": 18.0, "fraction": null },
+    { "name": "final-contact", "orbStart": [-100.0, 0.0], "orbEnd": [-25.0, 0.0], "targetStart": [0.0, 0.0], "targetEnd": [0.0, 0.0], "targetRadius": 18.0, "fraction": 1.0 }
+  ]
 }

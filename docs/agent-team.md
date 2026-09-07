@@ -1,5 +1,10 @@
 # Agent Team
 
+Every role must read `../ARCHITECTURE.md` completely before inspecting or
+changing repository content, then read the contracts and any available golden
+vectors for its assigned feature. This requirement applies before delegation
+as well as before implementation.
+
 LexiTrack uses a small team of focused roles to keep every behavior change
 cross-platform and auditable. Roles work in sequence or, when the orchestrator
 can run them, in parallel; they never touch overlapping files.
@@ -12,9 +17,9 @@ can run them, in parallel; they never touch overlapping files.
 | `grilling_review` | Requirements | Challenge ambiguous boundaries, defaults, ordering, persistence, failures, and interaction details before implementation. |
 | root agent (orchestrator) | Cross-cutting | Own shared contracts/assets, resolve audit findings, run full verification, commit, push, and maintain the GitHub pull request. |
 
-The team owns `petCompanionInteraction`, `petVitalsAndRatingRewards`, and the
-`petAppearanceStates` scaffold. Platform roles register UI bounds, render
-Bingzi, and implement their client; the orchestrator keeps contracts,
+The team owns `petCompanionInteraction`, `petVitalsAndRatingRewards`,
+`petEnergyBallEffect`, and the `petAppearanceStates` scaffold. Platform roles
+register UI bounds, render Bingzi, and implement their client; the orchestrator keeps contracts,
 source/derived assets, parity markers, and delivery evidence synchronized.
 
 ## Rules
@@ -40,17 +45,25 @@ For `pet-vitals-v1`, movement `PetState` remains transient while vitals and the
 single recovery marker are persisted through inner ports. `PetVitals` composes
 an explicit immutable `FoodJar` value object while infrastructure keeps the
 compatible `foodReserve` scalar wire shape. The marker is never a vocabulary
-tag. Rating reward animation is not part of the product capability. Review savepoints
-compensate a rejected second store write in-process; they are not presented as a
+tag. Review savepoints compensate a rejected second store write in-process;
+they are not presented as a
 cross-file crash-atomic transaction. Android keeps each successful synchronous
 preferences commit, matching flow publication, and review savepoint creation in
 one non-cancellable critical section so coroutine cancellation cannot split the
 in-process outcome.
 
+`pet-energy-ball-v1` independently governs rating visuals. Every accepted
+Study/Review rating activation emits its own transient pursuit instance;
+flight, trails and impact particles live in presentation and never control
+rating or vitals settlement. Platform adapters own clocks, density, native
+surfaces and pointer transparency. Preserve the explicit Windows size profile
+and its collision radius while retaining the shared motion and lifetime rules.
+
 ## Confirmed cross-platform behaviors
 
-Recorded in `CLAUDE.md` and `CODEBASE_ONBOARDING.md`. As of now they include:
-review reminder auto-clearing from the dashboard, centered/enlarged review
+Detailed behavior is authoritative only in `shared/contracts/`, its golden
+vectors, and the parity manifests. The implemented feature set includes review
+reminder auto-clearing from the dashboard, centered/enlarged review
 start button, dictation row-click and drag-range multi-select, dictation
 preview wheel paging, the recursive word bubble fixes below, and the library
 group browser (`vocabulary-groups-v1`): entering 词库 shows the wordbook groups

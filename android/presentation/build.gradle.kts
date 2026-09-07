@@ -67,6 +67,10 @@ dependencies {
 
 tasks.withType<Test>().configureEach {
     systemProperty(
+        "pet.energy.ball.golden.path",
+        rootProject.file("../shared/contracts/pet-energy-ball-golden-v1.json").absolutePath,
+    )
+    systemProperty(
         "pet.companion.golden.path",
         rootProject.file("../shared/contracts/pet-companion-golden-v1.json").absolutePath,
     )

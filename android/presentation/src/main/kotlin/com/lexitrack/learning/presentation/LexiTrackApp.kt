@@ -77,6 +77,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -115,7 +116,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -255,6 +257,7 @@ private val LocalRegisterPetWindow = staticCompositionLocalOf<(Any, Boolean) -> 
 private val LocalPetWindowStack = staticCompositionLocalOf<List<Any>> { emptyList() }
 private val LocalPetWindowCoordinator = staticCompositionLocalOf<PetWindowCoordinator> { PetWindowCoordinator() }
 private val LocalTriggerReward = staticCompositionLocalOf<(RewardEffectMode, Offset) -> Unit> { { _, _ -> } }
+private val LocalRewardEffects = staticCompositionLocalOf<RewardEffectsController?> { null }
 // A single navigation revision is shared with dialog hosts so a page change
 // always transitions the active pet, regardless of which host currently owns it.
 private val LocalPetNavigationKey = staticCompositionLocalOf<Any> { Unit }
@@ -295,12 +298,14 @@ private fun Rect.toPetRect(): PetRect = PetRect(left, top, width, height)
 internal fun LayoutCoordinates.boundsOnScreen(hostView: View): Rect {
     val windowBounds = boundsInWindow()
     val windowOrigin = IntArray(2)
+    val viewOriginInWindow = IntArray(2)
     hostView.getLocationOnScreen(windowOrigin)
+    hostView.getLocationInWindow(viewOriginInWindow)
     return Rect(
-        left = windowBounds.left + windowOrigin[0],
-        top = windowBounds.top + windowOrigin[1],
-        right = windowBounds.right + windowOrigin[0],
-        bottom = windowBounds.bottom + windowOrigin[1],
+        left = windowBounds.left + windowOrigin[0] - viewOriginInWindow[0],
+        top = windowBounds.top + windowOrigin[1] - viewOriginInWindow[1],
+        right = windowBounds.right + windowOrigin[0] - viewOriginInWindow[0],
+        bottom = windowBounds.bottom + windowOrigin[1] - viewOriginInWindow[1],
     )
 }
 
@@ -368,8 +373,8 @@ internal fun localizePetTargets(
             rect = PetRect(left, top, right - left, bottom - top),
             path = target.path.map { point ->
                 PetPoint(
-                    (point.x - origin.x).coerceIn(viewport.left, viewport.right),
-                    (point.y - origin.y).coerceIn(viewport.top, viewport.bottom),
+                    point.x - origin.x,
+                    point.y - origin.y,
                 )
             },
         )
@@ -414,6 +419,8 @@ private fun PetOverlay(
     val density = LocalDensity.current
     val halfSize = with(density) { petSize.toPx() / 2f }
     val coordinator = LocalPetWindowCoordinator.current
+    val rewardEffects = LocalRewardEffects.current
+    val hostView = LocalView.current
     var state by remember {
         mutableStateOf(PetState(PetPoint(halfSize + 12f, halfSize + 96f)))
     }
@@ -465,12 +472,18 @@ private fun PetOverlay(
         }
     }
     DisposableEffect(windowId) {
-        onDispose { coordinator.unregisterWindow(windowId, halfSize) }
+        onDispose {
+            rewardEffects?.removeTarget(windowId)
+            coordinator.unregisterWindow(windowId, halfSize)
+        }
     }
     LaunchedEffect(windowId, activeTargets) {
         coordinator.updateTargets(windowId, activeTargets)
     }
     val ownership = petOverlayOwnership(coordinator.activeWindowId, windowId, dragCaptureActive)
+    SideEffect {
+        if (!ownership.renders || !viewport.valid) rewardEffects?.removeTarget(windowId)
+    }
     val visualState = if (ownership.renders) coordinator.state else state
     LaunchedEffect(windowId, coordinator.activeWindowId) {
         if (coordinator.activeWindowId == windowId) state = coordinator.state
@@ -483,16 +496,15 @@ private fun PetOverlay(
     } else visualState.position
     // Animate between fixed simulation ticks. Dragging remains synchronous so
     // the pointer never lags behind the sprite while the user holds it.
-    val animatedX by animateFloatAsState(
-        targetValue = displayPosition.x,
-        animationSpec = tween(PET_TICK_MS.toInt(), easing = LinearEasing),
-        label = "bingzi-x",
-    )
-    val animatedY by animateFloatAsState(
-        targetValue = displayPosition.y,
-        animationSpec = tween(PET_TICK_MS.toInt(), easing = LinearEasing),
-        label = "bingzi-y",
-    )
+    val dragging = visualState.mode == PetMode.DRAGGING
+    val animatedPosition = remember(windowId, coordinator.activeWindowId, dragging) {
+        Animatable(Offset(displayPosition.x, displayPosition.y), Offset.VectorConverter)
+    }
+    LaunchedEffect(animatedPosition, displayPosition, ownership.renders) {
+        val destination = Offset(displayPosition.x, displayPosition.y)
+        if (dragging || !ownership.renders) animatedPosition.snapTo(destination)
+        else animatedPosition.animateTo(destination, tween(PET_TICK_MS.toInt(), easing = LinearEasing))
+    }
     LaunchedEffect(navigationKey) {
         val navigationChanged = previousNavigationKey != navigationKey
         previousNavigationKey = navigationKey
@@ -552,12 +564,13 @@ private fun PetOverlay(
             }
         }
     }
-    if ((!ownership.renders && !ownership.capturesGesture) || !viewport.valid) return
-    val renderedPosition = if (visualState.mode == PetMode.DRAGGING) {
+    val renderedPosition = if (dragging) {
         displayPosition
     } else {
-        PetPoint(animatedX, animatedY)
+        PetPoint(animatedPosition.value.x, animatedPosition.value.y)
     }
+    val latestRenderedPosition by rememberUpdatedState(renderedPosition)
+    if ((!ownership.renders && !ownership.capturesGesture) || !viewport.valid) return
     Image(
         painter = painterResource(
             if (visualState.facing == PetFacing.LEFT) R.drawable.bingzi_left else R.drawable.bingzi,
@@ -568,22 +581,39 @@ private fun PetOverlay(
             .alpha(if (ownership.renders) 1f else 0f)
             .offset {
                 IntOffset(
-                    (if (visualState.mode == PetMode.DRAGGING) displayPosition.x - halfSize else animatedX - halfSize).roundToInt(),
-                    (if (visualState.mode == PetMode.DRAGGING) displayPosition.y - halfSize else animatedY - halfSize).roundToInt(),
+                    (renderedPosition.x - halfSize).roundToInt(),
+                    (renderedPosition.y - halfSize).roundToInt(),
                 )
             }
             .size(petSize)
             .scale(if (visualState.mode == PetMode.FALL) 0.96f else 1f)
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsOnScreen(hostView)
+                if (ownership.renders && hostView.isAttachedToWindow && hostView.isShown && bounds.width > 0f && bounds.height > 0f) {
+                    val boundsInWindow = coordinates.boundsInWindow()
+                    val centerInWindow = coordinates.localToWindow(Offset(coordinates.size.width / 2f, coordinates.size.height / 2f))
+                    val centerOnScreen = centerInWindow + bounds.topLeft - boundsInWindow.topLeft
+                    val displayedScale = if (visualState.mode == PetMode.FALL) 0.96 else 1.0
+                    rewardEffects?.updateTarget(
+                        RewardTarget(
+                            rewardPointFromScreen(centerOnScreen, density.density),
+                            halfSize * displayedScale / density.density,
+                            windowId,
+                        ),
+                    )
+                } else rewardEffects?.removeTarget(windowId)
+            }
             .pointerInput(viewport, halfSize) {
                 detectDragGestures(
                     onDragStart = { localOffset ->
                         onPointerActiveChange(true)
                         dragCaptureActive = true
+                        val currentRenderedPosition = latestRenderedPosition
                         val dragged = beginDrag(
-                            coordinator.state.copy(position = renderedPosition),
+                            coordinator.state.copy(position = currentRenderedPosition),
                             PetPoint(
-                                renderedPosition.x - halfSize + localOffset.x,
-                                renderedPosition.y - halfSize + localOffset.y,
+                                currentRenderedPosition.x - halfSize + localOffset.x,
+                                currentRenderedPosition.y - halfSize + localOffset.y,
                             ),
                         )
                         state = dragged
@@ -766,6 +796,9 @@ private fun PetAlertDialog(
                     onPointerActiveChange = {},
                     preferredActive = isPetWindowVisible(petWindowStack, petWindowKey),
                 )
+                LocalRewardEffects.current?.let { controller ->
+                    RewardEffectsHost(controller, viewportOrigin, Modifier.matchParentSize())
+                }
             }
         }
     }
@@ -788,11 +821,15 @@ fun LexiTrackApp(
     var petViewport by remember { mutableStateOf(PetRect(0f, 0f, 0f, 0f)) }
     var petViewportOrigin by remember { mutableStateOf(PetPoint(0f, 0f)) }
     var petPointerActive by remember { mutableStateOf(false) }
-    var rewardRequests by remember { mutableStateOf<List<RewardEffectRequest>>(emptyList()) }
-    var rewardSequence by remember { mutableStateOf(0L) }
     val hostView = LocalView.current
+    val rewardDensity = LocalDensity.current.density
     val petWindowCoordinator = remember {
         PetWindowCoordinator()
+    }
+    val rewardEffects = rememberRewardEffectsController {
+        petWindowCoordinator.activeWindowId?.takeIf { id ->
+            petWindowCoordinator.hasState && petWindowCoordinator.windows().any { it.id == id && it.eligible }
+        }
     }
     val openBubble: (String, String, Int, IntRect) -> Unit = { token, contextExample, depth, anchor ->
         val definition = viewModel.lookupWordBubble(token, contextExample)
@@ -803,7 +840,6 @@ fun LexiTrackApp(
     }
     LaunchedEffect(state.section) {
         petTargets.clear()
-        rewardRequests = emptyList()
     }
     val registerPetTarget: (PetTarget) -> Unit = remember(state.section) {
         val prefix = state.section.name.lowercase()
@@ -827,20 +863,9 @@ fun LexiTrackApp(
             LocalRegisterPetWindow provides registerPetWindow,
             LocalPetWindowStack provides petWindows,
             LocalPetWindowCoordinator provides petWindowCoordinator,
+            LocalRewardEffects provides rewardEffects,
             LocalTriggerReward provides { mode, start ->
-                (rewardTargetOrViewportCenter(
-                    target = petWindowCoordinator.worldPosition(),
-                    viewportOrigin = petViewportOrigin,
-                    viewport = petViewport,
-                ) ?: start).let { targetPoint ->
-                    val request = RewardEffectRequest(
-                        id = ++rewardSequence,
-                        start = start,
-                        target = targetPoint,
-                        color = rewardColor(mode),
-                    )
-                    rewardRequests = (rewardRequests + request).takeLast(PET_ENERGY_BALL_MAX_CONCURRENT)
-                }
+                rewardEffects.emit(mode, start, rewardDensity)
             },
             LocalPetNavigationKey provides state.section,
         ) {
@@ -989,19 +1014,7 @@ fun LexiTrackApp(
             preferredActive = isMainPetWindowVisible(petWindows),
         )
 
-        rewardRequests.forEach { request ->
-            RewardEffectsHost(
-                request = request,
-                hostOrigin = petViewportOrigin,
-                targetProvider = {
-                    petWindowCoordinator.worldPosition()?.let { Offset(it.x, it.y) }
-                },
-                onFinished = { id ->
-                    rewardRequests = rewardRequests.filterNot { it.id == id }
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+        RewardEffectsHost(rewardEffects, petViewportOrigin, Modifier.fillMaxSize())
 
         state.importReport?.let { report ->
             ImportReportDialog(report, viewModel::dismissImportReport)
@@ -1573,7 +1586,7 @@ private fun StudyScreen(
     card: VocabularyEntry?,
     revealed: Boolean,
     onReveal: () -> Unit,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating) -> Boolean,
     rewardMode: RewardEffectMode = RewardEffectMode.STUDY,
     title: String,
     emptyTitle: String,
@@ -1651,7 +1664,7 @@ private fun ReviewScreen(
     state: MainUiState,
     onStart: () -> Unit,
     onReveal: () -> Unit,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating) -> Boolean,
     onLevelsChange: (Set<String>) -> Unit,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
@@ -1776,7 +1789,7 @@ private fun LevelFilterRow(
 @Composable
 private fun RevealedCardContent(
     card: VocabularyEntry,
-    onRate: (ReviewRating) -> Unit,
+    onRate: (ReviewRating) -> Boolean,
     rewardMode: RewardEffectMode,
     modifier: Modifier = Modifier,
 ) {
@@ -1858,7 +1871,7 @@ private fun RatingButton(
     color: Color,
     modifier: Modifier,
     rewardMode: RewardEffectMode,
-    onClick: () -> Unit,
+    onClick: () -> Boolean,
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
     val triggerReward = LocalTriggerReward.current
@@ -1866,28 +1879,11 @@ private fun RatingButton(
     var buttonBounds by remember { mutableStateOf(Rect.Zero) }
     Button(
         onClick = {
-            onClick()
+            activateRewardRating(buttonBounds, rewardMode, onClick, triggerReward)
         },
         modifier = modifier
             .heightIn(min = 58.dp)
             .onGloballyPositioned { coordinates -> buttonBounds = coordinates.boundsOnScreen(hostView) }
-            .pointerInput(rewardMode, triggerReward, buttonBounds) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(
-                        requireUnconsumed = false,
-                        pass = PointerEventPass.Initial,
-                    )
-                    if (buttonBounds.width > 0f && buttonBounds.height > 0f) {
-                        triggerReward(
-                            rewardMode,
-                            Offset(
-                                buttonBounds.left + down.position.x,
-                                buttonBounds.top + down.position.y,
-                            ),
-                        )
-                    }
-                }
-            }
             .petTarget(registerPetTarget, "rating-${label.hashCode()}", PetTargetKind.CONTROL),
         colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.White),
         shape = RoundedCornerShape(8.dp),
