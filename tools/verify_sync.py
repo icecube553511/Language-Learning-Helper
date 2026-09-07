@@ -243,22 +243,34 @@ def verify_pet_contract() -> None:
         "curveVelocityUnits": "logical-units-per-tick",
         "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
         "curveLandingSpeedLimit": 8.0,
-        "curveDownhillTerminalSpeed": 4.0,
-        "curveDownhillResponsePerTick": 0.0625,
+        "curveDownhillTerminalSpeed": 7.04,
+        "curveDownhillResponsePerTick": 0.125,
+        "curveDownhillPolicy": "gravity-projection-with-linear-drag",
+        "curveValleyRestDistance": 0.5,
+        "curveValleyRestSpeed": 0.25,
+        "curveCornerSubsteps": 4,
+        "curveCornerRadius": 8.0,
+        "supportContactTolerance": 0.5,
+        "supportRefresh": "validate-contact-before-idle",
+        "renderContinuity": "synchronized-position-reset-on-host-and-drag",
+        "releaseStaleSamples": "zero-velocity",
         "curveDirectionEpsilon": 0.000001,
         "curveLandingRestDirection": "local-positive-y-downhill",
         "curveLandingInitialUphillMotion": True,
         "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
         "idleTicks": 24,
         "fallTimeStepSeconds": 0.016,
-        "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "fallGravityLogicalUnitsPerSecondSquared": 3437.5,
         "fallVelocityUnits": "logical-units-per-second",
         "fallIntegration": "closed-form-constant-acceleration",
         "maxFallSpeed": None,
         "hardLandingSpeed": 437.5,
-        "bounceCount": 2,
-        "firstBounceSpeed": 312.5,
-        "bounceDecay": 0.55,
+        "bounceCount": 5,
+        "maxBounceSpeed": 1250.0,
+        "minBounceSpeed": 120.0,
+        "bounceDecay": 0.78,
+        "bounceTopRestitution": 0.5,
+        "bounceSpeedPolicy": "impact-speed-with-restitution",
         "centerBiasWeight": 0.65,
         "edgePenaltyRatio": 0.15,
         "supportSide": "upper",
@@ -271,7 +283,7 @@ def verify_pet_contract() -> None:
         "fallTargetRefresh": "every-tick-nearest-current-x-ray",
         "landingImpactVelocity": "continuous-contact",
         "syntheticBottomLanding": "same-impact-and-bounce-rules",
-        "flingGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "flingGravityLogicalUnitsPerSecondSquared": 3437.5,
         "flingHorizontalRestitution": 0.72,
         "maxSubstepSeconds": 0.004,
         "maxSubstepsPerTick": 8,
@@ -323,11 +335,11 @@ def verify_pet_contract() -> None:
         "navigation-prefers-below",
         "fall-without-below-target-uses-viewport-bottom",
         "fall-accelerates",
-        "hard-landing-bounces-twice",
+        "hard-landing-elastic-bounces",
         "fall-skips-horizontally-offset-support",
         "fall-retargets-new-nearest-support-every-tick",
         "fall-already-touching-support-lands",
-        "synthetic-bottom-hard-landing-bounces-twice",
+        "synthetic-bottom-elastic-bounces",
         "suspended-drag-release-enters-fall",
         "center-bias-prefers-interior",
         "center-bias-measures-nearest-support",
@@ -345,11 +357,11 @@ def verify_pet_contract() -> None:
         "navigation-prefers-below": {"position", "targets", "step", "expectedTarget", "expectedPosition", "expectedVerticalVelocity"},
         "fall-without-below-target-uses-viewport-bottom": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode", "expectedYDirection"},
         "fall-accelerates": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedVerticalVelocity", "expectedMode"},
-        "hard-landing-bounces-twice": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedMode", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
+        "hard-landing-elastic-bounces": {"position", "mode", "verticalVelocity", "target", "step", "expectedPosition", "expectedMode", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
         "fall-skips-horizontally-offset-support": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode"},
         "fall-retargets-new-nearest-support-every-tick": {"position", "verticalVelocity", "viewport", "petHalfSize", "previousTarget", "newlyAvailableTarget", "targets", "expectedTarget", "expectedPositionAfterOneTick", "expectedVerticalVelocity", "expectedMode"},
         "fall-already-touching-support-lands": {"position", "mode", "verticalVelocity", "viewport", "petHalfSize", "target", "expectedPosition", "expectedTarget", "expectedMode", "expectedVerticalVelocity"},
-        "synthetic-bottom-hard-landing-bounces-twice": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPosition", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedMode", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
+        "synthetic-bottom-elastic-bounces": {"position", "verticalVelocity", "viewport", "petHalfSize", "targets", "expectedTarget", "expectedSyntheticSupportY", "expectedPosition", "expectedImpactTimeSeconds", "expectedImpactVerticalVelocity", "expectedMode", "expectedBounceVerticalVelocity", "expectedBouncesRemaining"},
         "suspended-drag-release-enters-fall": {"position", "viewport", "petHalfSize", "targets", "releaseOnLegalSupport", "expectedMode", "expectedTarget", "expectedVerticalVelocity"},
         "center-bias-prefers-interior": {"position", "viewport", "targets", "expectedTarget"},
         "center-bias-measures-nearest-support": {"position", "viewport", "targets", "expectedTarget"},
@@ -512,14 +524,17 @@ def verify_pet_contract() -> None:
             or not math.isclose(float(vector["expectedImpactVerticalVelocity"]), impact_velocity, rel_tol=1e-12, abs_tol=1e-9)
             or impact_velocity < float(payload["motion"]["hardLandingSpeed"])
             or vector["expectedMode"] != "bounce"
-            or not math.isclose(float(vector["expectedBounceVerticalVelocity"]), -float(payload["motion"]["firstBounceSpeed"]))
+            or not math.isclose(float(vector["expectedBounceVerticalVelocity"]), -min(
+                impact_velocity * float(payload["motion"]["bounceDecay"]),
+                float(payload["motion"]["maxBounceSpeed"]),
+            ))
             or int(vector["expectedBouncesRemaining"]) != int(payload["motion"]["bounceCount"])
         ):
             fail(f"Pet companion landing vector {vector['name']} differs from the hard-landing rule")
 
-    hard_landing = behavior_by_name["hard-landing-bounces-twice"]
+    hard_landing = behavior_by_name["hard-landing-elastic-bounces"]
     verify_hard_landing(hard_landing, float(hard_landing["target"]["rect"][1]))
-    synthetic_landing = behavior_by_name["synthetic-bottom-hard-landing-bounces-twice"]
+    synthetic_landing = behavior_by_name["synthetic-bottom-elastic-bounces"]
     synthetic_support_y = float(synthetic_landing["viewport"][1]) - float(synthetic_landing["petHalfSize"])
     if (
         synthetic_landing["targets"] != []
@@ -808,6 +823,19 @@ def verify_pet_contract() -> None:
     landing_limit = float(motion["curveLandingSpeedLimit"])
     direction_epsilon = float(motion["curveDirectionEpsilon"])
     tick_seconds = float(payload["tickMs"]) / 1000.0
+    if not math.isclose(
+        gravity * tick_seconds * tick_seconds,
+        terminal_speed * response,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        fail("Pet companion curve acceleration must project the same gravity as falling")
+    if motion["curveValleyRestDistance"] != motion["supportContactTolerance"]:
+        fail("Pet companion valley settling and support contact must share the same tolerance")
+
+    def slope_terminal(tangent_y: float) -> float:
+        return tangent_y * terminal_speed if abs(tangent_y) > direction_epsilon else 0.0
+
     for vector in curve_landing_vectors:
         start, end = vector["segment"]
         dx = float(end[0]) - float(start[0])
@@ -847,7 +875,7 @@ def verify_pet_contract() -> None:
             and int(vector.get("initialPathDirection", 1)) != -1
         ):
             fail("Pet companion flat curve vector does not guard against stale reverse direction")
-        terminal = downhill_direction * terminal_speed
+        terminal = slope_terminal(tangent[1])
         next_velocity = initial + (terminal - initial) * response
         if not math.isclose(
             float(vector["expectedNextCurveVelocity"]),
@@ -903,12 +931,7 @@ def verify_pet_contract() -> None:
         expected_initial = float(vector["expectedInitialLogicalCurveVelocity"])
         if not math.isclose(expected_initial, initial, rel_tol=1e-12, abs_tol=1e-9):
             fail("Pet companion scaled curve projection changes logical velocity")
-        downhill = (
-            1 if tangent[1] > direction_epsilon
-            else -1 if tangent[1] < -direction_epsilon
-            else 1
-        )
-        next_velocity = initial + (downhill * terminal_speed - initial) * response
+        next_velocity = initial + (slope_terminal(tangent[1]) - initial) * response
         if not math.isclose(
             float(vector["expectedNextLogicalCurveVelocity"]),
             next_velocity,
@@ -954,7 +977,7 @@ def verify_pet_contract() -> None:
         reached_tick = None
         endpoint_arc = 0.0 if direction < 0 else length
         for tick in range(1, int(vector["expectedEndpointTick"]) + 1):
-            velocity += (downhill * terminal_speed - velocity) * response
+            velocity += (slope_terminal(tangent[1]) - velocity) * response
             next_arc = arc_position + velocity
             if (direction < 0 and next_arc <= endpoint_arc) or (
                 direction > 0 and next_arc >= endpoint_arc
@@ -980,7 +1003,7 @@ def verify_pet_contract() -> None:
             or vector.get("expectedEndpointMode") != "slide"
         ):
             fail(f"Pet companion curve endpoint vector {vector['name']} does not stop and reverse")
-        next_velocity = downhill * terminal_speed * response
+        next_velocity = slope_terminal(tangent[1]) * response
         next_position = (
             endpoint_position[0] + tangent[0] * next_velocity,
             endpoint_position[1] + tangent[1] * next_velocity,
@@ -998,7 +1021,7 @@ def verify_pet_contract() -> None:
     contract_text = contract_path.read_text(encoding="utf-8")
     for marker in (
         "dot(V_hit,T)*dt",
-        "u_next=u+(u_terminal-u)*0.0625",
+        "u_next=u+(u_terminal-u)*0.125",
         "不得用“最近顶点”",
         "物理单位比例",
         "归一化单位切线",
@@ -1030,10 +1053,20 @@ def verify_pet_contract() -> None:
         ):
             windows_constants[node.targets[0].id] = float(node.value.value)
     expected_windows_constants = {
+        "FALL_GRAVITY": gravity,
+        "BOUNCE_COUNT": float(motion["bounceCount"]),
+        "BOUNCE_DECAY": float(motion["bounceDecay"]),
+        "MAX_BOUNCE_SPEED": float(motion["maxBounceSpeed"]),
+        "MIN_BOUNCE_SPEED": float(motion["minBounceSpeed"]),
+        "BOUNCE_TOP_RESTITUTION": float(motion["bounceTopRestitution"]),
+        "CURVE_CORNER_SUBSTEPS": float(motion["curveCornerSubsteps"]),
+        "CURVE_CORNER_RADIUS": float(motion["curveCornerRadius"]),
         "CURVE_LANDING_SPEED_LIMIT": landing_limit,
         "CURVE_DOWNHILL_TERMINAL_SPEED": terminal_speed,
         "CURVE_DOWNHILL_RESPONSE_PER_TICK": response,
         "CURVE_DIRECTION_EPSILON": direction_epsilon,
+        "CURVE_REST_SPEED": float(motion["curveValleyRestSpeed"]),
+        "SUPPORT_CONTACT_TOLERANCE": float(motion["supportContactTolerance"]),
     }
     for name, expected in expected_windows_constants.items():
         actual = windows_constants.get(name)
@@ -1077,22 +1110,53 @@ def verify_pet_contract() -> None:
         {"_curve_downhill_direction"},
     )
     verify_windows_helper(
-        "_advance_landed_chart",
+        "_advance_landed_chart_fraction",
         {
             "CURVE_LANDING_SPEED_LIMIT",
             "CURVE_DOWNHILL_TERMINAL_SPEED",
             "CURVE_DOWNHILL_RESPONSE_PER_TICK",
             "CURVE_DIRECTION_EPSILON",
+            "CURVE_REST_SPEED",
+            "SUPPORT_CONTACT_TOLERANCE",
         },
         {"_curve_downhill_direction", "_curve_endpoint_is_downhill"},
     )
     verify_windows_helper("_advance_chart", set(), {"_curve_downhill_direction"})
+    verify_windows_helper("_advance_bounce", set(), {"_chart_landing_state"})
+    verify_windows_helper(
+        "_advance_landed_chart",
+        {"CURVE_CORNER_SUBSTEPS", "CURVE_CORNER_RADIUS"},
+        {"_advance_landed_chart_fraction"},
+    )
+    landed_chart = windows_functions["_advance_landed_chart_fraction"]
+    if not any(
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Mult)
+        and isinstance(node.left, ast.Attribute)
+        and isinstance(node.left.value, ast.Name)
+        and node.left.value.id == "tangent"
+        and node.left.attr == "y"
+        and isinstance(node.right, ast.Name)
+        and node.right.id == "CURVE_DOWNHILL_TERMINAL_SPEED"
+        for node in ast.walk(landed_chart)
+    ):
+        fail("Windows physical chart motion must project gravity onto the local slope")
 
     expected_android_constants = {
+        "PET_BOUNCE_COUNT": float(motion["bounceCount"]),
+        "PET_BOUNCE_DECAY": float(motion["bounceDecay"]),
+        "PET_MAX_BOUNCE_SPEED": float(motion["maxBounceSpeed"]),
+        "PET_MIN_BOUNCE_SPEED": float(motion["minBounceSpeed"]),
+        "PET_BOUNCE_TOP_RESTITUTION": float(motion["bounceTopRestitution"]),
+        "PET_CURVE_CORNER_SUBSTEPS": float(motion["curveCornerSubsteps"]),
+        "PET_CURVE_CORNER_RADIUS": float(motion["curveCornerRadius"]),
+        "PET_FALL_GRAVITY": gravity,
         "PET_CURVE_LANDING_SPEED_LIMIT": landing_limit,
         "PET_CURVE_DOWNHILL_TERMINAL_SPEED": terminal_speed,
         "PET_CURVE_DOWNHILL_RESPONSE_PER_TICK": response,
         "PET_CURVE_DIRECTION_EPSILON": direction_epsilon,
+        "PET_CURVE_VALLEY_REST_SPEED": float(motion["curveValleyRestSpeed"]),
+        "PET_SUPPORT_CONTACT_TOLERANCE": float(motion["supportContactTolerance"]),
     }
     for name, expected in expected_android_constants.items():
         match = re.search(
@@ -1134,16 +1198,19 @@ def verify_pet_contract() -> None:
         or not re.search(r"PET_FALL_TIME_STEP_SECONDS\s*/\s*unitScale", android_landing)
     ):
         fail("Android chart landing helper is not wired to its contract constants and direction helper")
-    android_advance = android_helper_source("advanceLandedChart")
+    android_advance = android_helper_source("advanceLandedChartSubstep")
     if (
         not {
             "PET_CURVE_LANDING_SPEED_LIMIT",
             "PET_CURVE_DOWNHILL_TERMINAL_SPEED",
             "PET_CURVE_DOWNHILL_RESPONSE_PER_TICK",
             "PET_CURVE_DIRECTION_EPSILON",
+            "PET_CURVE_VALLEY_REST_SPEED",
+            "PET_SUPPORT_CONTACT_TOLERANCE",
         } <= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", android_advance))
         or not re.search(r"curveDownhillDirection\(\s*segment\.unitTangent\s*\)", android_advance)
         or not re.search(r"abs\(curveVelocity\)\s*\*\s*unitScale", android_advance)
+        or not re.search(r"segment\.unitTangent\.y\s*\*\s*PET_CURVE_DOWNHILL_TERMINAL_SPEED", android_advance)
         or not re.search(r"curveEndpointIsDownhill\(\s*path,\s*endpoint,\s*direction\s*\)", android_advance)
     ):
         fail("Android landed chart helper is not wired to its contract constants and direction helper")
@@ -1152,6 +1219,55 @@ def verify_pet_contract() -> None:
         android_helper_source("advanceChart"),
     ):
         fail("Android autonomous chart helper does not use the shared downhill direction rule")
+    if not re.search(r"chartLandingState\(", android_helper_source("advanceBounce")):
+        fail("Android chart bounce completion must resume physical sliding")
+
+    bounce_vectors = payload.get("bounceStabilityVectors", [])
+    if {vector.get("name") for vector in bounce_vectors} != {
+        "bottom-bounce-retains-anchor-before-upper-content-return",
+        "rebound-speed-follows-impact-with-cap",
+    }:
+        fail("Pet bounce stability vectors are missing")
+    rebound_vector = next(vector for vector in bounce_vectors if "impactSpeeds" in vector)
+    expected_rebounds = [
+        min(float(speed) * motion["bounceDecay"], motion["maxBounceSpeed"])
+        for speed in rebound_vector["impactSpeeds"]
+    ]
+    if expected_rebounds != rebound_vector["expectedReboundSpeeds"]:
+        fail("Pet bounce vectors must follow impact speed with restitution and a cap")
+    for path in (
+        "windows/tests/test_pet_elastic_bounce.py",
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetCompanionTest.kt",
+    ):
+        if "bounceStabilityVectors" not in (ROOT / path).read_text(encoding="utf-8"):
+            fail(f"Pet bounce stability vectors are not consumed by {path}")
+
+    stability_tests = {
+        "windows/tests/test_pet_motion_stability.py": (
+            "test_lost_or_moved_support_falls_before_idle_countdown",
+            "test_orphan_bounce_keeps_signed_upward_arc",
+            "test_flat_curve_does_not_accelerate_and_slopes_scale_gravity",
+            "test_low_speed_valley_stays_at_rest_without_facing_flicker",
+            "test_fast_valley_crossing_uses_outgoing_tangent_and_keeps_inertia",
+            "test_pause_before_release_discards_stale_velocity",
+        ),
+        "android/domain/src/test/kotlin/com/lexitrack/learning/domain/PetCompanionTest.kt": (
+            "same id support moving away invalidates idle before its countdown",
+            "losing a bounce support preserves the upward projectile arc",
+            "curve acceleration follows gravity tangent and level contact remains still",
+            "low speed valley settles without facing flicker for successive ticks",
+            "fast valley crossing retains inertia instead of snapping to rest",
+            "release velocity stays accurate after weeks of device uptime",
+        ),
+    }
+    for path, markers in stability_tests.items():
+        source = ROOT / path
+        if not source.is_file():
+            fail(f"Pet motion stability coverage is missing: {path}")
+        test_source = source.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in test_source:
+                fail(f"Pet motion stability coverage {path} is missing {marker}")
 
     migration_vectors = payload.get("windowMigrationVectors", [])
     if {item.get("name") for item in migration_vectors} != {
@@ -1451,8 +1567,17 @@ def verify_pet_contract() -> None:
         "curveVelocityUnits": "logical-units-per-tick",
         "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
         "curveLandingSpeedLimit": 8.0,
-        "curveDownhillTerminalSpeed": 4.0,
-        "curveDownhillResponsePerTick": 0.0625,
+        "curveDownhillTerminalSpeed": 7.04,
+        "curveDownhillResponsePerTick": 0.125,
+        "curveDownhillPolicy": "gravity-projection-with-linear-drag",
+        "curveValleyRestDistance": 0.5,
+        "curveValleyRestSpeed": 0.25,
+        "curveCornerSubsteps": 4,
+        "curveCornerRadius": 8.0,
+        "supportContactTolerance": 0.5,
+        "supportRefresh": "validate-contact-before-idle",
+        "renderContinuity": "synchronized-position-reset-on-host-and-drag",
+        "releaseStaleSamples": "zero-velocity",
         "curveDirectionEpsilon": 0.000001,
         "curveLandingRestDirection": "local-positive-y-downhill",
         "curveLandingInitialUphillMotion": True,
@@ -1463,7 +1588,7 @@ def verify_pet_contract() -> None:
         "screenEdges": ["left", "right", "bottom"],
         "acceleratedFall": True,
         "fallTimeStepSeconds": 0.016,
-        "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "fallGravityLogicalUnitsPerSecondSquared": 3437.5,
         "fallVelocityUnits": "logical-units-per-second",
         "fallIntegration": "closed-form-constant-acceleration",
         "maxFallSpeed": None,
@@ -1474,14 +1599,18 @@ def verify_pet_contract() -> None:
         "fallTargetRefresh": "every-tick-nearest-current-x-ray",
         "landingImpactVelocity": "continuous-contact",
         "syntheticBottomLanding": "same-impact-and-bounce-rules",
-        "flingGravityLogicalUnitsPerSecondSquared": 2148.4375,
+        "flingGravityLogicalUnitsPerSecondSquared": 3437.5,
         "flingHorizontalRestitution": 0.72,
         "maxSubstepSeconds": 0.004,
         "maxSubstepsPerTick": 8,
         "highSpeedInterpolation": "linear-between-simulated-substeps",
         "flingChartContactDirection": "contact-equation-derivative-nonnegative",
-        "hardLandingBounces": 2,
-        "bounceDecay": 0.55,
+        "hardLandingBounces": 5,
+        "bounceDecay": 0.78,
+        "maxBounceSpeed": 1250.0,
+        "minBounceSpeed": 120.0,
+        "bounceTopRestitution": 0.5,
+        "bounceSpeedPolicy": "impact-speed-with-restitution",
         "horizontalFlip": True,
         "centerBiasedSelection": True,
         "windowScope": "application-owned-window",

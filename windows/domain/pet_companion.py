@@ -22,11 +22,15 @@ CRUISE_SPEED = 4.0
 CURVE_ACCELERATION = 0.25
 CURVE_MOTION_ACCELERATION = CURVE_ACCELERATION
 CURVE_LANDING_SPEED_LIMIT = 8.0
-CURVE_DOWNHILL_TERMINAL_SPEED = 4.0
-CURVE_DOWNHILL_RESPONSE_PER_TICK = 0.0625
+CURVE_DOWNHILL_TERMINAL_SPEED = 7.04
+CURVE_DOWNHILL_RESPONSE_PER_TICK = 0.125
 CURVE_DIRECTION_EPSILON = 0.000001
+SUPPORT_CONTACT_TOLERANCE = 0.5
+CURVE_REST_SPEED = 0.25
+CURVE_CORNER_SUBSTEPS = 4
+CURVE_CORNER_RADIUS = 8.0
 FALL_TIME_STEP_SECONDS = PET_TICK_MS / 1000.0
-FALL_GRAVITY = 2148.4375
+FALL_GRAVITY = 3437.5
 FLING_GRAVITY = FALL_GRAVITY
 FLING_HORIZONTAL_RESTITUTION = 0.72
 MAX_SUBSTEP_SECONDS = 0.004
@@ -36,9 +40,11 @@ MINIMUM_FLING_SPEED = 90.0
 MAX_FLING_SPEED = 1800.0
 MAX_FALL_SPEED = None
 HARD_LANDING_SPEED = 437.5
-BOUNCE_COUNT = 2
-FIRST_BOUNCE_SPEED = 312.5
-BOUNCE_DECAY = 0.55
+BOUNCE_COUNT = 5
+MAX_BOUNCE_SPEED = 1250.0
+MIN_BOUNCE_SPEED = 120.0
+BOUNCE_DECAY = 0.78
+BOUNCE_TOP_RESTITUTION = 0.5
 CENTER_BIAS_WEIGHT = 0.65
 EDGE_PENALTY_RATIO = 0.15
 IDLE_TICKS = 24
@@ -52,6 +58,8 @@ PET_CURVE_LANDING_SPEED_LIMIT = CURVE_LANDING_SPEED_LIMIT
 PET_CURVE_DOWNHILL_TERMINAL_SPEED = CURVE_DOWNHILL_TERMINAL_SPEED
 PET_CURVE_DOWNHILL_RESPONSE_PER_TICK = CURVE_DOWNHILL_RESPONSE_PER_TICK
 PET_CURVE_DIRECTION_EPSILON = CURVE_DIRECTION_EPSILON
+PET_CURVE_CORNER_SUBSTEPS = CURVE_CORNER_SUBSTEPS
+PET_CURVE_CORNER_RADIUS = CURVE_CORNER_RADIUS
 PET_FLING_GRAVITY = FLING_GRAVITY
 PET_FLING_HORIZONTAL_RESTITUTION = FLING_HORIZONTAL_RESTITUTION
 PET_MAX_SUBSTEP_SECONDS = MAX_SUBSTEP_SECONDS
@@ -405,7 +413,7 @@ def estimate_release_velocity(
     cutoff = end_ms - max(0.0, float(window_ms))
     recent = [item for item in parsed if item[0] >= cutoff and item[0] <= end_ms + 1e-6]
     if len(recent) < 2:
-        recent = parsed[-2:]
+        return PetPoint(0.0, 0.0)
     origin = recent[0][0]
     times = [(timestamp - origin) / 1000.0 for timestamp, _ in recent]
     # Remove zero/negative intervals; they do not carry velocity information.
@@ -606,6 +614,7 @@ def _fall_landing_point(
     position: PetPoint,
     target: PetTarget,
     pet_size: float,
+    viewport: PetRect | None = None,
 ) -> PetPoint | None:
     if target.kind == PetTargetKind.CHART and target.path:
         path = target.shifted_path(pet_size)
@@ -632,7 +641,11 @@ def _fall_landing_point(
                         position.x,
                         start.y + (end.y - start.y) * ratio,
                     ))
-        below = tuple(point for point in intersections if point.y >= position.y - 1e-6)
+        below = tuple(
+            point for point in intersections
+            if point.y >= position.y - 1e-6
+            and (viewport is None or _inside_viewport(point, viewport, pet_size))
+        )
         return min(below, key=lambda point: point.y - position.y, default=None)
 
     start, end = target.support_segment(position, pet_size)
@@ -645,23 +658,29 @@ def _fall_landing_point(
     return point if point.y >= position.y - 1e-6 else None
 
 
+def _inside_viewport(point: PetPoint, viewport: PetRect, pet_size: float) -> bool:
+    clamped = viewport.clamp(point, pet_size)
+    return math.hypot(point.x - clamped.x, point.y - clamped.y) <= 1e-6
+
+
 def _is_on_support(
     target: PetTarget,
     position: PetPoint,
     pet_size: float,
     viewport: PetRect | None,
+    tolerance: float = 1e-6,
 ) -> bool:
     if target.kind == PetTargetKind.CHART and target.path:
         points = target.shifted_path(pet_size)
-        if viewport is not None:
-            points = tuple(viewport.clamp(point, pet_size) for point in points)
+        if viewport is not None and not _inside_viewport(position, viewport, pet_size):
+            return False
         if len(points) == 1:
-            return math.hypot(position.x - points[0].x, position.y - points[0].y) <= 1e-6
+            return math.hypot(position.x - points[0].x, position.y - points[0].y) <= tolerance
         return any(
             math.hypot(
                 position.x - (closest := _closest_point_on_segment(position, start, end)).x,
                 position.y - closest.y,
-            ) <= 1e-6
+            ) <= tolerance
             for start, end in zip(points, points[1:])
         )
     start, end = target.support_segment(position, pet_size)
@@ -674,7 +693,7 @@ def _is_on_support(
     else:
         low, high = sorted((start.x, end.x))
         closest = PetPoint(min(max(position.x, low), high), start.y)
-    return math.hypot(position.x - closest.x, position.y - closest.y) <= 1e-6
+    return math.hypot(position.x - closest.x, position.y - closest.y) <= tolerance
 
 
 def _target_for_state(
@@ -689,7 +708,7 @@ def _target_for_state(
     if state.target_id and state.mode != PetMode.FALL:
         for target in targets:
             if target.id == state.target_id and target.valid:
-                if target.kind == PetTargetKind.EDGE:
+                if target.kind == PetTargetKind.EDGE and state.mode != PetMode.BOUNCE:
                     # A thin edge must never be retained as a long-term support
                     # while real content exists.  A pet that once landed on a
                     # boundary would otherwise keep creeping along it forever
@@ -711,14 +730,14 @@ def _target_for_state(
         below = tuple(
             target for target in valid
             if (
-                (landing := _fall_landing_point(state.position, target, pet_size)) is not None
+                (landing := _fall_landing_point(state.position, target, pet_size, viewport)) is not None
                 and landing.y >= state.position.y - 1e-6
             )
         )
         return min(
             below,
             key=lambda target: (
-                _fall_landing_point(state.position, target, pet_size).y - state.position.y
+                _fall_landing_point(state.position, target, pet_size, viewport).y - state.position.y
             ),
             default=None,
         )
@@ -815,6 +834,8 @@ def _move_along_path(
     index: int,
     direction: int,
     distance: float,
+    viewport: PetRect | None = None,
+    pet_size: float = 0.0,
 ) -> tuple[PetPoint, int, bool, float]:
     endpoint = len(path) - 1 if direction > 0 else 0
     cursor = min(max(index, 0), len(path) - 1)
@@ -823,9 +844,32 @@ def _move_along_path(
     while True:
         goal = path[cursor]
         segment = math.hypot(goal.x - current.x, goal.y - current.y)
+        proposed = (
+            _step_towards(current, goal, remaining_step)[0]
+            if segment > remaining_step + 1e-6 else goal
+        )
+        if viewport is not None and not _inside_viewport(proposed, viewport, pet_size):
+            # Clip the travelled segment, never its vertices: the boundary
+            # contact must remain on the original curve.
+            minimum = viewport.clamp(PetPoint(viewport.left, viewport.top), pet_size)
+            maximum = viewport.clamp(PetPoint(viewport.right, viewport.bottom), pet_size)
+            fraction = 1.0
+            for start_axis, end_axis, low, high in (
+                (current.x, proposed.x, minimum.x, maximum.x),
+                (current.y, proposed.y, minimum.y, maximum.y),
+            ):
+                delta = end_axis - start_axis
+                if delta > 1e-9:
+                    fraction = min(fraction, (high - start_axis) / delta)
+                elif delta < -1e-9:
+                    fraction = min(fraction, (low - start_axis) / delta)
+            fraction = max(0.0, fraction)
+            return PetPoint(
+                current.x + (proposed.x - current.x) * fraction,
+                current.y + (proposed.y - current.y) * fraction,
+            ), cursor, True, 0.0
         if segment > remaining_step + 1e-6:
-            current, _ = _step_towards(current, goal, remaining_step)
-            return current, cursor, False, 0.0
+            return proposed, cursor, False, 0.0
         current = goal
         remaining_step = max(0.0, remaining_step - segment)
         if cursor == endpoint:
@@ -838,6 +882,7 @@ def _move_along_path(
 def _closest_path_segment(
     position: PetPoint,
     path: Sequence[PetPoint],
+    preferred_segment: int | None = None,
 ) -> tuple[int, PetPoint, PetPoint]:
     """Return segment index, projection, and canonical unit tangent."""
     candidates: list[tuple[float, int, PetPoint, PetPoint]] = []
@@ -853,7 +898,12 @@ def _closest_path_segment(
     if not candidates:
         fallback = path[0] if path else position
         return 0, fallback, PetPoint(1.0, 0.0)
-    _, index, projection, tangent = min(candidates, key=lambda item: (item[0], item[1]))
+    nearest_distance = min(item[0] for item in candidates)
+    tied = [item for item in candidates if item[0] <= nearest_distance + 1e-6]
+    _, index, projection, tangent = min(
+        tied,
+        key=lambda item: (item[1] != preferred_segment, item[1]),
+    )
     return index, projection, tangent
 
 
@@ -871,7 +921,7 @@ def _curve_endpoint_is_downhill(
     direction: int,
 ) -> bool:
     """Return whether travel reached the locally downhill end segment."""
-    segment = 0 if endpoint <= 0 else len(path) - 2
+    segment = min(max(endpoint - 1 if direction > 0 else endpoint, 0), len(path) - 2)
     start = path[segment]
     end = path[segment + 1]
     dx = end.x - start.x
@@ -895,7 +945,7 @@ def _chart_landing_state(
     pet_size: float,
 ) -> PetState:
     """Resolve chart contact by projecting world velocity onto its tangent."""
-    path = tuple(viewport.clamp(point, pet_size) for point in target.shifted_path(pet_size))
+    path = target.shifted_path(pet_size)
     if len(path) < 2:
         return replace(
             state,
@@ -952,19 +1002,74 @@ def _advance_landed_chart(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    segment, projection, tangent = _closest_path_segment(state.position, path)
-    downhill = _curve_downhill_direction(tangent)
-    terminal = downhill * CURVE_DOWNHILL_TERMINAL_SPEED
+    near_corner = any(
+        math.hypot(state.position.x - point.x, state.position.y - point.y)
+        <= CURVE_CORNER_RADIUS
+        for point in path[1:-1]
+    )
+    substeps = CURVE_CORNER_SUBSTEPS if near_corner else 1
+    current = state
+    for _ in range(substeps):
+        current = _advance_landed_chart_fraction(
+            current, target, path, viewport, pet_size, 1.0 / substeps,
+        )
+        if current.mode != PetMode.SLIDE or current.curve_velocity is None:
+            break
+    return current
+
+
+def _advance_landed_chart_fraction(
+    state: PetState,
+    target: PetTarget,
+    path: Sequence[PetPoint],
+    viewport: PetRect,
+    pet_size: float,
+    fraction: float,
+) -> PetState:
     raw_velocity = float(state.curve_velocity or 0.0)
     if not math.isfinite(raw_velocity):
         raw_velocity = 0.0
+    if abs(raw_velocity) <= CURVE_REST_SPEED:
+        for index in range(1, len(path) - 1):
+            before, vertex, after = path[index - 1:index + 2]
+            incoming_length = math.hypot(vertex.x - before.x, vertex.y - before.y)
+            outgoing_length = math.hypot(after.x - vertex.x, after.y - vertex.y)
+            if (
+                incoming_length > CURVE_DIRECTION_EPSILON
+                and outgoing_length > CURVE_DIRECTION_EPSILON
+                and (vertex.y - before.y) / incoming_length > CURVE_DIRECTION_EPSILON
+                and (vertex.y - after.y) / outgoing_length > CURVE_DIRECTION_EPSILON
+                and math.hypot(state.position.x - vertex.x, state.position.y - vertex.y)
+                <= SUPPORT_CONTACT_TOLERANCE
+            ):
+                return replace(
+                    state,
+                    position=vertex,
+                    mode=PetMode.SLIDE,
+                    target_id=target.id,
+                    idle_ticks_remaining=0,
+                    movement_speed=0.0,
+                    vertical_velocity=0.0,
+                    horizontal_velocity=0.0,
+                    curve_velocity=0.0,
+                )
+    preferred_segment = state.path_index - 1 if state.path_direction > 0 else state.path_index
+    segment, projection, tangent = _closest_path_segment(
+        state.position, path, preferred_segment,
+    )
+    downhill = _curve_downhill_direction(tangent)
+    terminal = (
+        tangent.y * CURVE_DOWNHILL_TERMINAL_SPEED
+        if abs(tangent.y) > CURVE_DIRECTION_EPSILON else 0.0
+    )
     current_velocity = min(
         CURVE_LANDING_SPEED_LIMIT,
         max(-CURVE_LANDING_SPEED_LIMIT, raw_velocity),
     )
+    response = 1.0 - (1.0 - CURVE_DOWNHILL_RESPONSE_PER_TICK) ** fraction
     curve_velocity = current_velocity + (
         terminal - current_velocity
-    ) * CURVE_DOWNHILL_RESPONSE_PER_TICK
+    ) * response
     if abs(terminal - curve_velocity) <= CURVE_DIRECTION_EPSILON:
         curve_velocity = terminal
     direction = (
@@ -982,12 +1087,14 @@ def _advance_landed_chart(
         path,
         waypoint,
         direction,
-        abs(curve_velocity),
+        abs(curve_velocity) * fraction,
+        viewport,
+        pet_size,
     )
     position = viewport.clamp(position, pet_size)
     facing = _facing_after_move(state.position, position, state.facing)
     if reached_endpoint:
-        endpoint = len(path) - 1 if direction > 0 else 0
+        endpoint = index
         reached_downhill = _curve_endpoint_is_downhill(path, endpoint, direction)
         if reached_downhill:
             return replace(
@@ -1062,12 +1169,14 @@ def _advance_bounce(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    landing = viewport.clamp(
-        _fall_landing_point(state.position, target, pet_size)
-        or target.support_point(state.position, pet_size),
-        pet_size,
-    )
-    return _advance_bounce_at(
+    raw_landing = _fall_landing_point(state.position, target, pet_size, viewport)
+    if raw_landing is None:
+        return _advance_fling(
+            replace(state, mode=PetMode.FLING, target_id=None, bounces_remaining=0),
+            (target,), viewport, pet_size,
+        )
+    landing = viewport.clamp(raw_landing, pet_size)
+    bounced = _advance_bounce_at(
         state,
         landing,
         target.id,
@@ -1075,6 +1184,11 @@ def _advance_bounce(
         viewport,
         pet_size,
     )
+    if bounced.mode == PetMode.IDLE and target.kind == PetTargetKind.CHART and target.path:
+        return _chart_landing_state(
+            bounced, target, bounced.position, PetPoint(0.0, 0.0), viewport, pet_size,
+        )
+    return bounced
 
 
 def _advance_viewport_bottom_bounce(
@@ -1101,44 +1215,68 @@ def _advance_bounce_at(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    displacement, velocity = _gravity_step(state.vertical_velocity, allow_upward=True)
-    next_y = state.position.y + displacement
-    if velocity > 0.0 and next_y >= landing.y:
-        position = viewport.clamp(PetPoint(state.position.x, landing.y), pet_size)
-        if state.bounces_remaining > 1:
-            return replace(
-                state,
-                position=position,
-                target_id=bounce_target_id,
-                vertical_velocity=-(FIRST_BOUNCE_SPEED * BOUNCE_DECAY),
-                bounces_remaining=state.bounces_remaining - 1,
-                movement_speed=0.0,
-                horizontal_velocity=0.0,
-                curve_velocity=None,
-            )
-        return replace(
-            state,
-            position=position,
-            mode=PetMode.IDLE,
-            target_id=resting_target_id,
-            idle_ticks_remaining=IDLE_TICKS,
-            movement_speed=0.0,
-            vertical_velocity=0.0,
-            bounces_remaining=0,
-            horizontal_velocity=0.0,
-            curve_velocity=None,
+    top = viewport.top + pet_size
+    y = state.position.y
+    velocity = state.vertical_velocity
+    remaining = FALL_TIME_STEP_SECONDS
+    bounces_remaining = state.bounces_remaining
+    settled = landing.y <= top + 1e-6
+    for _ in range(MAX_SUBSTEPS_PER_TICK):
+        if settled or remaining <= 1e-9:
+            break
+        contacts: list[tuple[float, str]] = []
+        ground_time = _quadratic_descending_root(
+            0.5 * FALL_GRAVITY, velocity, y - landing.y, remaining,
         )
-    position = viewport.clamp(PetPoint(state.position.x, next_y), pet_size)
+        if ground_time is not None:
+            contacts.append((ground_time, "ground"))
+        elif y >= landing.y - 1e-6 and velocity >= 0.0:
+            contacts.append((0.0, "ground"))
+        top_time = _quadratic_positive_root(
+            0.5 * FALL_GRAVITY, velocity, y - top, remaining,
+        )
+        if top_time is not None and velocity + FALL_GRAVITY * top_time < -1e-6:
+            contacts.append((top_time, "top"))
+        elif y <= top + 1e-6 and velocity < 0.0:
+            contacts.append((0.0, "top"))
+        if not contacts:
+            y += velocity * remaining + 0.5 * FALL_GRAVITY * remaining * remaining
+            velocity += FALL_GRAVITY * remaining
+            remaining = 0.0
+            break
+        elapsed, boundary = min(contacts, key=lambda item: item[0])
+        velocity += FALL_GRAVITY * elapsed
+        remaining -= elapsed
+        if boundary == "top":
+            y = top
+            velocity = abs(velocity) * BOUNCE_TOP_RESTITUTION
+            continue
+        y = landing.y
+        rebound_speed = _rebound_speed(velocity)
+        if bounces_remaining <= 1 or rebound_speed < MIN_BOUNCE_SPEED:
+            settled = True
+            break
+        velocity = -rebound_speed
+        bounces_remaining -= 1
+    if settled:
+        y = landing.y
+        velocity = 0.0
     return replace(
         state,
-        position=position,
-        mode=PetMode.BOUNCE,
-        target_id=bounce_target_id,
+        position=PetPoint(state.position.x, y),
+        mode=PetMode.IDLE if settled else PetMode.BOUNCE,
+        target_id=resting_target_id if settled else bounce_target_id,
+        idle_ticks_remaining=IDLE_TICKS if settled else 0,
         vertical_velocity=velocity,
+        bounces_remaining=0 if settled else bounces_remaining,
         movement_speed=0.0,
         horizontal_velocity=0.0,
         curve_velocity=None,
     )
+
+
+def _rebound_speed(impact_velocity: float) -> float:
+    return min(MAX_BOUNCE_SPEED, max(0.0, impact_velocity) * BOUNCE_DECAY)
 
 
 def _land_at_viewport_bottom(
@@ -1154,7 +1292,7 @@ def _land_at_viewport_bottom(
             target_id=_VIEWPORT_BOTTOM_TARGET_ID,
             idle_ticks_remaining=0,
             movement_speed=0.0,
-            vertical_velocity=-FIRST_BOUNCE_SPEED,
+            vertical_velocity=-_rebound_speed(impact_velocity),
             bounces_remaining=BOUNCE_COUNT,
             horizontal_velocity=0.0,
             curve_velocity=None,
@@ -1218,7 +1356,7 @@ def _advance_fall(
     viewport: PetRect,
     pet_size: float,
 ) -> PetState:
-    raw_landing = _fall_landing_point(state.position, target, pet_size)
+    raw_landing = _fall_landing_point(state.position, target, pet_size, viewport)
     if raw_landing is None:
         return _advance_free_fall(replace(state, target_id=None), viewport, pet_size)
     landing = viewport.clamp(raw_landing, pet_size)
@@ -1264,7 +1402,7 @@ def _advance_fall(
             mode=PetMode.BOUNCE,
             target_id=target.id,
             movement_speed=0.0,
-            vertical_velocity=-FIRST_BOUNCE_SPEED,
+            vertical_velocity=-_rebound_speed(impact_velocity),
             bounces_remaining=BOUNCE_COUNT,
             horizontal_velocity=0.0,
             curve_velocity=None,
@@ -1359,6 +1497,7 @@ def _fling_target_contact_time(
     target: PetTarget,
     pet_size: float,
     duration: float,
+    viewport: PetRect | None = None,
 ) -> float | None:
     """Find the first descending intersection with a horizontal support."""
     if target.kind == PetTargetKind.CHART and target.path:
@@ -1367,6 +1506,14 @@ def _fling_target_contact_time(
         # curve while still allowing a descending projectile to land on it.
         path = target.shifted_path(pet_size)
         candidates: list[float] = []
+        def valid_contact(contact_time: float) -> bool:
+            contact = PetPoint(
+                position.x + horizontal_velocity * contact_time,
+                position.y + vertical_velocity * contact_time
+                + 0.5 * FLING_GRAVITY * contact_time * contact_time,
+            )
+            return viewport is None or _inside_viewport(contact, viewport, pet_size)
+
         for start, end in zip(path, path[1:]):
             minimum_x, maximum_x = sorted((start.x, end.x))
             if abs(horizontal_velocity) <= 1e-9:
@@ -1374,7 +1521,7 @@ def _fling_target_contact_time(
                     continue
                 support_y = start.y + (end.y - start.y) * ((position.x - start.x) / (end.x - start.x)) if not math.isclose(end.x, start.x, abs_tol=1e-9) else min(start.y, end.y)
                 root = _quadratic_descending_root(0.5 * FLING_GRAVITY, vertical_velocity, position.y - support_y, duration)
-                if root is not None:
+                if root is not None and valid_contact(root):
                     candidates.append(root)
                 continue
             # Solve against the line y = m*x + q, yielding one quadratic.
@@ -1389,7 +1536,7 @@ def _fling_target_contact_time(
             if root is None:
                 continue
             x_at = position.x + horizontal_velocity * root
-            if minimum_x - 1e-6 <= x_at <= maximum_x + 1e-6:
+            if minimum_x - 1e-6 <= x_at <= maximum_x + 1e-6 and valid_contact(root):
                 candidates.append(root)
         return min(candidates, default=None)
 
@@ -1519,7 +1666,9 @@ def _advance_fling_substep(
                 candidates.append((max(0.0, wall_time), "left", None))
 
         for target in targets:
-            contact = _fling_target_contact_time(position, vx, vy, target, pet_size, remaining)
+            contact = _fling_target_contact_time(
+                position, vx, vy, target, pet_size, remaining, viewport,
+            )
             if contact is not None:
                 candidates.append((contact, "target", target))
 
@@ -1601,7 +1750,7 @@ def _advance_fling_substep(
                     mode=PetMode.BOUNCE,
                     target_id=target.id,
                     movement_speed=0.0,
-                    vertical_velocity=-FIRST_BOUNCE_SPEED,
+                    vertical_velocity=-_rebound_speed(abs(vy_at_contact)),
                     bounces_remaining=BOUNCE_COUNT,
                     horizontal_velocity=0.0,
                     curve_velocity=None,
@@ -1685,7 +1834,7 @@ def _advance_chart(
     speed: float,
     pet_size: float,
 ) -> PetState:
-    path = tuple(viewport.clamp(point, pet_size) for point in target.shifted_path(pet_size))
+    path = target.shifted_path(pet_size)
     if state.curve_velocity is not None and len(path) > 1:
         return _advance_landed_chart(state, target, path, viewport, pet_size)
     same_target = state.target_id == target.id and state.mode == PetMode.SLIDE
@@ -1714,6 +1863,8 @@ def _advance_chart(
         index,
         direction,
         distance,
+        viewport,
+        pet_size,
     )
     position = viewport.clamp(position, pet_size)
     facing = _facing_after_move(state.position, position, state.facing)
@@ -1746,6 +1897,8 @@ def _advance_chart(
                 index,
                 direction,
                 remaining_budget,
+                viewport,
+                pet_size,
             )
             if reached_again:
                 # A very short path can be crossed twice in one tick.  Stop at
@@ -1769,7 +1922,11 @@ def _advance_chart(
     return replace(
         state,
         position=position,
-        mode=PetMode.SLIDE,
+        mode=(
+            PetMode.SLIDE
+            if _is_on_support(target, position, pet_size, viewport, SUPPORT_CONTACT_TOLERANCE)
+            else PetMode.FLY
+        ),
         target_id=target.id,
         path_index=index,
         path_direction=direction,
@@ -1900,20 +2057,55 @@ def advance_pet(
     if state.mode == PetMode.DRAGGING:
         return state
     target_list = tuple(target for target in targets if target.valid)
-    if (
-        state.target_id
+    retained_target = next(
+        (target for target in target_list if target.id == state.target_id), None,
+    )
+    missing_support = (
+        state.target_id is not None
         and state.target_id != _VIEWPORT_BOTTOM_TARGET_ID
-        and not any(target.id == state.target_id for target in target_list)
-    ):
+        and retained_target is None
+    ) or (state.mode == PetMode.BOUNCE and state.target_id is None)
+    moved_support = (
+        retained_target is not None
+        and state.mode in {PetMode.IDLE, PetMode.ROLL, PetMode.SLIDE}
+        and not _is_on_support(
+            retained_target, state.position, margin, viewport,
+            tolerance=SUPPORT_CONTACT_TOLERANCE,
+        )
+    )
+    invalid_bounce_support = (
+        retained_target is not None
+        and state.mode == PetMode.BOUNCE
+        and _fall_landing_point(state.position, retained_target, margin, viewport) is None
+    )
+    if missing_support or moved_support or invalid_bounce_support:
+        next_mode = (
+            state.mode if state.mode in {PetMode.FALL, PetMode.FLING}
+            else PetMode.FLING if state.mode == PetMode.BOUNCE
+            else PetMode.FALL
+        )
         state = replace(
             state,
-            mode=PetMode.FALL,
+            mode=next_mode,
             target_id=None,
             idle_ticks_remaining=0,
             movement_speed=0.0,
-            vertical_velocity=max(0.0, state.vertical_velocity),
+            vertical_velocity=(
+                state.vertical_velocity
+                if state.mode in {PetMode.FALL, PetMode.FLING, PetMode.BOUNCE}
+                else 0.0
+            ),
+            horizontal_velocity=(
+                state.horizontal_velocity
+                if state.mode in {PetMode.FALL, PetMode.FLING, PetMode.BOUNCE}
+                else 0.0
+            ),
             bounces_remaining=0,
             curve_velocity=None,
+            path_index=0,
+            path_direction=1,
+            roll_corners=0,
+            avoid_target_id=None,
         )
     if state.idle_ticks_remaining > 0:
         return replace(
