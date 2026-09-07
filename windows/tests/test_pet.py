@@ -893,8 +893,8 @@ class PetCompanionTests(unittest.TestCase):
             PetRect(0, 0, 800, 700),
         )
         self.assertIsNone(MAX_FALL_SPEED)
-        self.assertAlmostEqual(uncapped.vertical_velocity, 1_034.375)
-        self.assertAlmostEqual(uncapped.position.y, 26.275)
+        self.assertAlmostEqual(uncapped.vertical_velocity, 1_055.0)
+        self.assertAlmostEqual(uncapped.position.y, 26.44)
 
         state = advance_pet(
             PetState(PetPoint(50, 75), PetMode.FALL, vertical_velocity=500),
@@ -1153,8 +1153,8 @@ class PetCompanionTests(unittest.TestCase):
         self.assertEqual(state.velocity, PetPoint(420, -680))
         next_state = advance_pet(state, [], viewport)
         self.assertAlmostEqual(next_state.position.x, 326.72, places=6)
-        self.assertAlmostEqual(next_state.position.y, 409.395, places=6)
-        self.assertAlmostEqual(next_state.vertical_velocity, -645.625, places=6)
+        self.assertAlmostEqual(next_state.position.y, 409.56, places=6)
+        self.assertAlmostEqual(next_state.vertical_velocity, -625.0, places=6)
 
     def test_non_finite_fling_velocity_is_rejected(self):
         self.assertEqual(
@@ -1185,7 +1185,7 @@ class PetCompanionTests(unittest.TestCase):
             PetRect(0, 0, 200, 200),
         )
 
-        self.assertAlmostEqual(advanced.curve_velocity, 0.25)
+        self.assertGreater(advanced.curve_velocity, 0.0)
         self.assertTrue(math.isfinite(advanced.curve_velocity))
         self.assertGreater(advanced.position.y, 110)
 

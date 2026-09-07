@@ -45,15 +45,24 @@
     "curveVelocityUnits": "logical-units-per-tick",
     "curveCoordinateScalePolicy": "logical-velocity-physical-path-budget",
     "curveLandingSpeedLimit": 8.0,
-    "curveDownhillTerminalSpeed": 4.0,
-    "curveDownhillResponsePerTick": 0.0625,
+    "curveDownhillTerminalSpeed": 7.04,
+    "curveDownhillResponsePerTick": 0.125,
+    "curveDownhillPolicy": "gravity-projection-with-linear-drag",
+    "curveValleyRestDistance": 0.5,
+    "curveValleyRestSpeed": 0.25,
+    "curveCornerSubsteps": 4,
+    "curveCornerRadius": 8.0,
+    "supportContactTolerance": 0.5,
+    "supportRefresh": "validate-contact-before-idle",
+    "renderContinuity": "synchronized-position-reset-on-host-and-drag",
+    "releaseStaleSamples": "zero-velocity",
     "curveDirectionEpsilon": 0.000001,
     "curveLandingRestDirection": "local-positive-y-downhill",
     "curveLandingInitialUphillMotion": true,
     "curveUphillEndpointPolicy": "stop-and-reverse-downhill",
     "idleTicks": 24,
     "fallTimeStepSeconds": 0.016,
-    "fallGravityLogicalUnitsPerSecondSquared": 2148.4375,
+    "fallGravityLogicalUnitsPerSecondSquared": 3437.5,
     "fallVelocityUnits": "logical-units-per-second",
     "fallIntegration": "closed-form-constant-acceleration",
     "maxFallSpeed": null,
@@ -73,7 +82,7 @@
     "fallTargetRefresh": "every-tick-nearest-current-x-ray",
     "landingImpactVelocity": "continuous-contact",
     "syntheticBottomLanding": "same-impact-and-bounce-rules",
-    "flingGravityLogicalUnitsPerSecondSquared": 2148.4375,
+    "flingGravityLogicalUnitsPerSecondSquared": 3437.5,
     "flingHorizontalRestitution": 0.72,
     "maxSubstepSeconds": 0.004,
     "maxSubstepsPerTick": 8,
@@ -217,8 +226,8 @@
       ],
       "step": 5,
       "expectedTarget": "below",
-      "expectedPosition": [50, 50.275],
-      "expectedVerticalVelocity": 34.375
+      "expectedPosition": [50, 50.44],
+      "expectedVerticalVelocity": 55.0
     },
     {
       "name": "fall-without-below-target-uses-viewport-bottom",
@@ -232,8 +241,8 @@
       ],
       "expectedTarget": null,
       "expectedSyntheticSupportY": 644,
-      "expectedPositionAfterOneTick": [100, 500.275],
-      "expectedVerticalVelocity": 34.375,
+      "expectedPositionAfterOneTick": [100, 500.44],
+      "expectedVerticalVelocity": 55.0,
       "expectedMode": "fall",
       "expectedYDirection": "nondecreasing"
     },
@@ -244,8 +253,8 @@
       "verticalVelocity": 125.0,
       "target": { "id": "landing", "kind": "surface", "rect": [20, 80, 60, 20] },
       "step": 5,
-      "expectedPosition": [50, 12.275],
-      "expectedVerticalVelocity": 159.375,
+      "expectedPosition": [50, 12.44],
+      "expectedVerticalVelocity": 180.0,
       "expectedMode": "fall"
     },
     {
@@ -257,8 +266,8 @@
       "step": 5,
       "expectedPosition": [50, 80],
       "expectedMode": "bounce",
-      "expectedImpactTimeSeconds": 0.009793920007753715,
-      "expectedImpactVerticalVelocity": 521.0416250166584,
+      "expectedImpactTimeSeconds": 0.009678029146920314,
+      "expectedImpactVerticalVelocity": 533.2682251925386,
       "expectedBounceVerticalVelocity": -312.5,
       "expectedBouncesRemaining": 2
     },
@@ -273,8 +282,8 @@
         { "id": "aligned-lower", "kind": "surface", "rect": [80, 340, 80, 20] }
       ],
       "expectedTarget": "aligned-lower",
-      "expectedPositionAfterOneTick": [100, 100.275],
-      "expectedVerticalVelocity": 34.375,
+      "expectedPositionAfterOneTick": [100, 100.44],
+      "expectedVerticalVelocity": 55.0,
       "expectedMode": "fall"
     },
     {
@@ -290,8 +299,8 @@
         { "id": "new-near-support", "kind": "surface", "rect": [80, 240, 80, 20] }
       ],
       "expectedTarget": "new-near-support",
-      "expectedPositionAfterOneTick": [100, 102.275],
-      "expectedVerticalVelocity": 159.375,
+      "expectedPositionAfterOneTick": [100, 102.44],
+      "expectedVerticalVelocity": 180.0,
       "expectedMode": "fall"
     },
     {
@@ -317,8 +326,8 @@
       "expectedTarget": null,
       "expectedSyntheticSupportY": 644,
       "expectedPosition": [100, 644],
-      "expectedImpactTimeSeconds": 0.0019914793186246904,
-      "expectedImpactVerticalVelocity": 504.27856884860773,
+      "expectedImpactTimeSeconds": 0.0019864358742784877,
+      "expectedImpactVerticalVelocity": 506.8283733178323,
       "expectedMode": "bounce",
       "expectedBounceVerticalVelocity": -312.5,
       "expectedBouncesRemaining": 2
@@ -363,10 +372,10 @@
       "initialPositionY": 10.0,
       "initialVerticalVelocity": 62.5,
       "samples": [
-        { "tick": 1, "elapsedSeconds": 0.016, "expectedY": 11.275, "expectedVerticalVelocity": 96.875, "expectedTickDisplacement": 1.275 },
-        { "tick": 2, "elapsedSeconds": 0.032, "expectedY": 13.1, "expectedVerticalVelocity": 131.25, "expectedTickDisplacement": 1.825 },
-        { "tick": 3, "elapsedSeconds": 0.048, "expectedY": 15.475, "expectedVerticalVelocity": 165.625, "expectedTickDisplacement": 2.375 },
-        { "tick": 4, "elapsedSeconds": 0.064, "expectedY": 18.4, "expectedVerticalVelocity": 200.0, "expectedTickDisplacement": 2.925 }
+        { "tick": 1, "elapsedSeconds": 0.016, "expectedY": 11.44, "expectedVerticalVelocity": 117.5, "expectedTickDisplacement": 1.44 },
+        { "tick": 2, "elapsedSeconds": 0.032, "expectedY": 13.76, "expectedVerticalVelocity": 172.5, "expectedTickDisplacement": 2.32 },
+        { "tick": 3, "elapsedSeconds": 0.048, "expectedY": 16.96, "expectedVerticalVelocity": 227.5, "expectedTickDisplacement": 3.2 },
+        { "tick": 4, "elapsedSeconds": 0.064, "expectedY": 21.04, "expectedVerticalVelocity": 282.5, "expectedTickDisplacement": 4.08 }
       ]
     }
   ],
@@ -377,9 +386,9 @@
       "releaseVelocity": [420.0, -680.0],
       "stepSeconds": 0.016,
       "samples": [
-        { "tick": 1, "expectedPosition": [326.72, 409.395], "expectedVelocity": [420.0, -645.625] },
-        { "tick": 2, "expectedPosition": [333.44, 399.34], "expectedVelocity": [420.0, -611.25] },
-        { "tick": 3, "expectedPosition": [340.16, 389.835], "expectedVelocity": [420.0, -576.875] }
+        { "tick": 1, "expectedPosition": [326.72, 409.56], "expectedVelocity": [420.0, -625.0] },
+        { "tick": 2, "expectedPosition": [333.44, 400.0], "expectedVelocity": [420.0, -570.0] },
+        { "tick": 3, "expectedPosition": [340.16, 391.32], "expectedVelocity": [420.0, -515.0] }
       ],
       "expectedMode": "fling",
       "horizontalDirection": "right",
@@ -400,8 +409,8 @@
       "maxSubstepsPerTick": 8,
       "releaseVelocity": [900.0, 1200.0],
       "expectedSubsteps": 4,
-      "expectedPosition": [334.4, 439.475],
-      "expectedVelocity": [900.0, 1234.375]
+      "expectedPosition": [334.4, 439.64],
+      "expectedVelocity": [900.0, 1255.0]
     },
     {
       "name": "sloped-chart-contact-uses-relative-descending-derivative",
@@ -411,10 +420,10 @@
       "stepSeconds": 0.004,
       "contactEquation": "y(t)-(slope*x(t)+intercept)",
       "contactDirection": "derivative-nonnegative",
-      "expectedContactTimeSeconds": 0.0019914793186246904,
-      "expectedContactPoint": [101.99147931862468, 98.0085206813753],
-      "expectedWorldVerticalVelocity": -495.72143115139227,
-      "expectedContactEquationDerivative": 504.27856884860773,
+      "expectedContactTimeSeconds": 0.0019864358742784877,
+      "expectedContactPoint": [101.98643587427849, 98.01356412572151],
+      "expectedWorldVerticalVelocity": -493.1716266821677,
+      "expectedContactEquationDerivative": 506.8283733178323,
       "expectedWorldVerticalDirection": "up",
       "expectedRelativeDirection": "descending",
       "expectedMode": "bounce"
@@ -460,8 +469,8 @@
       "expectedUnitTangent": [0.9805806756909201, 0.19611613513818404],
       "expectedInitialCurveVelocity": 0.3922322702763681,
       "expectedPathDirection": 1,
-      "expectedNextCurveVelocity": 0.6177177533840951,
-      "expectedNextPosition": [50.60572209199965, 110.12114441839994],
+      "expectedNextCurveVelocity": 0.515785435413424,
+      "expectedNextPosition": [50.50576923076923, 110.10115384615385],
       "expectedMode": "slide"
     },
     {
@@ -471,8 +480,8 @@
       "incomingVelocity": [0.0, 0.0],
       "expectedInitialCurveVelocity": 0.0,
       "expectedPathDirection": 1,
-      "expectedNextCurveVelocity": 0.25,
-      "expectedNextPosition": [50.24514516892273, 110.04902903378455],
+      "expectedNextCurveVelocity": 0.17258219892160195,
+      "expectedNextPosition": [50.16923076923077, 110.03384615384616],
       "expectedMode": "slide"
     },
     {
@@ -482,8 +491,8 @@
       "incomingVelocity": [-250.0, 200.0],
       "expectedInitialCurveVelocity": -3.294751070321491,
       "expectedPathDirection": -1,
-      "expectedNextCurveVelocity": -2.838829128426398,
-      "expectedNextPosition": [47.21629901507658, 109.44325980301531],
+      "expectedNextCurveVelocity": -2.710324987609703,
+      "expectedNextPosition": [47.34230769230769, 109.46846153846154],
       "expectedDownhillByTick": 10,
       "expectedMode": "slide"
     },
@@ -494,7 +503,7 @@
       "incomingVelocity": [0.0, 125.0],
       "expectedInitialCurveVelocity": -0.3922322702763681,
       "expectedPathDirection": -1,
-      "expectedNextCurveVelocity": -0.6177177533840951,
+      "expectedNextCurveVelocity": -0.515785435413424,
       "expectedMode": "slide"
     },
     {
@@ -505,8 +514,8 @@
       "initialPathDirection": -1,
       "expectedInitialCurveVelocity": 0.0,
       "expectedPathDirection": 1,
-      "expectedNextCurveVelocity": 0.25,
-      "expectedNextPosition": [50.25, 100.0],
+      "expectedNextCurveVelocity": 0.0,
+      "expectedNextPosition": [50.0, 100.0],
       "expectedMode": "slide"
     },
     {
@@ -516,8 +525,8 @@
       "incomingVelocity": [-1000.0, 200.0],
       "expectedInitialCurveVelocity": -8.0,
       "expectedPathDirection": -1,
-      "expectedNextCurveVelocity": -7.25,
-      "expectedNextPosition": [42.89079010124083, 108.57815802024817],
+      "expectedNextCurveVelocity": -6.827417801078398,
+      "expectedNextPosition": [43.30516603939433, 108.66103320787886],
       "expectedMode": "slide"
     }
   ],
@@ -529,9 +538,36 @@
       "logicalContactPoint": [50.0, 110.0],
       "logicalIncomingVelocity": [0.0, 125.0],
       "expectedInitialLogicalCurveVelocity": 0.3922322702763681,
-      "expectedNextLogicalCurveVelocity": 0.6177177533840951,
-      "expectedNextPhysicalPosition": [101.2114441839993, 220.24228883679987],
+      "expectedNextLogicalCurveVelocity": 0.515785435413424,
+      "expectedNextPhysicalPosition": [101.01153846153846, 220.2023076923077],
       "expectedMode": "slide"
+    }
+  ],
+  "motionStabilityVectors": [
+    {
+      "name": "low-energy-valley-remains-at-rest",
+      "path": [[0.0, 100.0], [100.0, 200.0], [200.0, 100.0]],
+      "position": [99.9, 199.9],
+      "curveVelocity": 0.0,
+      "ticks": 180,
+      "expectedPosition": [100.0, 200.0],
+      "expectedCurveVelocity": 0.0,
+      "expectedFacingChanges": 0
+    },
+    {
+      "name": "steeper-slopes-have-stronger-gravity",
+      "unitTangents": [[1.0, 0.0], [0.8, 0.6], [0.6, 0.8]],
+      "initialCurveVelocity": 0.0,
+      "expectedNextCurveVelocities": [0.0, 0.528, 0.704]
+    },
+    {
+      "name": "held-release-discards-old-motion",
+      "nowMs": 1000,
+      "samples": [
+        { "timeMs": 0, "position": [100.0, 200.0] },
+        { "timeMs": 40, "position": [140.0, 200.0] }
+      ],
+      "expectedVelocity": [0.0, 0.0]
     }
   ],
   "curveEndpointVectors": [
@@ -546,8 +582,8 @@
       "expectedEndpointCurveVelocity": 0.0,
       "expectedEndpointPathDirection": 1,
       "expectedEndpointMode": "slide",
-      "expectedNextCurveVelocity": 0.25,
-      "expectedNextPosition": [0.25, 100.0],
+      "expectedNextCurveVelocity": 0.0,
+      "expectedNextPosition": [0.0, 100.0],
       "expectedNextMode": "slide"
     },
     {
@@ -561,8 +597,8 @@
       "expectedEndpointCurveVelocity": 0.0,
       "expectedEndpointPathDirection": 1,
       "expectedEndpointMode": "slide",
-      "expectedNextCurveVelocity": 0.25,
-      "expectedNextPosition": [0.24999999999996875, 99.999999875],
+      "expectedNextCurveVelocity": 0.0,
+      "expectedNextPosition": [0.0, 100.0],
       "expectedNextMode": "slide"
     }
   ],

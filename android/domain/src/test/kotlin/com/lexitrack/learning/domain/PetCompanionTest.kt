@@ -25,6 +25,11 @@ class PetCompanionTest {
         return PetPoint(coordinates[0], coordinates[1])
     }
 
+    private fun assertPointClose(expected: PetPoint, actual: PetPoint) {
+        assertEquals(expected.x, actual.x, 1e-4f)
+        assertEquals(expected.y, actual.y, 1e-4f)
+    }
+
     private fun sharedVector(section: String, name: String) =
         sharedGolden.getValue(section).jsonArray
             .map { it.jsonObject }
@@ -169,6 +174,7 @@ class PetCompanionTest {
             advanced = advancePet(advanced, listOf(chart), viewport, halfSize = 20f, step = 10f)
         }
 
+        assertEquals(PetMode.FLY, entered.mode)
         assertEquals(PetMode.SLIDE, advanced.mode)
         assertEquals("curve", advanced.targetId)
         assertTrue(advanced.position.x > 120f)
@@ -200,8 +206,8 @@ class PetCompanionTest {
             halfSize = 20f,
         )
 
-        assertEquals(1_034.375f, advanced.verticalVelocity)
-        assertEquals(PetPoint(340f, 116.275f), advanced.position)
+        assertEquals(1_055f, advanced.verticalVelocity)
+        assertEquals(PetPoint(340f, 116.44f), advanced.position)
     }
 
     @Test
@@ -344,7 +350,7 @@ class PetCompanionTest {
             halfSize = 0f,
         )
         assertEquals(null, first.targetId)
-        assertEquals(PetPoint(60f, 100.275f), first.position)
+        assertEquals(PetPoint(60f, 100.44f), first.position)
 
         val shortViewport = PetRect(0f, 0f, 120f, 100f)
         var bouncing = advancePet(
@@ -393,8 +399,8 @@ class PetCompanionTest {
             fallUnitScale = 2f,
         )
 
-        assertEquals(PetPoint(60f, 10.55f), state.position)
-        assertEquals(68.75f, state.verticalVelocity)
+        assertEquals(PetPoint(60f, 10.88f), state.position)
+        assertEquals(110f, state.verticalVelocity, 1e-4f)
     }
 
     @Test
@@ -494,7 +500,7 @@ class PetCompanionTest {
             halfSize = 0f,
             step = surfaceStep,
         )
-        assertEquals(point(surface.getValue("expectedPosition")), surfaceResult.position)
+        assertPointClose(point(surface.getValue("expectedPosition")), surfaceResult.position)
         assertEquals(PetMode.valueOf(surface.getValue("expectedMode").jsonPrimitive.content.uppercase()), surfaceResult.mode)
 
         val rolling = vectors.getValue("upper-support-reverses").jsonObject
@@ -511,7 +517,7 @@ class PetCompanionTest {
             halfSize = 0f,
             step = rolling.getValue("step").jsonPrimitive.float,
         )
-        assertEquals(point(rolling.getValue("expectedPosition")), rollingResult.position)
+        assertPointClose(point(rolling.getValue("expectedPosition")), rollingResult.position)
         assertEquals(PetMode.valueOf(rolling.getValue("expectedMode").jsonPrimitive.content.uppercase()), rollingResult.mode)
         assertEquals(PetFacing.valueOf(rolling.getValue("expectedFacing").jsonPrimitive.content.uppercase()), rollingResult.facing)
 
@@ -529,19 +535,19 @@ class PetCompanionTest {
             0f,
             verticalEdge.getValue("step").jsonPrimitive.float,
         )
-        assertEquals(point(verticalEdge.getValue("expectedPosition")), verticalEdgeResult.position)
+        assertPointClose(point(verticalEdge.getValue("expectedPosition")), verticalEdgeResult.position)
         assertEquals(PetMode.valueOf(verticalEdge.getValue("expectedMode").jsonPrimitive.content.uppercase()), verticalEdgeResult.mode)
 
         val horizontalEdge = vectors.getValue("horizontal-edge-moves-to-upper-support").jsonObject
         val horizontalEdgeTarget = target(horizontalEdge.getValue("target"))
         val horizontalEdgeResult = advancePet(
-            PetState(point(horizontalEdge.getValue("position")), targetId = horizontalEdgeTarget.id),
+            PetState(point(horizontalEdge.getValue("position"))),
             listOf(horizontalEdgeTarget),
             viewport,
             0f,
             horizontalEdge.getValue("step").jsonPrimitive.float,
         )
-        assertEquals(point(horizontalEdge.getValue("expectedPosition")), horizontalEdgeResult.position)
+        assertPointClose(point(horizontalEdge.getValue("expectedPosition")), horizontalEdgeResult.position)
         assertEquals(
             PetMode.valueOf(horizontalEdge.getValue("expectedMode").jsonPrimitive.content.uppercase()),
             horizontalEdgeResult.mode,
@@ -572,7 +578,7 @@ class PetCompanionTest {
             0f,
             flight.getValue("step").jsonPrimitive.float,
         )
-        assertEquals(point(flight.getValue("expectedPosition")), flightResult.position)
+        assertPointClose(point(flight.getValue("expectedPosition")), flightResult.position)
         assertEquals(PetMode.valueOf(flight.getValue("expectedMode").jsonPrimitive.content.uppercase()), flightResult.mode)
 
         val navigation = vectors.getValue("navigation-prefers-below").jsonObject
@@ -585,7 +591,7 @@ class PetCompanionTest {
             navigation.getValue("step").jsonPrimitive.float,
         )
         assertEquals(navigation.getValue("expectedTarget").jsonPrimitive.content, navigationResult.targetId)
-        assertEquals(point(navigation.getValue("expectedPosition")), navigationResult.position)
+        assertPointClose(point(navigation.getValue("expectedPosition")), navigationResult.position)
         assertEquals(PetMode.FALL, navigationResult.mode)
 
         val fallback = vectors.getValue("fall-without-below-target-uses-viewport-bottom").jsonObject
@@ -601,8 +607,8 @@ class PetCompanionTest {
             halfSize = fallback.getValue("petHalfSize").jsonPrimitive.float,
         )
         assertEquals(null, fallbackResult.targetId)
-        assertEquals(point(fallback.getValue("expectedPositionAfterOneTick")), fallbackResult.position)
-        assertEquals(fallback.getValue("expectedVerticalVelocity").jsonPrimitive.float, fallbackResult.verticalVelocity)
+        assertPointClose(point(fallback.getValue("expectedPositionAfterOneTick")), fallbackResult.position)
+        assertEquals(fallback.getValue("expectedVerticalVelocity").jsonPrimitive.float, fallbackResult.verticalVelocity, 1e-4f)
         assertEquals(PetMode.FALL, fallbackResult.mode)
 
         val fall = vectors.getValue("fall-accelerates").jsonObject
@@ -617,8 +623,8 @@ class PetCompanionTest {
             0f,
             fall.getValue("step").jsonPrimitive.float,
         )
-        assertEquals(point(fall.getValue("expectedPosition")), fallResult.position)
-        assertEquals(fall.getValue("expectedVerticalVelocity").jsonPrimitive.float, fallResult.verticalVelocity)
+        assertPointClose(point(fall.getValue("expectedPosition")), fallResult.position)
+        assertEquals(fall.getValue("expectedVerticalVelocity").jsonPrimitive.float, fallResult.verticalVelocity, 1e-4f)
         assertEquals(PetMode.valueOf(fall.getValue("expectedMode").jsonPrimitive.content.uppercase()), fallResult.mode)
 
         val hardLanding = vectors.getValue("hard-landing-bounces-twice").jsonObject
@@ -633,7 +639,7 @@ class PetCompanionTest {
             0f,
             hardLanding.getValue("step").jsonPrimitive.float,
         )
-        assertEquals(point(hardLanding.getValue("expectedPosition")), hardLandingResult.position)
+        assertPointClose(point(hardLanding.getValue("expectedPosition")), hardLandingResult.position)
         assertEquals(PetMode.valueOf(hardLanding.getValue("expectedMode").jsonPrimitive.content.uppercase()), hardLandingResult.mode)
         assertEquals(
             hardLanding.getValue("expectedBouncesRemaining").jsonPrimitive.content.toInt(),
@@ -657,8 +663,8 @@ class PetCompanionTest {
             halfSize = offsetFall.getValue("petHalfSize").jsonPrimitive.float,
         )
         assertEquals(offsetFall.getValue("expectedTarget").jsonPrimitive.content, offsetResult.targetId)
-        assertEquals(point(offsetFall.getValue("expectedPositionAfterOneTick")), offsetResult.position)
-        assertEquals(offsetFall.getValue("expectedVerticalVelocity").jsonPrimitive.float, offsetResult.verticalVelocity)
+        assertPointClose(point(offsetFall.getValue("expectedPositionAfterOneTick")), offsetResult.position)
+        assertEquals(offsetFall.getValue("expectedVerticalVelocity").jsonPrimitive.float, offsetResult.verticalVelocity, 1e-4f)
         assertEquals(PetMode.FALL, offsetResult.mode)
 
         val retarget = vectors.getValue("fall-retargets-new-nearest-support-every-tick").jsonObject
@@ -675,8 +681,8 @@ class PetCompanionTest {
             halfSize = retarget.getValue("petHalfSize").jsonPrimitive.float,
         )
         assertEquals(retarget.getValue("expectedTarget").jsonPrimitive.content, retargetResult.targetId)
-        assertEquals(point(retarget.getValue("expectedPositionAfterOneTick")), retargetResult.position)
-        assertEquals(retarget.getValue("expectedVerticalVelocity").jsonPrimitive.float, retargetResult.verticalVelocity)
+        assertPointClose(point(retarget.getValue("expectedPositionAfterOneTick")), retargetResult.position)
+        assertEquals(retarget.getValue("expectedVerticalVelocity").jsonPrimitive.float, retargetResult.verticalVelocity, 1e-4f)
         assertEquals(PetMode.FALL, retargetResult.mode)
 
         val touching = vectors.getValue("fall-already-touching-support-lands").jsonObject
@@ -691,7 +697,7 @@ class PetCompanionTest {
             PetRect(0f, 0f, touchingViewport[0], touchingViewport[1]),
             halfSize = touching.getValue("petHalfSize").jsonPrimitive.float,
         )
-        assertEquals(point(touching.getValue("expectedPosition")), touchingResult.position)
+        assertPointClose(point(touching.getValue("expectedPosition")), touchingResult.position)
         assertEquals(touching.getValue("expectedTarget").jsonPrimitive.content, touchingResult.targetId)
         assertEquals(
             PetMode.valueOf(touching.getValue("expectedMode").jsonPrimitive.content.uppercase()),
@@ -711,7 +717,7 @@ class PetCompanionTest {
             PetRect(0f, 0f, syntheticViewport[0], syntheticViewport[1]),
             halfSize = synthetic.getValue("petHalfSize").jsonPrimitive.float,
         )
-        assertEquals(point(synthetic.getValue("expectedPosition")), syntheticResult.position)
+        assertPointClose(point(synthetic.getValue("expectedPosition")), syntheticResult.position)
         assertEquals(PetMode.BOUNCE, syntheticResult.mode)
         assertEquals(synthetic.getValue("expectedBounceVerticalVelocity").jsonPrimitive.float, syntheticResult.verticalVelocity)
         assertEquals(
@@ -809,7 +815,7 @@ class PetCompanionTest {
             PetRect(0f, 0f, 200f, 160f),
             halfSize = 10f,
         )
-        assertEquals(0.25f, advanced.curveVelocity!!, 1e-6f)
+        assertEquals(0.39354795f, advanced.curveVelocity!!, 1e-6f)
         assertTrue(advanced.position.x > released.position.x)
         assertTrue(advanced.position.y > released.position.y)
     }
@@ -1413,8 +1419,8 @@ class PetCompanionTest {
             halfSize = 0f,
             step = 5f,
         )
-        assertEquals(PetMode.FLY, fromControlBottom.mode)
-        assertEquals(PetPoint(40f, 49.5f), fromControlBottom.position)
+        assertEquals(PetMode.FALL, fromControlBottom.mode)
+        assertEquals(PetPoint(40f, 50.44f), fromControlBottom.position)
 
         val bottomEdge = PetTarget("screen-bottom", PetTargetKind.EDGE, PetRect(0f, 99f, 100f, 1f))
         val fromEdgeBottom = advancePet(
@@ -1424,8 +1430,8 @@ class PetCompanionTest {
             halfSize = 0f,
             step = 5f,
         )
-        assertEquals(PetMode.FLY, fromEdgeBottom.mode)
-        assertEquals(PetPoint(40f, 99.5f), fromEdgeBottom.position)
+        assertEquals(PetMode.FALL, fromEdgeBottom.mode)
+        assertEquals(PetPoint(40f, 100.44f), fromEdgeBottom.position)
     }
 
     @Test
@@ -1466,9 +1472,9 @@ class PetCompanionTest {
 
         val tick = advancePet(released, emptyList(), viewport, halfSize = 0f)
         assertEquals(326.72f, tick.position.x, 1e-3f)
-        assertEquals(409.395f, tick.position.y, 1e-3f)
+        assertEquals(409.56f, tick.position.y, 1e-3f)
         assertEquals(420f, tick.horizontalVelocity, 1e-3f)
-        assertEquals(-645.625f, tick.verticalVelocity, 1e-3f)
+        assertEquals(-625f, tick.verticalVelocity, 1e-3f)
     }
 
     @Test
@@ -1748,5 +1754,306 @@ class PetCompanionTest {
         assertEquals(PetMode.IDLE, state.mode)
         assertEquals(0f, state.horizontalVelocity, 1e-6f)
         assertEquals(null, state.curveVelocity)
+    }
+
+    @Test
+    fun `same id support moving away invalidates idle before its countdown`() {
+        val target = PetTarget("card", PetTargetKind.SURFACE, PetRect(20f, 150f, 100f, 40f))
+        val next = advancePet(
+            PetState(PetPoint(60f, 100f), PetMode.IDLE, target.id, idleTicksRemaining = 24),
+            listOf(target), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.FALL, next.mode)
+        assertEquals(0, next.idleTicksRemaining)
+        assertEquals(100.44f, next.position.y, 1e-5f)
+        assertEquals(60f, next.position.x)
+    }
+
+    @Test
+    fun `same id chart reflow begins fall instead of pulling onto the replacement path`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(0f, 150f), PetPoint(200f, 200f)))
+        val next = advancePet(
+            PetState(PetPoint(60f, 100f), PetMode.SLIDE, chart.id, curveVelocity = 2f),
+            listOf(chart), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.FALL, next.mode)
+        assertEquals(null, next.curveVelocity)
+        assertEquals(100.44f, next.position.y, 1e-5f)
+    }
+
+    @Test
+    fun `support rounding tolerance scales with density`() {
+        val target = PetTarget("card", PetTargetKind.SURFACE, PetRect(20f, 100f, 200f, 40f))
+        fun advance(y: Float) = advancePet(
+            PetState(PetPoint(60f, y), PetMode.IDLE, target.id, idleTicksRemaining = 24),
+            listOf(target), viewport, halfSize = 0f, fallUnitScale = 2f,
+        )
+        assertEquals(PetMode.IDLE, advance(99.2f).mode)
+        assertEquals(PetMode.FALL, advance(98.8f).mode)
+    }
+
+    @Test
+    fun `losing a bounce support preserves the upward projectile arc`() {
+        val next = advancePet(
+            PetState(PetPoint(60f, 100f), PetMode.BOUNCE, "removed",
+                verticalVelocity = -100f, bouncesRemaining = 2),
+            emptyList(), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.FLING, next.mode)
+        assertEquals(-45f, next.verticalVelocity, 1e-4f)
+        assertEquals(98.84f, next.position.y, 1e-4f)
+        assertEquals(0, next.bouncesRemaining)
+    }
+
+    @Test
+    fun `orphan bounce retains signed velocity when no targets exist`() {
+        val next = advancePet(
+            PetState(PetPoint(100f, 100f), PetMode.BOUNCE,
+                verticalVelocity = -100f, horizontalVelocity = 75f,
+                bouncesRemaining = 2, idleTicksRemaining = 7),
+            emptyList(), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.FLING, next.mode)
+        assertEquals(-45f, next.verticalVelocity, 1e-4f)
+        assertEquals(75f, next.horizontalVelocity, 1e-4f)
+        assertPointClose(PetPoint(101.2f, 98.84f), next.position)
+        assertEquals(0, next.bouncesRemaining)
+        assertEquals(0, next.idleTicksRemaining)
+    }
+
+    @Test
+    fun `orphan or moved bounce support checks all targets for the first projectile contact`() {
+        val behind = PetTarget("behind", PetTargetKind.SURFACE, PetRect(90f, 99f, 20f, 10f))
+        val landing = PetTarget("landing", PetTargetKind.SURFACE, PetRect(0f, 110f, 300f, 10f))
+        for (targetId in listOf(null, behind.id)) {
+            val next = advancePet(
+                PetState(PetPoint(100f, 100f), PetMode.BOUNCE, targetId,
+                    verticalVelocity = 1_000f, bouncesRemaining = 1),
+                listOf(behind, landing), viewport, halfSize = 0f,
+            )
+            assertEquals(PetMode.BOUNCE, next.mode)
+            assertEquals(landing.id, next.targetId)
+            assertPointClose(PetPoint(100f, 110f), next.position)
+        }
+    }
+
+    @Test
+    fun `retained edge bounce keeps its support when page content exists`() {
+        val edge = PetTarget("edge:bottom", PetTargetKind.EDGE, PetRect(0f, 280f, 400f, 1f))
+        val content = PetTarget("card", PetTargetKind.SURFACE, PetRect(0f, 100f, 300f, 20f))
+        val next = advancePet(
+            PetState(PetPoint(100f, 270f), PetMode.BOUNCE, edge.id,
+                verticalVelocity = -100f, bouncesRemaining = 2),
+            listOf(content, edge), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.BOUNCE, next.mode)
+        assertEquals(edge.id, next.targetId)
+        assertPointClose(PetPoint(100f, 268.84f), next.position)
+        assertEquals(-45f, next.verticalVelocity, 1e-4f)
+    }
+
+    @Test
+    fun `completed chart bounce resumes physical sliding from rest`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(0f, 300f), PetPoint(400f, 500f)))
+        var state = advancePet(
+            PetState(PetPoint(200f, 390f), PetMode.FALL, verticalVelocity = 800f),
+            listOf(chart), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.BOUNCE, state.mode)
+        repeat(100) {
+            if (state.mode == PetMode.BOUNCE) state = advancePet(state, listOf(chart), viewport, halfSize = 0f)
+        }
+        assertEquals(PetMode.SLIDE, state.mode)
+        assertEquals(chart.id, state.targetId)
+        assertEquals(0f, state.curveVelocity)
+        assertEquals(0, state.idleTicksRemaining)
+        assertPointClose(PetPoint(200f, 400f), state.position)
+        val next = advancePet(state, listOf(chart), viewport, halfSize = 0f)
+        assertTrue(next.curveVelocity!! > 0f)
+        assertTrue(next.position.y > state.position.y)
+    }
+
+    @Test
+    fun `curve acceleration follows gravity tangent and level contact remains still`() {
+        fun advanceRise(rise: Float): PetState {
+            val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+                listOf(PetPoint(0f, 100f), PetPoint(200f, 100f + rise)))
+            return advancePet(
+                PetState(PetPoint(100f, 100f + rise / 2f), PetMode.SLIDE,
+                    chart.id, pathIndex = 1, curveVelocity = 0f),
+                listOf(chart), viewport, halfSize = 0f,
+            )
+        }
+        val level = advanceRise(0f)
+        assertEquals(PetPoint(100f, 100f), level.position)
+        assertEquals(0f, level.curveVelocity)
+        val shallow = advanceRise(20f)
+        val steep = advanceRise(100f)
+        assertTrue(steep.curveVelocity!! > shallow.curveVelocity!!)
+        assertEquals(-steep.curveVelocity!!, advanceRise(-100f).curveVelocity!!, 1e-6f)
+    }
+
+    @Test
+    fun `retained path cursor selects outgoing tangent at an exact vertex`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(0f, 100f), PetPoint(100f, 100f), PetPoint(200f, 150f)))
+        val next = advancePet(
+            PetState(PetPoint(100f, 100f), PetMode.SLIDE, chart.id,
+                pathIndex = 2, pathDirection = 1, curveVelocity = 0.5f),
+            listOf(chart), viewport, halfSize = 0f,
+        )
+        assertTrue(next.curveVelocity!! > 0.5f)
+        assertTrue(next.position.y > 100f)
+    }
+
+    @Test
+    fun `low speed valley settles without facing flicker for successive ticks`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(20f, 50f), PetPoint(100f, 130f), PetPoint(180f, 50f)))
+        var state = PetState(PetPoint(98f, 128f), PetMode.SLIDE, chart.id,
+            pathIndex = 1, curveVelocity = 0.1f, facing = PetFacing.RIGHT)
+        repeat(180) { state = advancePet(state, listOf(chart), viewport, halfSize = 0f) }
+        assertEquals(PetPoint(100f, 130f), state.position)
+        assertEquals(0f, state.curveVelocity)
+        val settled = state
+        repeat(180) {
+            state = advancePet(state, listOf(chart), viewport, halfSize = 0f)
+            assertEquals(settled, state)
+        }
+    }
+
+    @Test
+    fun `fast valley crossing retains inertia instead of snapping to rest`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(20f, 50f), PetPoint(100f, 130f), PetPoint(180f, 50f)))
+        val next = advancePet(
+            PetState(PetPoint(99.9f, 129.9f), PetMode.SLIDE, chart.id,
+                pathIndex = 1, curveVelocity = 4f),
+            listOf(chart), viewport, halfSize = 0f,
+        )
+        assertTrue(next.position.x > 100f)
+        assertTrue(next.curveVelocity!! > 0f)
+    }
+
+    @Test
+    fun `autonomous curve movement never exceeds its distance budget at a waypoint`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(0f, 100f), PetPoint(10f, 100f), PetPoint(200f, 100f)))
+        val next = advancePet(
+            PetState(PetPoint(9.4f, 100f), PetMode.SLIDE, chart.id, pathIndex = 1),
+            listOf(chart), viewport, halfSize = 0f,
+        )
+        assertEquals(9.65f, next.position.x, 1e-5f)
+        assertEquals(0.25f, next.movementSpeed)
+    }
+
+    @Test
+    fun `release velocity stays accurate after weeks of device uptime`() {
+        val epoch = 3_000_000_000L
+        val samples = (0..3).map { index ->
+            PetMotionSample(epoch + index * 40, PetPoint(index * 40f, -index * 40f))
+        }
+        val velocity = estimateReleaseVelocity(samples, nowMs = epoch + 120)
+        assertEquals(1_000f, velocity.x, 1e-3f)
+        assertEquals(-1_000f, velocity.y, 1e-3f)
+    }
+
+    @Test
+    fun `shared motion stability vectors cover rest gravity and held release`() {
+        val valley = sharedVector("motionStabilityVectors", "low-energy-valley-remains-at-rest")
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            valley.getValue("path").jsonArray.map(::sharedPoint))
+        var state = PetState(sharedPoint(valley.getValue("position")), PetMode.SLIDE,
+            chart.id, pathIndex = 1, curveVelocity = valley.getValue("curveVelocity").jsonPrimitive.float)
+        var facingChanges = 0
+        repeat(valley.getValue("ticks").jsonPrimitive.content.toInt()) {
+            val before = state.facing
+            state = advancePet(state, listOf(chart), viewport, halfSize = 0f)
+            if (before != state.facing) facingChanges += 1
+        }
+        assertEquals(sharedPoint(valley.getValue("expectedPosition")), state.position)
+        assertEquals(valley.getValue("expectedCurveVelocity").jsonPrimitive.float, state.curveVelocity)
+        assertEquals(valley.getValue("expectedFacingChanges").jsonPrimitive.content.toInt(), facingChanges)
+
+        val slopes = sharedVector("motionStabilityVectors", "steeper-slopes-have-stronger-gravity")
+        val expectedSpeeds = slopes.getValue("expectedNextCurveVelocities").jsonArray
+        slopes.getValue("unitTangents").jsonArray.forEachIndexed { index, value ->
+            val tangent = sharedPoint(value)
+            val slope = PetTarget("slope", PetTargetKind.CHART, viewport,
+                listOf(PetPoint(0f, 100f), PetPoint(tangent.x * 200f, 100f + tangent.y * 200f)))
+            val next = advancePet(
+                PetState(PetPoint(tangent.x * 100f, 100f + tangent.y * 100f), PetMode.SLIDE,
+                    slope.id, pathIndex = 1,
+                    curveVelocity = slopes.getValue("initialCurveVelocity").jsonPrimitive.float),
+                listOf(slope), viewport, halfSize = 0f,
+            )
+            assertEquals(expectedSpeeds[index].jsonPrimitive.float, next.curveVelocity!!, 1e-5f)
+        }
+        val release = sharedVector("motionStabilityVectors", "held-release-discards-old-motion")
+        val samples = release.getValue("samples").jsonArray.map { value ->
+            val sample = value.jsonObject
+            PetMotionSample(sample.getValue("timeMs").jsonPrimitive.content.toLong(), sharedPoint(sample.getValue("position")))
+        }
+        assertEquals(sharedPoint(release.getValue("expectedVelocity")), estimateReleaseVelocity(
+            samples, nowMs = release.getValue("nowMs").jsonPrimitive.content.toLong()))
+    }
+
+    @Test
+    fun `chart landing uses the original segment near viewport inset`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(0f, 100f), PetPoint(100f, 200f)))
+        val next = advancePet(
+            PetState(PetPoint(80f, 123.9f), PetMode.FALL, verticalVelocity = 10f),
+            listOf(chart), viewport, halfSize = 56f,
+        )
+        assertEquals(PetMode.SLIDE, next.mode)
+        assertEquals(80f, next.position.x, 1e-4f)
+        assertEquals(124f, next.position.y, 1e-4f)
+    }
+
+    @Test
+    fun `bounce support moved above the arc detaches without snapping upward`() {
+        val support = PetTarget("card", PetTargetKind.SURFACE, PetRect(0f, 20f, 200f, 20f))
+        val next = advancePet(
+            PetState(PetPoint(100f, 100f), PetMode.BOUNCE, support.id,
+                verticalVelocity = -100f, bouncesRemaining = 2),
+            listOf(support), viewport, halfSize = 0f,
+        )
+        assertEquals(PetMode.FLING, next.mode)
+        assertEquals(98.84f, next.position.y, 1e-4f)
+        assertEquals(-45f, next.verticalVelocity, 1e-4f)
+    }
+
+    @Test
+    fun `physical and autonomous chart travel meet the viewport on the true segment`() {
+        val viewport = PetRect(0f, 0f, 200f, 300f)
+        val chart = PetTarget("curve", PetTargetKind.CHART, PetRect(0f, 0f, 400f, 300f),
+            listOf(PetPoint(0f, 100f), PetPoint(400f, 300f)))
+        for (velocity in listOf(8f, null)) {
+            val next = advancePet(
+                PetState(PetPoint(179f, 169.5f), PetMode.SLIDE, chart.id,
+                    pathIndex = 1, curveVelocity = velocity, movementSpeed = 4f),
+                listOf(chart), viewport, halfSize = 20f,
+            )
+            assertEquals(180f, next.position.x, 1e-4f)
+            assertEquals(170f, next.position.y, 1e-4f)
+            if (velocity != null) assertEquals(PetMode.IDLE, next.mode)
+            else assertEquals(-1, next.pathDirection)
+        }
+    }
+
+    @Test
+    fun `fall skips chart contact outside the pet inset instead of clamping onto a false surface`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, viewport,
+            listOf(PetPoint(0f, 10f), PetPoint(200f, 10f)))
+        val next = advancePet(
+            PetState(PetPoint(100f, -12f), PetMode.FALL, verticalVelocity = 120f),
+            listOf(chart), viewport, halfSize = 20f,
+        )
+        assertEquals(PetMode.FALL, next.mode)
+        assertEquals(null, next.targetId)
+        assertTrue(next.position.y < 0f)
     }
 }

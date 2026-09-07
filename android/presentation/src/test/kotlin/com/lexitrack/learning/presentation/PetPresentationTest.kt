@@ -150,6 +150,15 @@ class PetPresentationTest {
     }
 
     @Test
+    fun `chart localization preserves offscreen vertices for exact segment clipping`() {
+        val chart = PetTarget("curve", PetTargetKind.CHART, PetRect(80f, 200f, 420f, 200f),
+            listOf(PetPoint(80f, 210f), PetPoint(500f, 400f)))
+        val localized = localizePetTargets(listOf(chart), PetPoint(100f, 200f), PetRect(0f, 0f, 300f, 160f)).single()
+        assertEquals(listOf(PetPoint(-20f, 10f), PetPoint(400f, 200f)), localized.path)
+        assertEquals(PetRect(0f, 0f, 300f, 160f), localized.rect)
+    }
+
+    @Test
     fun `word bubble positioning stays inside its host window`() {
         val viewport = PetRect(0f, 0f, 300f, 220f)
         val hostOrigin = PetPoint(100f, 200f)
@@ -350,7 +359,7 @@ class PetPresentationTest {
     }
 
     @Test
-    fun `same-window target refresh clears stale references without resetting motion`() {
+    fun `same-window target refresh retains old support for the domain to validate`() {
         val initial = com.lexitrack.learning.domain.PetState(
             position = PetPoint(180f, 90f),
             mode = PetMode.ROLL,
@@ -378,21 +387,19 @@ class PetPresentationTest {
             listOf(PetTarget("replacement", PetTargetKind.CONTROL, PetRect(40f, 40f, 120f, 48f))),
         )
 
-        val updated = coordinator.state
-        assertEquals(initial.position, updated.position)
-        assertEquals(initial.mode, updated.mode)
-        assertEquals(initial.movementSpeed, updated.movementSpeed, 0f)
-        assertEquals(initial.verticalVelocity, updated.verticalVelocity, 0f)
-        assertEquals(initial.horizontalVelocity, updated.horizontalVelocity, 0f)
-        assertEquals(initial.bouncesRemaining, updated.bouncesRemaining)
-        assertEquals(initial.facing, updated.facing)
-        assertNull(updated.targetId)
-        assertEquals(initial.idleTicksRemaining, updated.idleTicksRemaining)
-        assertEquals(0, updated.pathIndex)
-        assertEquals(1, updated.pathDirection)
-        assertEquals(0, updated.rollCorners)
-        assertNull(updated.avoidTargetId)
-        assertNull(updated.curveVelocity)
+        assertEquals(initial, coordinator.state)
+        val next = com.lexitrack.learning.domain.advancePet(
+            coordinator.state,
+            coordinator.targetsFor(),
+            requireNotNull(coordinator.viewportFor()),
+            halfSize = 0f,
+        )
+        assertEquals(PetMode.FALL, next.mode)
+        assertEquals(initial.position.x, next.position.x)
+        assertTrue(next.position.y > initial.position.y)
+        assertNull(next.targetId)
+        assertNull(next.curveVelocity)
+        assertEquals(0, next.idleTicksRemaining)
     }
 
     @Test

@@ -116,7 +116,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -372,8 +373,8 @@ internal fun localizePetTargets(
             rect = PetRect(left, top, right - left, bottom - top),
             path = target.path.map { point ->
                 PetPoint(
-                    (point.x - origin.x).coerceIn(viewport.left, viewport.right),
-                    (point.y - origin.y).coerceIn(viewport.top, viewport.bottom),
+                    point.x - origin.x,
+                    point.y - origin.y,
                 )
             },
         )
@@ -495,16 +496,15 @@ private fun PetOverlay(
     } else visualState.position
     // Animate between fixed simulation ticks. Dragging remains synchronous so
     // the pointer never lags behind the sprite while the user holds it.
-    val animatedX by animateFloatAsState(
-        targetValue = displayPosition.x,
-        animationSpec = tween(PET_TICK_MS.toInt(), easing = LinearEasing),
-        label = "bingzi-x",
-    )
-    val animatedY by animateFloatAsState(
-        targetValue = displayPosition.y,
-        animationSpec = tween(PET_TICK_MS.toInt(), easing = LinearEasing),
-        label = "bingzi-y",
-    )
+    val dragging = visualState.mode == PetMode.DRAGGING
+    val animatedPosition = remember(windowId, coordinator.activeWindowId, dragging) {
+        Animatable(Offset(displayPosition.x, displayPosition.y), Offset.VectorConverter)
+    }
+    LaunchedEffect(animatedPosition, displayPosition, ownership.renders) {
+        val destination = Offset(displayPosition.x, displayPosition.y)
+        if (dragging || !ownership.renders) animatedPosition.snapTo(destination)
+        else animatedPosition.animateTo(destination, tween(PET_TICK_MS.toInt(), easing = LinearEasing))
+    }
     LaunchedEffect(navigationKey) {
         val navigationChanged = previousNavigationKey != navigationKey
         previousNavigationKey = navigationKey
@@ -564,12 +564,13 @@ private fun PetOverlay(
             }
         }
     }
-    if ((!ownership.renders && !ownership.capturesGesture) || !viewport.valid) return
-    val renderedPosition = if (visualState.mode == PetMode.DRAGGING) {
+    val renderedPosition = if (dragging) {
         displayPosition
     } else {
-        PetPoint(animatedX, animatedY)
+        PetPoint(animatedPosition.value.x, animatedPosition.value.y)
     }
+    val latestRenderedPosition by rememberUpdatedState(renderedPosition)
+    if ((!ownership.renders && !ownership.capturesGesture) || !viewport.valid) return
     Image(
         painter = painterResource(
             if (visualState.facing == PetFacing.LEFT) R.drawable.bingzi_left else R.drawable.bingzi,
@@ -580,8 +581,8 @@ private fun PetOverlay(
             .alpha(if (ownership.renders) 1f else 0f)
             .offset {
                 IntOffset(
-                    (if (visualState.mode == PetMode.DRAGGING) displayPosition.x - halfSize else animatedX - halfSize).roundToInt(),
-                    (if (visualState.mode == PetMode.DRAGGING) displayPosition.y - halfSize else animatedY - halfSize).roundToInt(),
+                    (renderedPosition.x - halfSize).roundToInt(),
+                    (renderedPosition.y - halfSize).roundToInt(),
                 )
             }
             .size(petSize)
@@ -607,11 +608,12 @@ private fun PetOverlay(
                     onDragStart = { localOffset ->
                         onPointerActiveChange(true)
                         dragCaptureActive = true
+                        val currentRenderedPosition = latestRenderedPosition
                         val dragged = beginDrag(
-                            coordinator.state.copy(position = renderedPosition),
+                            coordinator.state.copy(position = currentRenderedPosition),
                             PetPoint(
-                                renderedPosition.x - halfSize + localOffset.x,
-                                renderedPosition.y - halfSize + localOffset.y,
+                                currentRenderedPosition.x - halfSize + localOffset.x,
+                                currentRenderedPosition.y - halfSize + localOffset.y,
                             ),
                         )
                         state = dragged

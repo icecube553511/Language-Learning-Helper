@@ -34,11 +34,15 @@ const val PET_CRUISE_SPEED = 4f
 const val PET_CURVE_ACCELERATION = 0.25f
 const val PET_CURVE_MOTION_ACCELERATION = PET_CURVE_ACCELERATION
 const val PET_CURVE_LANDING_SPEED_LIMIT = 8f
-const val PET_CURVE_DOWNHILL_TERMINAL_SPEED = 4f
-const val PET_CURVE_DOWNHILL_RESPONSE_PER_TICK = 0.0625f
+const val PET_CURVE_DOWNHILL_TERMINAL_SPEED = 7.04f
+const val PET_CURVE_DOWNHILL_RESPONSE_PER_TICK = 0.125f
 const val PET_CURVE_DIRECTION_EPSILON = 0.000001f
+const val PET_SUPPORT_CONTACT_TOLERANCE = 0.5f
+const val PET_CURVE_VALLEY_REST_SPEED = 0.25f
+const val PET_CURVE_CORNER_SUBSTEPS = 4
+const val PET_CURVE_CORNER_RADIUS = 8f
 const val PET_FALL_TIME_STEP_SECONDS = 0.016f
-const val PET_FALL_GRAVITY = 2148.4375f
+const val PET_FALL_GRAVITY = 3437.5f
 const val PET_FLING_GRAVITY = PET_FALL_GRAVITY
 const val PET_FLING_HORIZONTAL_RESTITUTION = 0.72f
 const val PET_MAX_SUBSTEP_SECONDS = 0.004f
@@ -55,7 +59,6 @@ const val PET_EDGE_PENALTY_RATIO = 0.15f
 const val PET_IDLE_TICKS = 24
 
 private const val PET_EPSILON = 1e-3f
-private const val PET_PATH_SNAP_EPSILON = 1f
 private const val PET_VIEWPORT_BOTTOM_TARGET_ID = "__viewport-bottom__"
 
 enum class PetTargetKind {
@@ -302,13 +305,12 @@ fun estimateReleaseVelocity(
 ): PetPoint {
     val parsed = samples.mapNotNull(::parseMotionSample).sortedBy(PetMotionSample::timestampMs)
     if (parsed.size < 2) return PetPoint(0f, 0f)
-    val end = (nowMs ?: parsed.last().timestampMs).toFloat()
-    val cutoff = end - windowMs.coerceAtLeast(0L).toFloat()
-    val recent = parsed.filter { it.timestampMs.toFloat() >= cutoff && it.timestampMs.toFloat() <= end + 1e-3f }
-        .let { if (it.size >= 2) it else parsed.takeLast(2) }
+    val end = nowMs ?: parsed.last().timestampMs
+    val cutoff = end - windowMs.coerceAtLeast(0L)
+    val recent = parsed.filter { it.timestampMs >= cutoff && it.timestampMs <= end }
     if (recent.size < 2) return PetPoint(0f, 0f)
-    val origin = recent.first().timestampMs.toFloat()
-    val times = recent.map { (it.timestampMs.toFloat() - origin) / 1000f }
+    val origin = recent.first().timestampMs
+    val times = recent.map { (it.timestampMs - origin) / 1000f }
     val span = times.last().coerceAtLeast(1e-6f)
     if (span <= 1e-6f) return PetPoint(0f, 0f)
     val weights = times.map { 0.25f + 0.75f * (it / span) }
@@ -509,17 +511,31 @@ fun advancePet(
     }
     val validTargets = targets.filter(PetTarget::valid)
     val retainedTarget = state.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
-    val currentState = if (
+    val supportLost = (state.mode == PetMode.BOUNCE && state.targetId == null) || (
         state.targetId != null &&
         state.targetId != PET_VIEWPORT_BOTTOM_TARGET_ID &&
-        retainedTarget == null
-    ) {
+        (retainedTarget == null ||
+            (state.mode == PetMode.BOUNCE && fallSupportPoint(retainedTarget, state.position, margin, viewport) == null) ||
+            (state.mode in setOf(PetMode.IDLE, PetMode.ROLL, PetMode.SLIDE) &&
+                !isOnSupport(retainedTarget, state.position, margin, viewport, PET_SUPPORT_CONTACT_TOLERANCE * unitScale)))
+        )
+    val currentState = if (supportLost) {
+        val airborne = state.mode == PetMode.FALL || state.mode == PetMode.FLING || state.mode == PetMode.BOUNCE
         state.copy(
-            mode = PetMode.FALL,
+            mode = when (state.mode) {
+                PetMode.BOUNCE -> PetMode.FLING
+                PetMode.FLING -> PetMode.FLING
+                else -> PetMode.FALL
+            },
             targetId = null,
             idleTicksRemaining = 0,
+            pathIndex = 0,
+            pathDirection = 1,
+            rollCorners = 0,
+            avoidTargetId = null,
             movementSpeed = 0f,
-            verticalVelocity = state.verticalVelocity.coerceAtLeast(0f),
+            verticalVelocity = if (airborne) state.verticalVelocity else 0f,
+            horizontalVelocity = if (airborne) state.horizontalVelocity else 0f,
             bouncesRemaining = 0,
             curveVelocity = null,
         )
@@ -561,7 +577,7 @@ fun advancePet(
         validTargets.filter { it.id != currentState.avoidTargetId }.ifEmpty { validTargets }
     } else validTargets
     val target = if (currentState.mode == PetMode.FALL) {
-        nearestFallTarget(currentState.position, candidates, margin)
+        nearestFallTarget(currentState.position, candidates, margin, viewport)
     } else {
         val retained = currentState.targetId?.let { id -> validTargets.firstOrNull { it.id == id } }
         val contentExists = validTargets.any { it.kind != PetTargetKind.EDGE }
@@ -569,7 +585,7 @@ fun advancePet(
         // content exists: a pet that once landed on a boundary would keep
         // creeping along it forever (visually motionless) and never return to
         // the page content.
-        if (retained != null && (retained.kind != PetTargetKind.EDGE || !contentExists)) {
+        if (retained != null && (currentState.mode == PetMode.BOUNCE || retained.kind != PetTargetKind.EDGE || !contentExists)) {
             retained
         } else {
             nearestPetTarget(
@@ -855,6 +871,7 @@ private fun advanceFlingSubstep(
             remaining,
             targets,
             halfSize,
+            viewport,
         )?.let { hit -> candidates += FlingContact(hit.time, FlingContactKind.TARGET, hit) }
         positiveQuadraticRoots(0.5f * gravity, vy, position.y - maxY, remaining)
             .filter { time -> !(time <= PET_EPSILON && vy <= PET_EPSILON) }
@@ -985,13 +1002,14 @@ private fun earliestFlingSupportHit(
     dt: Float,
     targets: List<PetTarget>,
     halfSize: Float,
+    viewport: PetRect,
 ): FlingSupportHit? {
     var earliest: FlingSupportHit? = null
     targets.forEach { target ->
         if (!target.valid) return@forEach
         val candidate = when {
             target.kind == PetTargetKind.CHART && target.path.isNotEmpty() -> {
-                flingChartHit(target, y0, vy0, gravity, x0, vx, dt, halfSize)
+                flingChartHit(target, y0, vy0, gravity, x0, vx, dt, halfSize, viewport)
             }
             else -> {
                 val endpoints = supportEndpoints(target, halfSize)
@@ -1046,10 +1064,11 @@ private fun flingChartHit(
     vx: Float,
     dt: Float,
     halfSize: Float,
+    viewport: PetRect,
 ): FlingSupportHit? {
     val path = target.path.map { PetPoint(it.x, it.y - halfSize) }
     if (path.size == 1) {
-        if (!close(x0, path.single().x)) return null
+        if (!close(x0, path.single().x) || !isInsidePetViewport(path.single(), viewport, halfSize)) return null
         return positiveQuadraticRoots(0.5f * gravity, vy0, y0 - path.single().y, dt)
             .filter { time -> !(time <= PET_EPSILON && vy0 <= PET_EPSILON) }
             .filter { time -> vy0 + gravity * time >= -PET_EPSILON }
@@ -1076,7 +1095,7 @@ private fun flingChartHit(
             .filter { time -> b + 2f * a * time >= -PET_EPSILON }
             .mapNotNull { time ->
                 val x = x0 + vx * time
-                if (x !in minX..maxX) {
+                if (x !in minX..maxX || !isInsidePetViewport(PetPoint(x, slope * x + intercept), viewport, halfSize)) {
                     null
                 } else {
                     FlingSupportHit(
@@ -1122,7 +1141,11 @@ private data class PetPathSegmentContact(
     val unitTangent: PetPoint,
 )
 
-private fun closestPathSegment(position: PetPoint, path: List<PetPoint>): PetPathSegmentContact {
+private fun closestPathSegment(
+    position: PetPoint,
+    path: List<PetPoint>,
+    preferredIndex: Int? = null,
+): PetPathSegmentContact {
     var closest: PetPathSegmentContact? = null
     var closestDistance = Float.POSITIVE_INFINITY
     path.zipWithNext().forEachIndexed { index, (start, end) ->
@@ -1131,8 +1154,10 @@ private fun closestPathSegment(position: PetPoint, path: List<PetPoint>): PetPat
         val length = hypot(dx, dy)
         if (length <= PET_EPSILON) return@forEachIndexed
         val projection = closestPointOnSegment(position, start, end)
-        val distance = distanceSquared(position, projection)
-        if (distance < closestDistance) {
+        val distance = hypot(position.x - projection.x, position.y - projection.y)
+        if (distance < closestDistance - PET_CURVE_DIRECTION_EPSILON ||
+            (abs(distance - closestDistance) <= PET_CURVE_DIRECTION_EPSILON && index == preferredIndex)
+        ) {
             closestDistance = distance
             closest = PetPathSegmentContact(
                 index = index,
@@ -1159,7 +1184,7 @@ private fun curveEndpointIsDownhill(
     endpoint: Int,
     direction: Int,
 ): Boolean {
-    val segment = if (endpoint <= 0) 0 else path.lastIndex - 1
+    val segment = (if (direction > 0) endpoint - 1 else endpoint).coerceIn(0, path.lastIndex - 1)
     val start = path[segment]
     val end = path[segment + 1]
     val dx = end.x - start.x
@@ -1183,7 +1208,7 @@ private fun chartLandingState(
     halfSize: Float,
     unitScale: Float,
 ): PetState {
-    val path = target.path.map { viewport.clamp(PetPoint(it.x, it.y - halfSize), halfSize) }
+    val path = target.path.map { PetPoint(it.x, it.y - halfSize) }
     if (path.size < 2) {
         return state.copy(
             position = viewport.clamp(contact, halfSize),
@@ -1246,6 +1271,8 @@ private fun moveAlongPath(
     index: Int,
     direction: Int,
     distance: Float,
+    viewport: PetRect,
+    halfSize: Float,
 ): PetPathMotion {
     val canonicalDirection = if (direction < 0) -1 else 1
     val endpoint = if (canonicalDirection > 0) path.lastIndex else 0
@@ -1255,13 +1282,30 @@ private fun moveAlongPath(
     while (true) {
         val goal = path[cursor]
         val segmentDistance = hypot(goal.x - position.x, goal.y - position.y)
-        if (segmentDistance > remaining + PET_EPSILON) {
+        val proposed = if (segmentDistance > remaining + PET_EPSILON) {
             val ratio = remaining / segmentDistance
+            PetPoint(position.x + (goal.x - position.x) * ratio, position.y + (goal.y - position.y) * ratio)
+        } else goal
+        if (!isInsidePetViewport(proposed, viewport, halfSize)) {
+            // Intersect the travelled segment with the viewport; clamping its
+            // two coordinates separately would move the pet off the curve.
+            val minimum = viewport.clamp(PetPoint(viewport.left, viewport.top), halfSize)
+            val maximum = viewport.clamp(PetPoint(viewport.right, viewport.bottom), halfSize)
+            var fraction = 1f
+            val dx = proposed.x - position.x
+            val dy = proposed.y - position.y
+            if (dx > PET_CURVE_DIRECTION_EPSILON) fraction = min(fraction, (maximum.x - position.x) / dx)
+            else if (dx < -PET_CURVE_DIRECTION_EPSILON) fraction = min(fraction, (minimum.x - position.x) / dx)
+            if (dy > PET_CURVE_DIRECTION_EPSILON) fraction = min(fraction, (maximum.y - position.y) / dy)
+            else if (dy < -PET_CURVE_DIRECTION_EPSILON) fraction = min(fraction, (minimum.y - position.y) / dy)
+            fraction = fraction.coerceAtLeast(0f)
             return PetPathMotion(
-                position = PetPoint(
-                    position.x + (goal.x - position.x) * ratio,
-                    position.y + (goal.y - position.y) * ratio,
-                ),
+                PetPoint(position.x + dx * fraction, position.y + dy * fraction), cursor, true, 0f,
+            )
+        }
+        if (segmentDistance > remaining + PET_EPSILON) {
+            return PetPathMotion(
+                position = proposed,
                 index = cursor,
                 reachedEndpoint = false,
                 remainingBudget = 0f,
@@ -1287,16 +1331,67 @@ private fun advanceLandedChart(
     halfSize: Float,
     unitScale: Float,
 ): PetState {
-    val segment = closestPathSegment(state.position, path)
-    val downhill = curveDownhillDirection(segment.unitTangent)
-    val terminalVelocity = downhill * PET_CURVE_DOWNHILL_TERMINAL_SPEED
-    val rawVelocity = (state.curveVelocity ?: 0f).takeIf(Float::isFinite) ?: 0f
-    val currentVelocity = rawVelocity.coerceIn(
+    val nearCorner = (1 until path.lastIndex).any { index ->
+        distanceSquared(state.position, path[index]) <= (PET_CURVE_CORNER_RADIUS * unitScale).pow(2)
+    }
+    val substeps = if (nearCorner) PET_CURVE_CORNER_SUBSTEPS else 1
+    var current = state
+    repeat(substeps) {
+        if (current.mode != PetMode.SLIDE || current.curveVelocity == null || current.targetId != target.id) return current
+        current = advanceLandedChartSubstep(current, target, path, viewport, halfSize, unitScale, 1f / substeps)
+    }
+    return current
+}
+
+private fun advanceLandedChartSubstep(
+    state: PetState,
+    target: PetTarget,
+    path: List<PetPoint>,
+    viewport: PetRect,
+    halfSize: Float,
+    unitScale: Float,
+    tickFraction: Float,
+): PetState {
+    val currentVelocity = ((state.curveVelocity ?: 0f).takeIf(Float::isFinite) ?: 0f).coerceIn(
         -PET_CURVE_LANDING_SPEED_LIMIT,
         PET_CURVE_LANDING_SPEED_LIMIT,
     )
-    val curveVelocity = currentVelocity +
-        (terminalVelocity - currentVelocity) * PET_CURVE_DOWNHILL_RESPONSE_PER_TICK
+    // A shallow numerical crossing at the bottom of a valley must settle
+    // instead of alternating between opposing segment tangents each tick.
+    val restPoint = if (abs(currentVelocity) <= PET_CURVE_VALLEY_REST_SPEED) {
+        (1 until path.lastIndex).firstOrNull { index ->
+            val point = path[index]
+            val incomingLength = hypot(point.x - path[index - 1].x, point.y - path[index - 1].y)
+            val outgoingLength = hypot(point.x - path[index + 1].x, point.y - path[index + 1].y)
+            incomingLength > PET_CURVE_DIRECTION_EPSILON && outgoingLength > PET_CURVE_DIRECTION_EPSILON &&
+                (point.y - path[index - 1].y) / incomingLength > PET_CURVE_DIRECTION_EPSILON &&
+                (point.y - path[index + 1].y) / outgoingLength > PET_CURVE_DIRECTION_EPSILON &&
+                distanceSquared(state.position, point) <=
+                (PET_SUPPORT_CONTACT_TOLERANCE * unitScale).pow(2)
+        }
+    } else null
+    if (restPoint != null) {
+        return state.copy(
+            position = path[restPoint],
+            mode = PetMode.SLIDE,
+            targetId = target.id,
+            idleTicksRemaining = 0,
+            movementSpeed = 0f,
+            verticalVelocity = 0f,
+            horizontalVelocity = 0f,
+            curveVelocity = 0f,
+        )
+    }
+    val preferredIndex = if (state.pathDirection < 0) state.pathIndex else state.pathIndex - 1
+    val segment = closestPathSegment(state.position, path, preferredIndex)
+    val downhill = curveDownhillDirection(segment.unitTangent)
+    val terminalVelocity = if (abs(segment.unitTangent.y) <= PET_CURVE_DIRECTION_EPSILON) 0f
+    else segment.unitTangent.y * PET_CURVE_DOWNHILL_TERMINAL_SPEED
+    val response = 1f - (1f - PET_CURVE_DOWNHILL_RESPONSE_PER_TICK).pow(tickFraction)
+    val acceleratedVelocity = currentVelocity + (terminalVelocity - currentVelocity) * response
+    val curveVelocity = if (abs(terminalVelocity - acceleratedVelocity) <= PET_CURVE_DIRECTION_EPSILON) {
+        terminalVelocity
+    } else acceleratedVelocity
     val direction = when {
         curveVelocity > PET_CURVE_DIRECTION_EPSILON -> 1
         curveVelocity < -PET_CURVE_DIRECTION_EPSILON -> -1
@@ -1313,12 +1408,14 @@ private fun advanceLandedChart(
         path,
         waypoint,
         direction,
-        abs(curveVelocity) * unitScale,
+        abs(curveVelocity) * unitScale * tickFraction,
+        viewport,
+        halfSize,
     )
     val position = viewport.clamp(motion.position, halfSize)
     val facing = facingAfter(state.facing, position.x - state.position.x)
     if (motion.reachedEndpoint) {
-        val endpoint = if (direction > 0) path.lastIndex else 0
+        val endpoint = motion.index
         if (curveEndpointIsDownhill(path, endpoint, direction)) {
             return state.copy(
                 position = position,
@@ -1374,7 +1471,7 @@ private fun advanceFall(
     halfSize: Float,
     fallUnitScale: Float,
 ): PetState {
-    val rawGoal = fallSupportPoint(target, state.position, halfSize)
+    val rawGoal = fallSupportPoint(target, state.position, halfSize, viewport)
         ?: return advanceFreeFall(state.copy(targetId = null), viewport, halfSize, fallUnitScale)
     val goal = viewport.clamp(rawGoal, halfSize)
     if (goal.y < state.position.y - PET_EPSILON) {
@@ -1618,12 +1715,13 @@ private fun advanceBounce(
     halfSize: Float,
     fallUnitScale: Float,
 ): PetState {
-    val landing = viewport.clamp(
-        fallSupportPoint(target, state.position, halfSize)
-            ?: closestSupportPoint(target, state.position, halfSize),
-        halfSize,
-    )
-    return advanceBounceAt(
+    val rawLanding = fallSupportPoint(target, state.position, halfSize, viewport)
+        ?: return advanceFling(
+            state.copy(mode = PetMode.FLING, targetId = null, bouncesRemaining = 0),
+            listOf(target), viewport, halfSize, fallUnitScale,
+        )
+    val landing = viewport.clamp(rawLanding, halfSize)
+    val bounced = advanceBounceAt(
         state = state,
         landing = landing,
         bounceTargetId = target.id,
@@ -1632,6 +1730,9 @@ private fun advanceBounce(
         halfSize = halfSize,
         fallUnitScale = fallUnitScale,
     )
+    return if (bounced.mode == PetMode.IDLE && target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
+        chartLandingState(bounced, target, bounced.position, PetPoint(0f, 0f), viewport, halfSize, fallUnitScale)
+    } else bounced
 }
 
 private fun advanceViewportBottomBounce(
@@ -1711,7 +1812,7 @@ private fun advanceChart(
     unitScale: Float,
 ): PetState {
     val curveAcceleration = PET_CURVE_ACCELERATION
-    val path = target.path.map { viewport.clamp(PetPoint(it.x, it.y - halfSize), halfSize) }
+    val path = target.path.map { PetPoint(it.x, it.y - halfSize) }
     if (state.curveVelocity != null && path.size > 1) {
         return advanceLandedChart(state, target, path, viewport, halfSize, unitScale)
     }
@@ -1727,7 +1828,7 @@ private fun advanceChart(
         val position = viewport.clamp(movement.position, halfSize)
         return state.copy(
             position = position,
-            mode = if (movement.arrived) PetMode.IDLE else PetMode.SLIDE,
+            mode = if (movement.arrived) PetMode.IDLE else PetMode.FLY,
             targetId = target.id,
             idleTicksRemaining = if (movement.arrived) PET_IDLE_TICKS else 0,
             movementSpeed = if (movement.arrived) 0f else movement.speed,
@@ -1769,34 +1870,26 @@ private fun advanceChart(
     } else {
         (currentSpeed + curveAcceleration).coerceAtMost(max(curveAcceleration, maxSpeed))
     }
-    var budget = speed
-    var position = state.position
+    var motion = moveAlongPath(state.position, path, waypoint, direction, speed, viewport, halfSize)
+    var position = motion.position
+    waypoint = motion.index
     var completedCycle = false
-    var iterations = 0
-    while (budget > 0f && iterations < path.size * 2) {
-        iterations += 1
-        val goal = path[waypoint]
-        val distance = hypot(goal.x - position.x, goal.y - position.y)
-        if (distance <= budget + PET_PATH_SNAP_EPSILON) {
-            position = goal
-            budget = (budget - distance).coerceAtLeast(0f)
-            if (waypoint == 0 && direction < 0) {
-                completedCycle = true
-                break
+    var completedEnds = if (sameTarget) state.rollCorners else 0
+    if (motion.reachedEndpoint) {
+        completedEnds += 1
+        completedCycle = completedEnds >= 2
+        if (!completedCycle) {
+            direction *= -1
+            waypoint = (waypoint + direction).coerceIn(0, path.lastIndex)
+            if (motion.remainingBudget > PET_EPSILON) {
+                motion = moveAlongPath(position, path, waypoint, direction, motion.remainingBudget, viewport, halfSize)
+                position = motion.position
+                waypoint = motion.index
+                if (motion.reachedEndpoint) {
+                    direction *= -1
+                    waypoint = (waypoint + direction).coerceIn(0, path.lastIndex)
+                }
             }
-            if (waypoint == path.lastIndex && direction > 0) {
-                direction = -1
-                waypoint = path.lastIndex - 1
-            } else {
-                waypoint += direction
-            }
-        } else {
-            val ratio = budget / distance
-            position = PetPoint(
-                position.x + (goal.x - position.x) * ratio,
-                position.y + (goal.y - position.y) * ratio,
-            )
-            budget = 0f
         }
     }
     position = viewport.clamp(position, halfSize)
@@ -1809,6 +1902,7 @@ private fun advanceChart(
             idleTicksRemaining = PET_IDLE_TICKS,
             pathIndex = 0,
             pathDirection = 1,
+            rollCorners = 0,
             avoidTargetId = target.id,
             movementSpeed = 0f,
             horizontalVelocity = 0f,
@@ -1819,10 +1913,11 @@ private fun advanceChart(
     } else {
         state.copy(
             position = position,
-            mode = PetMode.SLIDE,
+            mode = if (isOnSupport(target, position, halfSize, viewport, PET_SUPPORT_CONTACT_TOLERANCE * unitScale)) PetMode.SLIDE else PetMode.FLY,
             targetId = target.id,
             pathIndex = waypoint,
             pathDirection = direction,
+            rollCorners = completedEnds,
             movementSpeed = speed,
             verticalVelocity = 0f,
             horizontalVelocity = 0f,
@@ -1905,7 +2000,10 @@ private fun closestSupportPoint(target: PetTarget, position: PetPoint, halfSize:
     return closestPointOnSegment(position, endpoints.first, endpoints.second)
 }
 
-private fun fallSupportPoint(target: PetTarget, position: PetPoint, halfSize: Float): PetPoint? {
+private fun isInsidePetViewport(position: PetPoint, viewport: PetRect, halfSize: Float): Boolean =
+    distanceSquared(position, viewport.clamp(position, halfSize)) <= PET_EPSILON * PET_EPSILON
+
+private fun fallSupportPoint(target: PetTarget, position: PetPoint, halfSize: Float, viewport: PetRect): PetPoint? {
     if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
         val shifted = target.path.map { PetPoint(it.x, it.y - halfSize) }
         val intersections = if (shifted.size == 1) {
@@ -1929,6 +2027,7 @@ private fun fallSupportPoint(target: PetTarget, position: PetPoint, halfSize: Fl
         }
         return intersections
             .filter { it.y >= position.y - PET_EPSILON }
+            .filter { isInsidePetViewport(it, viewport, halfSize) }
             .minByOrNull { it.y - position.y }
     }
     val endpoints = supportEndpoints(target, halfSize)
@@ -1943,10 +2042,11 @@ private fun nearestFallTarget(
     position: PetPoint,
     targets: List<PetTarget>,
     halfSize: Float,
+    viewport: PetRect,
 ): PetTarget? = targets
     .asSequence()
     .mapNotNull { target ->
-        fallSupportPoint(target, position, halfSize)?.let { support -> target to support }
+        fallSupportPoint(target, position, halfSize, viewport)?.let { support -> target to support }
     }
     .minByOrNull { (_, support) -> support.y - position.y }
     ?.first
@@ -1956,23 +2056,23 @@ private fun isOnSupport(
     position: PetPoint,
     halfSize: Float,
     viewport: PetRect?,
+    tolerance: Float = PET_EPSILON,
 ): Boolean {
     if (target.kind == PetTargetKind.CHART && target.path.isNotEmpty()) {
         val path = target.path
             .map { PetPoint(it.x, it.y - halfSize) }
-            .map { point -> viewport?.clamp(point, halfSize) ?: point }
         if (path.size == 1) {
-            return distanceSquared(position, path.first()) <= PET_EPSILON * PET_EPSILON
+            return distanceSquared(position, path.first()) <= tolerance * tolerance
         }
         return path.zipWithNext().any { (start, end) ->
-            distanceSquared(position, closestPointOnSegment(position, start, end)) <= PET_EPSILON * PET_EPSILON
+            distanceSquared(position, closestPointOnSegment(position, start, end)) <= tolerance * tolerance
         }
     }
     val endpoints = supportEndpoints(target, halfSize)
     val start = viewport?.clamp(endpoints.first, halfSize) ?: endpoints.first
     val end = viewport?.clamp(endpoints.second, halfSize) ?: endpoints.second
     val closest = closestPointOnSegment(position, start, end)
-    return distanceSquared(position, closest) <= PET_EPSILON * PET_EPSILON
+    return distanceSquared(position, closest) <= tolerance * tolerance
 }
 
 private fun supportEndpoints(target: PetTarget, halfSize: Float): Pair<PetPoint, PetPoint> {
