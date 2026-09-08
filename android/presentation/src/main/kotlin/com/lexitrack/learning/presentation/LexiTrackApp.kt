@@ -177,6 +177,7 @@ import com.lexitrack.learning.domain.releaseDrag
 import com.lexitrack.learning.domain.PET_CRUISE_SPEED
 import com.lexitrack.learning.domain.tokenizeEnglish
 import com.lexitrack.learning.domain.normalizeWordId
+import com.lexitrack.learning.domain.dictationOrderedIds
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -2383,6 +2384,18 @@ private fun DictationSelectionTable(
     onScrollPositionChange: (Float) -> Unit = {},
 ) {
     val rows = remember(entries) { entries.map(VocabularyEntry::toDictationSelectionRow) }
+    // QQ-style range action is contextual: keep one target row instead of
+    // inserting a 26dp action strip before every row in the table.
+    val rangeTargetId = remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(anchorId, endpointId) {
+        // A restored draft may already contain an endpoint; surface that row
+        // as the initial action target until the user touches another row.
+        rangeTargetId.value = when {
+            anchorId == null -> null
+            endpointId != null -> endpointId
+            else -> rangeTargetId.value
+        }
+    }
     val tableScrollState = rememberScrollState()
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = remember(entries, restoreScroll) {
@@ -2408,27 +2421,33 @@ private fun DictationSelectionTable(
         modifier = Modifier
             .fillMaxWidth()
             .onGloballyPositioned { containerTop.value = it.boundsInWindow().top }
-            .pointerInput(rows, selectedIds, selectionEnabled) {
+            // Keep one pointer coroutine alive for the whole drag.  Including
+            // selectedIds in the key restarts the gesture after the first row
+            // changes, which makes fast QQ-style multi-selection stop early.
+            .pointerInput(rows, selectionEnabled) {
                 if (!selectionEnabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    val selectedSnapshot = selectedIds.map(::normalizeWordId).toSet()
+                    val orderedIds = dictationOrderedIds(entries)
+                    var dragAnchorId: String? = null
+                    var dragSelecting = false
                     // Do NOT consume the down so a simple tap still reaches the
                     // row's toggleable; only a drag past the slop takes over.
                     val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
-                        val windowY = containerTop.value + change.position.y
+                        val windowY = containerTop.value + down.position.y
                         val anchor = rowBounds.value.entries
                             .firstOrNull { windowY in it.value.top..it.value.bottom }?.key
                         if (anchor != null) {
-                            onSetSelection(listOf(anchor), anchor !in selectedIds)
+                            dragAnchorId = normalizeWordId(anchor)
+                            rangeTargetId.value = dragAnchorId
+                            dragSelecting = dragAnchorId?.let { it !in selectedSnapshot } ?: false
+                            onSetSelection(listOf(anchor), dragSelecting)
                         }
                         change.consume()
                     }
                     if (drag == null) return@awaitEachGesture
-                    var anchorId: String? = null
-                    val windowY0 = containerTop.value + drag.position.y
-                    anchorId = rowBounds.value.entries
-                        .firstOrNull { windowY0 in it.value.top..it.value.bottom }?.key
-                    if (anchorId != null) onSetSelection(listOf(anchorId), anchorId !in selectedIds)
+                    val anchorId = dragAnchorId ?: return@awaitEachGesture
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == drag.id } ?: break
@@ -2437,7 +2456,17 @@ private fun DictationSelectionTable(
                         val hits = rowBounds.value.entries
                             .filter { windowY in it.value.top..it.value.bottom }
                             .map { it.key }
-                        if (hits.isNotEmpty()) onSetSelection(hits, anchorId?.let { it !in selectedIds } ?: true)
+                        val endpoint = hits.firstOrNull()?.let(::normalizeWordId)
+                        if (endpoint != null) {
+                            rangeTargetId.value = endpoint
+                            val start = orderedIds.indexOf(anchorId)
+                            val end = orderedIds.indexOf(endpoint)
+                            if (start >= 0 && end >= 0) {
+                                val low = minOf(start, end)
+                                val high = maxOf(start, end)
+                                onSetSelection(orderedIds.subList(low, high + 1), dragSelecting)
+                            }
+                        }
                         change.consume()
                     }
                 }
@@ -2461,8 +2490,10 @@ private fun DictationSelectionTable(
                             selected = normalizeWordId(row.id) in selectedIds.map(::normalizeWordId).toSet(),
                             selectionEnabled = selectionEnabled,
                             onToggleSelection = { onToggleSelection(row.id) },
+                            onRangeTarget = { rangeTargetId.value = row.id },
                             anchor = anchorId,
                             endpoint = endpointId,
+                            rangeTargetId = rangeTargetId.value,
                             onSelectRangeToHere = { onSelectRangeToHere(row.id) },
                             onBounds = { id, rect ->
                                 rowBounds.value = if (rect == null) {
@@ -2506,17 +2537,19 @@ private fun DictationSelectionTableRow(
     onBounds: (String, Rect?) -> Unit,
     anchor: String? = null,
     endpoint: String? = null,
+    rangeTargetId: String? = null,
     onSelectRangeToHere: () -> Unit = {},
+    onRangeTarget: () -> Unit = {},
 ) {
     val registerPetTarget = LocalRegisterPetTarget.current
     DisposableEffect(row.id) {
         onDispose { onBounds(row.id, null) }
     }
     Column(modifier = Modifier.width(DictationTableWidth)) {
-        if (anchor != null) {
-            // The cyan guide is deliberately present only while a valid
-            // anchor exists; it remains available for off-screen rows as the
-            // full LazyColumn is the source of truth.
+        if (anchor != null && rangeTargetId?.let(::normalizeWordId) == normalizeWordId(row.id)
+            && normalizeWordId(anchor) != normalizeWordId(row.id)) {
+            // The cyan guide is deliberately present only for the current
+            // contextual target while a valid anchor exists.
             Row(
                 modifier = Modifier.fillMaxWidth().height(26.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2539,7 +2572,10 @@ private fun DictationSelectionTableRow(
                     value = selected,
                     enabled = selectionEnabled,
                     role = Role.Checkbox,
-                    onValueChange = { onToggleSelection() },
+                    onValueChange = {
+                        onRangeTarget()
+                        onToggleSelection()
+                    },
                 )
                 .onGloballyPositioned { onBounds(row.id, it.boundsInWindow()) }
                 .padding(vertical = 8.dp),

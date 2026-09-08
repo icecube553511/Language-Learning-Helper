@@ -205,6 +205,7 @@
     "missingAnchorIds": [],
     "sameGroupOnly": true,
     "markerText": "选取到这里",
+    "markerPresentation": "single-active-row",
     "markerColor": "brand-teal",
     "noAnchorHidesMarker": true,
     "cancelNearestTieBreak": "earlier-order"

@@ -327,11 +327,14 @@ class MainViewModel(
         } else {
             state.dictationRandomCandidateIds.orEmpty()
         }
-        val adding = canonicalId !in selected
-        val next = if (adding) selected + canonicalId else selected - canonicalId
         val group = state.dictationOpenGroup ?: state.dictationScopeGroup
-        val groupEntries = dictationEntriesInGroup(state.dictationEntries, group)
         val previousGroup = state.dictationGroupDrafts[group] ?: DictationGroupDraft()
+        // Selection is owned by each group.  The same catalog ID can occur in
+        // several groups (for example CET4 and gk), so deriving the toggle from
+        // the global union makes a row in a second group impossible to add.
+        val adding = canonicalId !in previousGroup.selectedIds.map(::normalizeWordId).toSet()
+        val next = if (adding) selected + canonicalId else selected - canonicalId
+        val groupEntries = dictationEntriesInGroup(state.dictationEntries, group)
         val canonicalGroupIds = groupEntries.mapTo(mutableSetOf()) { normalizeWordId(it.id) }
         val nextAnchor = if (adding) canonicalId else {
             val remainingInGroup = previousGroup.selectedIds.map(::normalizeWordId).toSet() - canonicalId
@@ -360,7 +363,10 @@ class MainViewModel(
 
     fun setDictationSelection(wordIds: Collection<String>, selected: Boolean) {
         val state = _uiState.value
-        val canonicalIds = wordIds.map(::normalizeWordId).filter(String::isNotBlank).toSet()
+        // Keep the caller's row order for anchor updates (drag selection is
+        // submitted as an ordered range); use a set only for membership.
+        val canonicalIdsOrdered = wordIds.map(::normalizeWordId).filter(String::isNotBlank).distinct()
+        val canonicalIds = canonicalIdsOrdered.toSet()
         if (canonicalIds.isEmpty()) return
         val current = (if (state.dictationManualMode) {
             state.dictationSelectedIds
@@ -371,8 +377,8 @@ class MainViewModel(
         val group = state.dictationOpenGroup ?: state.dictationScopeGroup
         val entries = dictationEntriesInGroup(state.dictationEntries, group)
         val previousGroup = state.dictationGroupDrafts[group] ?: DictationGroupDraft()
-        val anchor = if (selected) canonicalIds.lastOrNull() else {
-            val reference = previousGroup.endpointId ?: canonicalIds.lastOrNull()
+        val anchor = if (selected) canonicalIdsOrdered.lastOrNull() else {
+            val reference = previousGroup.endpointId ?: canonicalIdsOrdered.lastOrNull()
             nearestDictationId(entries, reference, previousGroup.selectedIds.map(::normalizeWordId).toSet() - canonicalIds)
         }
         val canonicalGroupIds = entries.mapTo(mutableSetOf()) { normalizeWordId(it.id) }
@@ -439,11 +445,29 @@ class MainViewModel(
         val cleanGroup = normalizeDictationGroupKey(group)
         val updatedGroups = state.dictationGroupDrafts.toMutableMap()
         val currentGroup = updatedGroups[cleanGroup] ?: DictationGroupDraft()
-        updatedGroups[cleanGroup] = currentGroup.copy(expanded = open)
+        // A range is a transient interaction anchored to the visible group.
+        // Leaving that group ends the range while retaining its checkboxes,
+        // matching QQ's multi-select mode where the range affordance belongs
+        // to the current conversation view.
+        val switchingGroup = state.dictationOpenGroup != null &&
+            (state.dictationOpenGroup != cleanGroup || !open)
+        updatedGroups[cleanGroup] = currentGroup.copy(
+            expanded = open,
+            anchorId = if (switchingGroup) null else currentGroup.anchorId,
+            endpointId = if (switchingGroup) null else currentGroup.endpointId,
+        )
+        if (switchingGroup) {
+            state.dictationOpenGroup?.let { previous ->
+                updatedGroups[previous]?.let { previousDraft ->
+                    updatedGroups[previous] = previousDraft.copy(anchorId = null, endpointId = null)
+                }
+            }
+        }
         _uiState.value = state.copy(
             dictationScopeGroup = if (state.dictationManualMode) state.dictationScopeGroup else cleanGroup,
             dictationOpenGroup = if (open) cleanGroup else null,
             dictationGroupDrafts = updatedGroups,
+            dictationRangeEnabled = if (switchingGroup) false else state.dictationRangeEnabled,
             dictationDirty = true,
         )
     }
