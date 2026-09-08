@@ -2945,7 +2945,13 @@ class LexiTrackApp(tk.Tk):
         self._dictation_table_column_widths: list[int] = []
         self._dictation_drag_anchor_id: str | None = None
         self._dictation_drag_anchor_selected: bool | None = None
+        # QQ-style range selection shows one action affordance at the row the
+        # pointer is currently over.  Keep the hover target by stable word ID
+        # so virtualization and scrolling do not make the action jump rows.
+        self._dictation_range_hover_id: str | None = None
         self.dictation_table_canvas.bind("<ButtonRelease-1>", self._on_dictation_table_release, add="+")
+        self.dictation_table_canvas.bind("<Motion>", self._on_dictation_table_motion, add="+")
+        self.dictation_table_canvas.bind("<Leave>", self._on_dictation_table_leave, add="+")
         self._bind_dictation_dirty_traces()
 
     def _bind_dictation_dirty_traces(self) -> None:
@@ -2983,6 +2989,9 @@ class LexiTrackApp(tk.Tk):
         if self.dictation_group is not None:
             pool = self.service.dictation_words_in_group(self.dictation_group, include)
             self.dictation_candidates = pool[:2000]
+            # A refreshed/filtered list may virtualize a different row under
+            # the pointer; require a fresh hover before showing the action.
+            self._dictation_range_hover_id = None
             self._show_dictation_sel_view("words")
             self._render_dictation_candidates()
         else:
@@ -3781,35 +3790,64 @@ class LexiTrackApp(tk.Tk):
                 )
         self._dictation_draw_start = render_start
         self._dictation_draw_end = render_end
-        # A visible cyan guide marks the current range endpoint.  It is drawn
-        # only when an anchor exists, and remains actionable after scrolling
-        # because the virtualized row is rebuilt from the stable word ID.
-        canvas.delete("dictation_range_marker")
-        anchor_id = self.dictation_group_anchors.get(self._dictation_current_group_key())
-        if anchor_id and self.dictation_range_enabled:
-            for index in range(render_start, render_end + 1):
-                entry = self.dictation_candidates[index]
-                marker_tag = f"dictation-range-{entry.word_id}"
-                top = row_tops[index]
-                row_height = row_heights[index]
-                marker = canvas.create_line(
-                    0, top + row_height - 2, total_width, top + row_height - 2,
-                    fill="#18B7C9", width=2, arrow=tk.LAST,
-                    tags=(marker_tag, "dictation_range_marker"),
-                )
-                canvas.create_text(
-                    max(8, total_width - 112), top + 10,
-                    text=self.dictation_range_marker_text, anchor="e",
-                    fill="#18B7C9", font="LexiSmall",
-                    tags=(marker_tag, "dictation_range_marker"),
-                )
-                canvas.tag_bind(marker_tag, "<Button-1>", lambda _event, word_id=entry.word_id: self._select_dictation_range_to_here(word_id))
+        # QQ-style range selection uses one action affordance at the row under
+        # the pointer.  Drawing one marker instead of repeating a full-width
+        # cyan line for every row keeps the table readable and makes the click
+        # target unambiguous.  The target is tracked by word ID because rows
+        # are virtualized while scrolling.
         # Column separator lines only within the drawn band.
         canvas.delete("dictation_separator")
         for left in column_lefts[1:]:
             canvas.create_line(left, 0, left, self._dictation_body_height, fill=BORDER, tags=("dictation_separator",))
+        # Draw after separators so the cyan action line remains visible.
+        self._render_dictation_range_marker(render_start, render_end)
         self._refresh_visible_dictation_checkboxes()
         self._schedule_pet_target_refresh()
+
+    def _render_dictation_range_marker(self, render_start: int, render_end: int) -> None:
+        """Draw the single currently actionable range marker, if any."""
+        canvas = self.dictation_table_canvas
+        canvas.delete("dictation_range_marker")
+        if not self.dictation_range_enabled:
+            return
+        key = self._dictation_current_group_key()
+        anchor_id = self.dictation_group_anchors.get(key)
+        endpoint_id = self.dictation_group_endpoints.get(key)
+        hover_id = normalize_word_id(
+            getattr(self, "_dictation_range_hover_id", None)
+            or endpoint_id
+            or "",
+        ) or None
+        if not anchor_id or not hover_id or hover_id == normalize_word_id(anchor_id):
+            return
+        index = next(
+            (i for i in range(render_start, render_end + 1)
+             if normalize_word_id(self.dictation_candidates[i].word_id) == hover_id),
+            None,
+        )
+        if index is None:
+            return
+        row_top = self._dictation_table_row_tops[index]
+        total_width = sum(self._dictation_table_column_widths)
+        marker_tag = f"dictation-range-{hover_id}"
+        # Place the guide at the top edge of the hovered row, matching the
+        # separator treatment used by QQ's multi-select history view.
+        canvas.create_line(
+            0, row_top + 1, total_width, row_top + 1,
+            fill="#18B7C9", width=2, arrow=tk.LAST,
+            tags=(marker_tag, "dictation_range_marker"),
+        )
+        canvas.create_text(
+            max(8, total_width - 112), row_top + 11,
+            text=self.dictation_range_marker_text, anchor="e",
+            fill="#18B7C9", font="LexiSmall",
+            tags=(marker_tag, "dictation_range_marker"),
+        )
+        canvas.tag_bind(
+            marker_tag,
+            "<Button-1>",
+            lambda _event, word_id=hover_id: self._select_dictation_range_to_here(word_id),
+        )
 
     def _scroll_dictation_horizontally(self, *args):
         self.dictation_table_header.xview(*args)
@@ -3945,6 +3983,23 @@ class LexiTrackApp(tk.Tk):
             return None
         return self.dictation_candidates[index]
 
+    def _on_dictation_table_motion(self, event):
+        """Track the row under the pointer for the single range affordance."""
+        if self.dictation_group is None or not self.dictation_range_enabled:
+            return
+        entry = self._dictation_entry_at(self.dictation_table_canvas.canvasy(event.y))
+        hover_id = normalize_word_id(entry.word_id) if entry is not None else None
+        if hover_id == self._dictation_range_hover_id:
+            return
+        self._dictation_range_hover_id = hover_id
+        self._render_dictation_range_marker(self._dictation_draw_start, self._dictation_draw_end)
+
+    def _on_dictation_table_leave(self, _event):
+        if self._dictation_range_hover_id is None:
+            return
+        self._dictation_range_hover_id = None
+        self.dictation_table_canvas.delete("dictation_range_marker")
+
     def _on_dictation_table_click(self, event):
         if self.dictation_group is None:
             return "break"
@@ -3964,6 +4019,8 @@ class LexiTrackApp(tk.Tk):
         # Remember the anchor so a subsequent drag extends the same action.
         self._dictation_drag_anchor_id = entry.word_id
         self._dictation_drag_anchor_selected = selected
+        self._dictation_range_hover_id = normalize_word_id(entry.word_id)
+        self._render_dictation_range_marker(self._dictation_draw_start, self._dictation_draw_end)
         return "break"
 
     def _on_dictation_table_drag(self, event):
@@ -4062,6 +4119,7 @@ class LexiTrackApp(tk.Tk):
             return
         for candidate_id in ids:
             self.dictation_selected_ids.add(candidate_id)
+            self.dictationRandomCandidateIds.add(candidate_id)
             self.dictation_group_selected_ids.setdefault(key, set()).add(candidate_id)
         self.dictation_group_endpoints[key] = word_id
         self.dictation_group_anchors[key] = word_id

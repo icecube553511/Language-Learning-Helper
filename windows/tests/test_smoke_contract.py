@@ -168,6 +168,54 @@ class SmokeContractTests(unittest.TestCase):
         self.assertLess(start, 22)
         self.assertGreater(end, 38)
 
+    def test_dictation_range_marker_is_single_hover_action(self):
+        class RecordingCanvas:
+            def __init__(self):
+                self.deleted = []
+                self.lines = []
+                self.texts = []
+                self.bindings = []
+
+            def delete(self, tag):
+                self.deleted.append(tag)
+                self.lines.clear()
+                self.texts.clear()
+
+            def create_line(self, *args, **kwargs):
+                self.lines.append((args, kwargs))
+
+            def create_text(self, *args, **kwargs):
+                self.texts.append((args, kwargs))
+
+            def tag_bind(self, *args):
+                self.bindings.append(args)
+
+        app = object.__new__(LexiTrackApp)
+        app.dictation_table_canvas = RecordingCanvas()
+        app.dictation_range_enabled = True
+        app.dictation_group = "cet4"
+        app.dictation_scope_group = "all"
+        app.dictation_group_anchors = {"cet4": "apple"}
+        app.dictation_group_endpoints = {}
+        app._dictation_range_hover_id = "banana"
+        app.dictation_range_marker_text = "选取到这里"
+        app.dictation_candidates = [
+            type("Entry", (), {"word_id": "apple"})(),
+            type("Entry", (), {"word_id": "banana"})(),
+            type("Entry", (), {"word_id": "cherry"})(),
+        ]
+        app._dictation_table_row_tops = [0, 56, 112]
+        app._dictation_table_column_widths = [170, 260, 200, 140, 76]
+        app._render_dictation_range_marker(0, 2)
+        self.assertEqual(len(app.dictation_table_canvas.lines), 1)
+        self.assertEqual(len(app.dictation_table_canvas.texts), 1)
+        self.assertEqual(len(app.dictation_table_canvas.bindings), 1)
+        self.assertIn("banana", app.dictation_table_canvas.bindings[0][0])
+
+        app._dictation_range_hover_id = "apple"
+        app._render_dictation_range_marker(0, 2)
+        self.assertEqual(app.dictation_table_canvas.lines, [])
+
     def test_dictation_preview_scroll_units_scale_with_delta(self):
         # Windows wheel delta is typically ±120 per notch; a block/delta of
         # multiple notches scrolls farther so large wheels stay responsive.

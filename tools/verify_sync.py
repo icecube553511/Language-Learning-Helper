@@ -120,6 +120,7 @@ def verify_dictation_contract() -> None:
         or range_vector.get("reverseInclusiveIds") != ["banana", "canada", "dear"]
         or range_vector.get("sameGroupOnly") is not True
         or range_vector.get("markerText") != "选取到这里"
+        or range_vector.get("markerPresentation") != "single-active-row"
         or range_vector.get("noAnchorHidesMarker") is not True
     ):
         fail("Dictation range-selection semantics differ from the shared contract")
@@ -2243,10 +2244,16 @@ def verify_vocabulary_groups_contract() -> None:
         if marker not in android_source:
             fail(f"Android dictation group drill-down is missing {marker}")
 
-    for marker in ("dictationRandomCandidateIds", "选取到这里", "结束范围选择"):
+    for marker in (
+        "dictationRandomCandidateIds", "选取到这里", "结束范围选择",
+        "_dictation_range_hover_id", "_render_dictation_range_marker",
+    ):
         if marker not in windows_source:
             fail(f"Windows dictation selection interaction is missing {marker}")
-    for marker in ("dictationRandomCandidateIds", "选取到这里", "结束范围选择"):
+    for marker in (
+        "dictationRandomCandidateIds", "选取到这里", "结束范围选择",
+        "rangeTargetId", "onRangeTarget",
+    ):
         if marker not in android_source:
             fail(f"Android dictation selection interaction is missing {marker}")
 
